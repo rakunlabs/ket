@@ -1,0 +1,8 @@
+/bin/
+/dist/
+/_ui/node_modules/
+/internal/server/dist/*
+!/internal/server/dist/.gitkeep
+/ket.yaml
+.env
+.env.local

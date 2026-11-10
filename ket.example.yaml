@@ -1,0 +1,21 @@
+# Copy to ket.yaml (git-ignored). Every key can also be set from the
+# environment with the KET_ prefix, e.g. KET_SERVER_PORT=9000,
+# KET_STORE_POSTGRES_DSN=postgres://...
+#
+# This file holds infrastructure only. Everything else is set in the app:
+# open Ket, sign up (the first account is the administrator), then
+# Settings → AI providers, Users, Access & server, PCB tools.
+
+log_level: info
+
+server:
+  port: 8080
+  # base_path: /ket          # when served under a path prefix
+
+store:
+  postgres:
+    dsn: postgres://ket:ket@localhost:5432/ket?sslmode=disable
+
+hub:
+  # How long a command may take in the browser.
+  call_timeout: 60s

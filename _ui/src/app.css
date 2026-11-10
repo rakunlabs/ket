@@ -1,0 +1,650 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/ibm-plex-sans/wght.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+
+/* Ket shares kafka-console's design language: warm paper neutrals, one
+   pale yellow highlight shared by actions, selections and the mark,
+   IBM Plex, square corners and status markers. Semantic roles only; light
+   and dark remap the same names. Canvases (3D, board, schematic) read these
+   variables too (lib/theme.ts). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-line-dash: var(--line-dash);
+  --color-control: var(--control);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-link: var(--accent);
+  --color-link-soft: var(--accent-soft);
+  --color-cta: var(--cta);
+  --color-cta-hover: var(--cta-hover);
+  --color-cta-ink: var(--cta-text);
+  --color-cta-line: var(--cta-border);
+  --color-cta-edge: var(--cta-edge);
+  --color-sel: var(--sel);
+  --color-sel-ink: var(--sel-text);
+  --color-sel-line: var(--sel-border);
+  --color-hover: var(--row-hover);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-border);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-border);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-ok-line: var(--ok-border);
+  --color-scrim: var(--scrim);
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
+  --radius-sm: 2px;
+  --radius: var(--r);
+  --radius-md: var(--r);
+  --radius-lg: 4px;
+}
+
+:root {
+  --yellow: #fbff81;
+  --bg: #fdfdfb;
+  --sidebar: #f1f1ec;
+  --surface: #ffffff;
+  --surface-2: #f3f3ef;
+  --border: #e6e6e0;
+  --border-strong: #d8d8d1;
+  --line-dash: #c8c8c0;
+  /* Edges of interactive controls: 3:1 against the surface. */
+  --control: #93938b;
+  --text: #222220;
+  --text-2: #50504b;
+  --text-3: #6b6b66;
+  --accent: var(--text);
+  --accent-soft: var(--yellow);
+  --cta: var(--yellow);
+  --cta-hover: #f2f65c;
+  --cta-text: #222220;
+  --cta-border: #b8b6a0;
+  /* Edge of a filled highlight (ticked box, chosen segment). */
+  --cta-edge: #222220;
+  --sel: var(--yellow);
+  --sel-text: var(--cta-text);
+  --sel-border: var(--cta-border);
+  --row-hover: #f0f0ea;
+  --hatch: rgb(34 34 32 / 0.09);
+  --danger: #c4372f;
+  --danger-soft: #fbeceb;
+  --danger-border: #ebbab6;
+  --warn: #985b0a;
+  --warn-soft: #fbf1df;
+  --warn-border: #e8cfa3;
+  --ok: #276e45;
+  --ok-soft: #e5f2ea;
+  --ok-border: #b5d8c3;
+  --focus: #222220;
+  --scrim: rgb(23 23 20 / 0.45);
+  --shadow-pop: 0 8px 24px -10px rgb(34 34 32 / 0.28), 0 1px 2px rgb(34 34 32 / 0.06);
+
+  /* Canvases: 3D viewport, board, schematic. */
+  --view-bg: #f3f3ef;
+  --view-grid: #dcdcd4;
+  --view-grid-minor: #e8e8e2;
+  --view-body: #a9aaa2;
+  --view-edge: #3a3a36;
+  --view-sel: var(--yellow);
+  --view-hl: var(--yellow);
+  --board-bg: #171714;
+  --sch-bg: #fdfdfb;
+  --sch-grid: #e6e6e0;
+  --sch-body: #50504b;
+  --sch-fill: #fbfcdc;
+  --sch-pin: #6b6b66;
+  --sch-text: #222220;
+  --sch-pintext: var(--sch-text);
+  --sch-net: #276e45;
+  --sch-hl: #c4372f;
+
+  --r: 3px;
+  --font: 'IBM Plex Sans Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  color-scheme: light;
+  color: var(--text);
+  background: var(--bg);
+  caret-color: var(--accent);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Dark: the same roles. Follows the OS unless the user picked a theme;
+   .theme-dark keeps one region dark whatever the page theme. */
+:root[data-theme='dark'],
+.theme-dark {
+  --bg: #161613;
+  --sidebar: #1b1b18;
+  --surface: #1f1f1c;
+  --surface-2: #282825;
+  --border: #30302c;
+  --border-strong: #3f3f3a;
+  --line-dash: #42423d;
+  --control: #72726a;
+  --text: #ebebe6;
+  --text-2: #b8b8b1;
+  --text-3: #98988f;
+  --accent: var(--yellow);
+  --accent-soft: var(--yellow);
+  --cta: var(--yellow);
+  --cta-hover: #f2f65c;
+  --cta-text: #1c1c10;
+  --cta-border: #b8b6a0;
+  --cta-edge: var(--yellow);
+  --sel: var(--yellow);
+  --sel-border: var(--cta-border);
+  --row-hover: #2b2b27;
+  --hatch: rgb(232 232 228 / 0.07);
+  --danger: #f0817b;
+  --danger-soft: #361d1b;
+  --danger-border: #6b3431;
+  --warn: #e3b05c;
+  --warn-soft: #362c18;
+  --warn-border: #5e4a22;
+  --ok: #67c792;
+  --ok-soft: #1a3024;
+  --ok-border: #2f5a40;
+  --focus: var(--yellow);
+  --scrim: rgb(0 0 0 / 0.6);
+  --shadow-pop: 0 10px 28px -10px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.03);
+
+  --view-bg: #1b1b18;
+  --view-grid: #34342f;
+  --view-grid-minor: #262623;
+  --view-body: #8a8b83;
+  --view-edge: #121210;
+  --view-sel: var(--yellow);
+  --view-hl: var(--yellow);
+  --board-bg: #121210;
+  --sch-bg: #171714;
+  --sch-grid: #262623;
+  --sch-body: #b4b4ae;
+  --sch-fill: #23241a;
+  --sch-pin: #8d8d86;
+  --sch-text: #e8e8e4;
+  --sch-pintext: var(--yellow);
+  --sch-net: #67c792;
+  --sch-hl: #f0817b;
+
+  color-scheme: dark;
+  color: var(--text);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #161613;
+    --sidebar: #1b1b18;
+    --surface: #1f1f1c;
+    --surface-2: #282825;
+    --border: #30302c;
+    --border-strong: #3f3f3a;
+    --line-dash: #42423d;
+    --control: #72726a;
+    --text: #ebebe6;
+    --text-2: #b8b8b1;
+    --text-3: #98988f;
+    --accent: var(--yellow);
+    --accent-soft: var(--yellow);
+    --cta: var(--yellow);
+    --cta-hover: #f2f65c;
+    --cta-text: #1c1c10;
+    --cta-border: #b8b6a0;
+    --cta-edge: var(--yellow);
+    --sel: var(--yellow);
+    --sel-border: var(--cta-border);
+    --row-hover: #2b2b27;
+    --hatch: rgb(232 232 228 / 0.07);
+    --danger: #f0817b;
+    --danger-soft: #361d1b;
+    --danger-border: #6b3431;
+    --warn: #e3b05c;
+    --warn-soft: #362c18;
+    --warn-border: #5e4a22;
+    --ok: #67c792;
+    --ok-soft: #1a3024;
+    --ok-border: #2f5a40;
+    --focus: var(--yellow);
+    --scrim: rgb(0 0 0 / 0.6);
+    --shadow-pop: 0 10px 28px -10px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.03);
+
+    --view-bg: #1b1b18;
+    --view-grid: #34342f;
+    --view-grid-minor: #262623;
+    --view-body: #8a8b83;
+    --view-edge: #121210;
+    --view-sel: var(--yellow);
+    --view-hl: var(--yellow);
+    --board-bg: #121210;
+    --sch-bg: #171714;
+    --sch-grid: #262623;
+    --sch-body: #b4b4ae;
+    --sch-fill: #23241a;
+    --sch-pin: #8d8d86;
+    --sch-text: #e8e8e4;
+    --sch-pintext: var(--yellow);
+    --sch-net: #67c792;
+    --sch-hl: #f0817b;
+
+    color-scheme: dark;
+  }
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+@layer base {
+  /* Type scale: 11 / 12 / 13 (UI) / 14 / 16 / 20. Mono runs one step under
+     the sans beside it: Plex Mono sets wider at the same size. */
+  body {
+    margin: 0;
+    font: 13px/1.5 var(--font);
+    background: var(--bg);
+    color: var(--text);
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  a {
+    text-underline-offset: 3px;
+  }
+  code,
+  kbd,
+  .mono {
+    font-family: var(--mono);
+  }
+  ::selection {
+    background: var(--cta);
+    color: var(--cta-text);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--text-3);
+  }
+
+  /* Square checkboxes: ticked fills with the highlight and an ink check. */
+  input[type='checkbox'] {
+    appearance: none;
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    border: 1px solid var(--control);
+    background: var(--surface);
+    display: inline-grid;
+    place-content: center;
+    cursor: pointer;
+    vertical-align: -2px;
+    transition:
+      background-color 0.12s,
+      border-color 0.12s;
+  }
+  input[type='checkbox']:hover:not(:disabled) {
+    border-color: var(--text-2);
+  }
+  input[type='checkbox']:checked {
+    background: var(--cta);
+    border-color: var(--cta-edge);
+  }
+  input[type='checkbox']:checked::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    background: var(--cta-text);
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.6 6.3 4.9 8.6 9.4 3.6' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='square'/%3E%3C/svg%3E")
+      center / 12px 12px no-repeat;
+  }
+  input[type='checkbox']:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+@layer components {
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.4;
+    padding: 4px 10px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--control);
+    border-radius: var(--r);
+    cursor: pointer;
+    transition:
+      background-color 0.12s,
+      border-color 0.12s,
+      color 0.12s;
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--surface-2);
+  }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  /* The one primary action of a view: the yellow highlight. */
+  .btn-primary {
+    background: var(--cta);
+    border-color: var(--cta-border);
+    color: var(--cta-text);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--cta-hover);
+  }
+  .btn-ghost {
+    background: transparent;
+    border-color: transparent;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--row-hover);
+  }
+  .btn-danger {
+    color: var(--danger);
+    border-color: var(--danger-border);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: var(--danger-soft);
+  }
+  /* A toggled button (a panel that is open). */
+  .btn.on {
+    background: var(--sel);
+    color: var(--sel-text);
+    border-color: var(--sel-border);
+  }
+  .btn.on:hover:not(:disabled) {
+    background: var(--cta-hover);
+  }
+
+  .input {
+    width: 100%;
+    min-width: 0;
+    font: inherit;
+    font-size: 13px;
+    padding: 4px 9px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--control);
+    border-radius: var(--r);
+    outline: none;
+  }
+  .input:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -1px;
+  }
+  .input:disabled {
+    opacity: 0.6;
+  }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r);
+  }
+  /* Floating layers: menus, popovers, dialogs. */
+  .pop {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r);
+    box-shadow: var(--shadow-pop);
+  }
+
+  .panel-title {
+    padding: 12px 12px 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-3);
+  }
+
+  /* Corner ticks on a box's four corners (kafka-console). */
+  .corners {
+    --c: var(--text-3);
+    --k: 7px;
+    background-image:
+      linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)),
+      linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c));
+    background-size:
+      var(--k) 1px,
+      1px var(--k),
+      var(--k) 1px,
+      1px var(--k),
+      var(--k) 1px,
+      1px var(--k),
+      var(--k) 1px,
+      1px var(--k);
+    background-position:
+      top left,
+      top left,
+      top right,
+      top right,
+      bottom left,
+      bottom left,
+      bottom right,
+      bottom right;
+    background-repeat: no-repeat;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.5;
+    padding: 0 6px;
+    border-radius: 2px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+  .badge.ok {
+    background: var(--ok-soft);
+    color: var(--ok);
+    border-color: transparent;
+  }
+  .badge.warn {
+    background: var(--warn-soft);
+    color: var(--warn);
+    border-color: transparent;
+  }
+  .badge.danger {
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-color: transparent;
+  }
+  .badge.accent {
+    background: var(--sel);
+    color: var(--sel-text);
+    border-color: var(--sel-border);
+  }
+
+  /* Status marker: a small square, colour from a tone class. */
+  .sq {
+    display: inline-block;
+    flex: none;
+    width: 7px;
+    height: 7px;
+    background: currentColor;
+  }
+  .sq.ok {
+    background: var(--ok);
+  }
+  .sq.warn {
+    background: var(--warn);
+  }
+  .sq.danger {
+    background: var(--danger);
+  }
+  .sq.idle {
+    background: var(--text-3);
+  }
+  .sq.live {
+    animation: sq-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes sq-pulse {
+    50% {
+      opacity: 0.3;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sq.live {
+      animation: none;
+    }
+  }
+
+  /* Messages that need attention: text states the problem and the fix. */
+  .note {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 8px 11px;
+    font-size: 13px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r);
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .note.danger {
+    border-color: var(--danger-border);
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+  .note.warn {
+    border-color: var(--warn-border);
+    background: var(--warn-soft);
+    color: var(--warn);
+  }
+  .note.ok {
+    border-color: var(--ok-border);
+    background: var(--ok-soft);
+    color: var(--ok);
+  }
+
+  /* Segmented choice. */
+  .seg {
+    display: inline-flex;
+  }
+  .seg > button {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 3px 10px;
+    margin-right: -1px;
+    color: var(--text-2);
+    background: var(--surface);
+    border: 1px solid var(--control);
+    cursor: pointer;
+  }
+  .seg > button:first-child {
+    border-radius: var(--r) 0 0 var(--r);
+  }
+  .seg > button:last-child {
+    border-radius: 0 var(--r) var(--r) 0;
+    margin-right: 0;
+  }
+  .seg > button:hover {
+    color: var(--text);
+    background: var(--row-hover);
+  }
+  .seg > button.on,
+  .seg > button[aria-checked='true'] {
+    position: relative;
+    z-index: 1;
+    color: var(--cta-text);
+    background: var(--cta);
+    border-color: var(--cta-edge);
+  }
+
+  kbd {
+    font-size: 10px;
+    padding: 0 4px;
+    border: 1px solid var(--border-strong);
+    border-radius: 2px;
+    color: var(--text-3);
+    background: var(--surface);
+  }
+
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  .hatched {
+    background-image: repeating-linear-gradient(-45deg, var(--hatch) 0 1px, transparent 1px 6px);
+  }
+  .skeleton {
+    background: var(--surface-2);
+  }
+}
+
+.prose-chat p {
+  margin: 6px 0;
+}
+.prose-chat code {
+  padding: 0 4px;
+  font-size: 12px;
+  border-radius: 2px;
+  background: var(--surface-2);
+}
+.prose-chat pre {
+  margin: 8px 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font-size: 12px;
+  border-radius: var(--r);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.prose-chat pre code {
+  padding: 0;
+  background: none;
+}
+.prose-chat ul {
+  margin: 6px 0;
+  padding-left: 20px;
+  list-style: square;
+}
+.prose-chat ol {
+  margin: 6px 0;
+  padding-left: 20px;
+  list-style: decimal;
+}
+.prose-chat strong {
+  font-weight: 600;
+}
+.prose-chat a {
+  color: var(--accent);
+  text-decoration: underline;
+}

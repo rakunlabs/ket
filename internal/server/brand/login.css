@@ -1,0 +1,234 @@
+/* Ket on ada's login page: the same paper neutrals, yellow highlight and
+   IBM Plex as the app (_ui/src/app.css), in light and dark. Loaded through
+   auth.UIConfig.CustomCSSURL after ada's own styles; theme tokens are set
+   here instead of UIConfig.Theme, which only reaches the light theme. */
+
+@font-face {
+  font-family: 'IBM Plex Sans Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 700;
+  src: url('./plex-sans.woff2') format('woff2-variations');
+}
+
+:root,
+:root[data-theme='light'] {
+  --ket-yellow: #fbff81;
+  --auth-bg: #fdfdfb;
+  --auth-card-bg: #ffffff;
+  --auth-card-border: #d8d8d1;
+  --auth-card-shadow: 0 1px 2px rgb(34 34 32 / 0.05);
+  --auth-radius-sm: 2px;
+  --auth-radius: 3px;
+  --auth-radius-lg: 3px;
+  --auth-text-primary: #222220;
+  --auth-text-secondary: #50504b;
+  --auth-text-muted: #6b6b66;
+  --auth-input-bg: #ffffff;
+  --auth-input-border: #93938b;
+  --auth-input-focus-border: #222220;
+  --auth-input-focus-ring: rgb(34 34 32 / 0.12);
+  --auth-btn-bg: var(--ket-yellow);
+  --auth-btn-bg-hover: #f2f65c;
+  --auth-btn-text: #222220;
+  --auth-oauth-bg: #ffffff;
+  --auth-oauth-border: #93938b;
+  --auth-oauth-hover: var(--ket-yellow);
+  --auth-oauth-text: #222220;
+  --auth-divider: #e6e6e0;
+  --auth-error-bg: #fbeceb;
+  --auth-error-border: #c4372f;
+  --auth-error-text: #a52d26;
+  --auth-notice-bg: #e5f2ea;
+  --auth-notice-border: #276e45;
+  --auth-notice-text: #276e45;
+  --auth-toggle-bg: transparent;
+  --auth-toggle-text: #50504b;
+  --auth-toggle-hover: #f0f0ea;
+  --ket-link: var(--auth-text-primary);
+  --ket-grid: rgb(34 34 32 / 0.05);
+  --ket-tick: #6b6b66;
+  --ket-cta-edge: #222220;
+}
+
+:root[data-theme='dark'] {
+  --auth-bg: #161613;
+  --auth-card-bg: #1f1f1c;
+  --auth-card-border: #3f3f3a;
+  --auth-card-shadow: 0 10px 28px -12px rgb(0 0 0 / 0.7);
+  --auth-text-primary: #ebebe6;
+  --auth-text-secondary: #b8b8b1;
+  --auth-text-muted: #98988f;
+  --auth-input-bg: #161613;
+  --auth-input-border: #72726a;
+  --auth-input-focus-border: var(--ket-yellow);
+  --auth-input-focus-ring: rgb(251 255 129 / 0.18);
+  --auth-btn-bg: var(--ket-yellow);
+  --auth-btn-bg-hover: #f2f65c;
+  --auth-btn-text: #1c1c10;
+  --auth-oauth-bg: #1f1f1c;
+  --auth-oauth-border: #72726a;
+  --auth-oauth-hover: var(--ket-yellow);
+  --auth-oauth-text: #ebebe6;
+  --auth-divider: #30302c;
+  --auth-error-bg: #361d1b;
+  --auth-error-border: #f0817b;
+  --auth-error-text: #f0817b;
+  --auth-notice-bg: #1a3024;
+  --auth-notice-border: #67c792;
+  --auth-notice-text: #67c792;
+  --auth-toggle-bg: transparent;
+  --auth-toggle-text: #b8b8b1;
+  --auth-toggle-hover: #2b2b27;
+  --ket-link: var(--ket-yellow);
+  --ket-grid: rgb(235 235 230 / 0.045);
+  --ket-tick: #98988f;
+  --ket-cta-edge: var(--ket-yellow);
+}
+
+html,
+body {
+  font-family: 'IBM Plex Sans Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The page: a faint drafting grid, fading out below the card. */
+body {
+  background-color: var(--auth-bg);
+  background-image:
+    linear-gradient(var(--ket-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--ket-grid) 1px, transparent 1px);
+  background-size: 16px 16px;
+  background-position: -1px -1px;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 60% 55% at 50% 30%, transparent 0 35%, var(--auth-bg) 85%);
+}
+
+[class*='page'] {
+  position: relative;
+  z-index: 1;
+  padding-top: max(48px, 12vh) !important;
+}
+
+/* The card: square, with the app's corner ticks. */
+[class*='card'][class*='svelte-']:not([class*='card-header']) {
+  --k: 8px;
+  padding: 32px !important;
+  background-image:
+    linear-gradient(var(--ket-tick), var(--ket-tick)), linear-gradient(var(--ket-tick), var(--ket-tick)),
+    linear-gradient(var(--ket-tick), var(--ket-tick)), linear-gradient(var(--ket-tick), var(--ket-tick)),
+    linear-gradient(var(--ket-tick), var(--ket-tick)), linear-gradient(var(--ket-tick), var(--ket-tick)),
+    linear-gradient(var(--ket-tick), var(--ket-tick)), linear-gradient(var(--ket-tick), var(--ket-tick));
+  background-size:
+    var(--k) 1px, 1px var(--k), var(--k) 1px, 1px var(--k),
+    var(--k) 1px, 1px var(--k), var(--k) 1px, 1px var(--k);
+  background-position:
+    top left, top left, top right, top right,
+    bottom left, bottom left, bottom right, bottom right;
+  background-repeat: no-repeat;
+}
+
+.icon[class*='svelte-'] {
+  width: 40px !important;
+  height: 40px !important;
+}
+.title[class*='svelte-'] {
+  font-size: 20px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em;
+}
+.subtitle[class*='svelte-'] {
+  font-size: 13px !important;
+  color: var(--auth-text-secondary) !important;
+}
+.version[class*='svelte-'] {
+  font-family: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+.field[class*='svelte-'] label {
+  font-size: 12px !important;
+  color: var(--auth-text-primary) !important;
+}
+.input-wrapper[class*='svelte-'] input {
+  padding: 8px 10px !important;
+  font-size: 14px !important;
+}
+.input-wrapper[class*='svelte-'] input:focus {
+  box-shadow: none !important;
+  outline: 2px solid var(--auth-input-focus-border);
+  outline-offset: -1px;
+}
+
+/* Primary: the one yellow action, with a crisp edge like the app's. */
+.btn-primary[class*='svelte-'] {
+  padding: 9px 16px !important;
+  border: 1px solid var(--ket-cta-edge) !important;
+  font-weight: 600 !important;
+}
+.btn-primary[class*='svelte-']:focus-visible,
+.btn-oauth[class*='svelte-']:focus-visible,
+.theme-toggle-inline[class*='svelte-']:focus-visible {
+  outline: 2px solid var(--auth-input-focus-border);
+  outline-offset: 2px;
+}
+
+/* SSO buttons: outlined; hover takes the selection tint. */
+.btn-oauth[class*='svelte-'],
+.btn-passkey[class*='svelte-'] {
+  padding: 9px 16px !important;
+}
+.btn-oauth[class*='svelte-']:hover,
+.btn-passkey[class*='svelte-']:hover:not(:disabled) {
+  border-color: var(--auth-oauth-border) !important;
+  color: var(--auth-btn-text) !important;
+}
+
+.link[class*='svelte-'] {
+  color: var(--ket-link) !important;
+  text-underline-offset: 3px;
+}
+
+.divider[class*='svelte-'] span {
+  font-size: 11px !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase !important;
+}
+
+.error-banner[class*='svelte-'],
+.notice-banner[class*='svelte-'] {
+  border-left-width: 1px !important;
+  border: 1px solid var(--auth-error-border);
+}
+.notice-banner[class*='svelte-'] {
+  border-color: var(--auth-notice-border);
+}
+
+.strategy-selector[class*='svelte-'] {
+  border: 1px solid var(--auth-card-border);
+  border-radius: var(--auth-radius) !important;
+}
+.strategy-tab[class*='svelte-'][class*='active'] {
+  background: var(--auth-btn-bg) !important;
+  color: var(--auth-btn-text) !important;
+  box-shadow: none !important;
+}
+
+/* Theme changes are immediate. Override ada's color/background and
+   transition: all rules without stopping the sign-in loading spinner. */
+html,
+body,
+*,
+*::before,
+*::after {
+  transition: none !important;
+}
+
+/* The mark's ink follows the page theme, not only the OS. */
+:root[data-theme='dark'] .icon[class*='svelte-'] {
+  content: url('./mark-dark.svg');
+}
