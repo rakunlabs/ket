@@ -49,6 +49,30 @@ func (s *Store) Model(ctx context.Context, uuid string) (string, error) {
 	return obj, nil
 }
 
+// Asset returns a cached downloaded file (a STEP or STL model) by URL.
+func (s *Store) Asset(ctx context.Context, url string) ([]byte, error) {
+	var data []byte
+	err := s.db.QueryRowContext(ctx, `SELECT data FROM assets WHERE url = $1`, url).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("asset %s; %w", url, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get asset; %w", err)
+	}
+
+	return data, nil
+}
+
+func (s *Store) SaveAsset(ctx context.Context, url string, data []byte) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO assets (url, data) VALUES ($1, $2) ON CONFLICT (url) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`, url, data)
+	if err != nil {
+		return fmt.Errorf("save asset; %w", err)
+	}
+
+	return nil
+}
+
 func (s *Store) SaveModel(ctx context.Context, uuid, obj string) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO models (uuid, obj) VALUES ($1, $2) ON CONFLICT (uuid) DO UPDATE SET obj = EXCLUDED.obj, fetched_at = now()`, uuid, obj)

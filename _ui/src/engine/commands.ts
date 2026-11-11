@@ -4,7 +4,7 @@
 
 import { z } from 'zod'
 
-import { type Doc, type Feature, findFeature, inputsOf, normalizeDoc, sketchesOf } from './doc'
+import { type Doc, type Feature, findFeature, inputsOf, normalizeDoc, refsOf, sketchesOf } from './doc'
 import { namesIn } from './expr'
 import { define, applyOp } from './registry'
 import { checkDef, common, expr, featureName, featureRef, ident, placement, plane, profile, selector, vec2, vec3 } from './schema'
@@ -20,7 +20,7 @@ function clone(doc: Doc): Doc {
   return normalizeDoc(JSON.parse(JSON.stringify(doc)) as Doc)
 }
 
-function upsert(doc: Doc, f: Feature, replaceIt: boolean | undefined): { doc: Doc; summary: string } {
+export function upsert(doc: Doc, f: Feature, replaceIt: boolean | undefined): { doc: Doc; summary: string } {
   const next = clone(doc)
   for (const s of sketchesOf(f)) {
     if (!next.sketches.some((x) => x.name === s)) {
@@ -46,7 +46,7 @@ function upsert(doc: Doc, f: Feature, replaceIt: boolean | undefined): { doc: Do
 }
 
 /** Removes undefined fields so the stored op and document stay compact. */
-function compact<T extends object>(o: T): T {
+export function compact<T extends object>(o: T): T {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T
 }
 
@@ -278,14 +278,109 @@ define({
 
 // ── Operations ──────────────────────────────────────────────────────────
 
+const num1 = expr
+define({
+  name: 'gear',
+  group: 'cad',
+  kind: 'mutate',
+  description:
+    'Add an involute gear: spur, helical, herringbone, internal (ring), rack, worm or bevel. Size: module (tooth size; pitch diameter = module × teeth) and teeth; width is the face width along the axis. Place the first gear of a train with center, axis and rotation; every other gear uses mesh: { with: "<earlier gear>", angle } (angle in degrees around the partner, or toward [x,y,z]) and gets its center, axis, hand and tooth phase solved so the teeth interlock, or coaxial: { with, offset } to share a shaft (compound trains). Then the whole train turns from one parameter: make the first gear\'s rotation an expression (e.g. "crank") and change it. Worm: teeth = starts, length, diameter; its wheel meshes with it as kind "helical" and gets the lead angle as helix. Bevel: pair_teeth = teeth of its mate (90° shafts; teeth are tapered involutes, fine for prints and models). Rack: length, meshes with a spur gear and slides. Optional: bore, hub, shaft, lightening holes, profile_shift for few teeth, backlash. get_gears lists ratios and diameters.',
+  args: z.object({
+    ...common,
+    kind: z.enum(['spur', 'helical', 'herringbone', 'internal', 'rack', 'worm', 'bevel']),
+    teeth: num1.optional().describe('Teeth; for a worm the number of starts (1-6); not needed for a rack'),
+    module: num1.describe('Module in mm (0.5..3 for printed gears; ≥ 1 for FDM). Meshing gears share it; a worm pair uses the axial module'),
+    width: num1.optional().describe('Face width along the axis (rack: across it). Not for worms'),
+    length: num1.optional().describe('Worm or rack length'),
+    pressure_angle: num1.optional().describe('Degrees, default 20'),
+    helix: num1.optional().describe('Helical/herringbone helix angle, degrees (default 20; + right hand, − left). A mate gets the opposite hand by itself'),
+    hand: z.enum(['right', 'left']).optional().describe('Worm thread hand (default right)'),
+    profile_shift: z.union([num1, z.literal('auto')]).optional().describe('Profile shift coefficient x (-0.8..0.8); "auto" picks the smallest shift that avoids undercut (for pinions under 17 teeth)'),
+    backlash: num1.optional().describe('Play between teeth, mm (default 0.04·module + 0.03)'),
+    diameter: num1.optional().describe('Worm pitch diameter (default 8 × module)'),
+    pair_teeth: num1.optional().describe('Bevel: teeth of the mating bevel (sets the cone angle for 90° shafts)'),
+    cone_angle: num1.optional().describe('Bevel: pitch cone angle, degrees (instead of pair_teeth)'),
+    bore: num1.optional().describe('Shaft hole diameter'),
+    hub: z.object({ d: num1, length: num1 }).optional().describe('Boss on the +axis side (bevels: on the back)'),
+    shaft: z.object({ d: num1, length: num1 }).optional().describe('A solid shaft through the gear, centered on it'),
+    holes: z.object({ count: num1, d: num1, at: num1.optional().describe('Radius of the hole circle (default midway)') }).optional().describe('Lightening holes in the web'),
+    rim: num1.optional().describe('Internal gear: outside diameter of the ring; rack: thickness behind the roots'),
+    center: vec3.optional().describe('First gear only: center (mid-face; back face for bevels)'),
+    axis: z.enum(['X', 'Y', 'Z', '-X', '-Y', '-Z']).optional().describe('First gear only: axis direction (default Z)'),
+    rotation: num1.optional().describe('First gear only: rotation about its axis, degrees; drive the train with an expression'),
+    travel: num1.optional().describe('First gear only (a free rack): position along its length'),
+    mesh: z
+      .object({
+        with: featureRef.describe('An earlier gear'),
+        angle: num1.optional().describe('Where around the partner, degrees in its plane (0 = its reference direction)'),
+        toward: vec3.optional().describe('Or: a direction from the partner center toward this gear'),
+      })
+      .optional(),
+    coaxial: z
+      .object({ with: featureRef, offset: num1.optional().describe('Along the shared axis, mm'), phase: num1.optional().describe('Extra rotation, degrees') })
+      .optional()
+      .describe('Same shaft as an earlier gear: turns with it'),
+    replace,
+  }),
+  examples: [
+    { name: 'drive', kind: 'spur', teeth: 20, module: 1.5, width: 6, bore: 5, rotation: 'crank' },
+    { name: 'idler', kind: 'spur', teeth: 32, module: 1.5, width: 6, bore: 5, mesh: { with: 'drive', angle: 0 } },
+    { name: 'worm', kind: 'worm', teeth: 1, module: 1.5, length: 30, diameter: 14, axis: 'X', rotation: 'crank' },
+    { name: 'wheel', kind: 'helical', teeth: 30, module: 1.5, width: 8, mesh: { with: 'worm', toward: [0, 0, 1] } },
+  ],
+  apply(doc, a) {
+    const { replace: r, ...rest } = a
+    const ref = a.mesh?.with ?? a.coaxial?.with
+    if (ref) {
+      const p = doc.features.find((f) => f.name === ref)
+      if (!p) throw new Error(`no gear "${ref}"; gears are: ${doc.features.filter((f) => f.type === 'gear').map((f) => f.name).join(', ') || '(none yet; place the first gear with center and axis)'}`)
+      if (p.type !== 'gear') throw new Error(`"${ref}" is a ${p.type}, not a gear`)
+    }
+    return upsert(doc, compact({ ...rest, type: 'gear' }) as unknown as Feature, r)
+  },
+})
+
+// ── Operations (boolean, fillet, ...) ───────────────────────────────────
+
+define({
+  name: 'text',
+  group: 'cad',
+  kind: 'mutate',
+  description:
+    'Lettering as real geometry: the outline of a text extruded by depth from a plane (raised labels, engraved serials, embossed logos that must print or machine). size is the cap height in mm; at is where the middle of the text sits in plane coordinates (u, v as in sketch); anchor picks which end of the text is at at. Union it onto a body to raise it, or give a negative depth / cut it to engrave. For printed-on labels that need no geometry use add_decal.',
+  args: z.object({
+    ...common,
+    text: z.string().min(1).max(200),
+    size: expr.describe('Cap height in mm (≥ 1.5 for FDM, ≥ 0.6 for resin)'),
+    depth: expr.describe('Extrusion along the plane normal; negative goes the other way'),
+    plane,
+    offset: expr.optional().describe('Distance of the plane from the origin along its normal'),
+    at: vec2.optional().describe('[u, v] of the text anchor in plane coordinates (default [0, 0])'),
+    anchor: z.enum(['center', 'left', 'right']).optional().describe('Which part of the text sits at at (default center); vertically the cap height is centered'),
+    angle: expr.optional().describe('Rotation in the plane, degrees counter-clockwise'),
+    font: z.enum(['regular', 'bold']).optional().describe('Monospace font weight (default regular)'),
+    ...placement,
+    replace,
+  }),
+  examples: [
+    { name: 'label', text: 'KET-01', size: 4, depth: 0.6, plane: 'XY', offset: 'case_h', at: [0, -10] },
+    { name: 'serial_cut', text: 'SN 0042', size: 2.5, depth: -0.4, plane: 'XZ', offset: '-case_d/2', font: 'bold' },
+  ],
+  apply(doc, a) {
+    const { replace: r, ...rest } = a
+    return upsert(doc, compact({ ...rest, type: 'text' }) as unknown as Feature, r)
+  },
+})
+
 featureCommand(
   'boolean',
   'boolean',
-  'Combine features: union merges the tools into the target, cut subtracts them, intersect keeps the common volume. Inputs are consumed: only the result is a visible body. To cut a hole, first add the tool body (box, cylinder, extrude), then cut it from the target.',
+  'Combine features: union merges the tools into the target, cut subtracts them, intersect keeps the common volume. Inputs are consumed: only the result is a visible body. To cut a hole, first add the tool body (box, cylinder, extrude), then cut it from the target. A union of parts that do not touch (keys, wheels) is one body of separate solids: pass separate: true to say that is intended.',
   {
     op: z.enum(['union', 'cut', 'intersect']),
     target: featureRef,
     tools: z.array(featureRef).min(1),
+    separate: z.boolean().optional().describe('union: the parts are meant to stay separate solids; skips the "does not touch" warnings'),
   },
   [{ name: 'case_open', op: 'cut', target: 'case_shell', tools: ['usb_hole', 'led_hole'] }],
 )
@@ -322,19 +417,37 @@ featureCommand(
   [{ name: 'lid_placed', target: 'lid', translate: [0, 0, 30], rotate: [180, 0, 0] }],
 )
 
+featureCommand(
+  'import',
+  'import',
+  'Bring in a real 3D model from a STEP or STL file on the web (vendor or library model: a switch, a keycap, a dev board, a battery), as a solid body you can place, check (inside, no_overlap, min_distance) and cut with. url must be https on an open model library: raw.githubusercontent.com (e.g. kiswitch/kiswitch for Cherry MX switches and Kailh hot-swap sockets, anhthang/dsa-keycap for keycaps, adafruit/Adafruit_CAD_Parts), gitlab.com (KiCad kicad-packages3D) or a vendor (files.seeedstudio.com). For a zip add #<file> to pick the model inside. The file is downloaded once by the server and cached. The model keeps its own origin and orientation: measure it, then rotate (applied first) and translate it into place; scale converts units (0.0254 for inches... rarely needed).',
+  {
+    url: z.string().url().describe('https URL of a .step/.stp/.stl file (or a zip with #file inside)'),
+    scale: expr.optional().describe('Uniform scale about the file origin (default 1)'),
+    ...placement,
+  },
+  [
+    { name: 'mx_switch', url: 'https://raw.githubusercontent.com/kiswitch/kiswitch/main/library/3dmodels/3d-library.3dshapes/SW_Cherry_MX_PCB.stp', translate: [0, 0, 5] },
+    { name: 'xiao', url: 'https://files.seeedstudio.com/wiki/XIAO-BLE/seeed-studio-xiao-nrf52840-3d-model.zip#XIAO-nRF52840 v15.step', rotate: [90, 0, 0] },
+  ],
+)
+
 define({
   name: 'pattern',
   group: 'cad',
   kind: 'mutate',
   description:
-    'Repeat a feature: linear (count copies, each moved by step [x,y,z] from the previous) or grid (count [nx, ny] copies with step [dx, dy] on XY). The copies are fused into one body; use it as a tool to cut many holes at once.',
+    'Repeat a feature: linear (count copies, each moved by step [x,y,z] from the previous), grid (count [nx, ny] copies with step [dx, dy] on XY) or polar (count copies rotated about an axis through center: spokes, bolt circles, gear teeth; angle is the total sweep, default 360 = evenly spaced all round). The copies are fused into one body; use it as a tool to cut many holes at once.',
   args: z
     .object({
       ...common,
-      kind: z.enum(['linear', 'grid']),
+      kind: z.enum(['linear', 'grid', 'polar']),
       target: featureRef,
-      count: z.union([expr, vec2]).describe('linear: number of copies; grid: [nx, ny]'),
-      step: z.union([vec3, vec2]).describe('linear: [dx, dy, dz] between copies; grid: [dx, dy]'),
+      count: z.union([expr, vec2]).describe('linear/polar: number of copies; grid: [nx, ny]'),
+      step: z.union([vec3, vec2]).optional().describe('linear: [dx, dy, dz] between copies; grid: [dx, dy]'),
+      axis: z.enum(['X', 'Y', 'Z']).optional().describe('polar: rotation axis direction (default Z)'),
+      center: vec3.optional().describe('polar: a point on the rotation axis (default [0, 0, 0])'),
+      angle: expr.optional().describe('polar: total angle in degrees (default 360: copies spaced 360/count; less: first and last copy at the ends)'),
       replace,
     })
     .superRefine((a, ctx) => {
@@ -344,10 +457,17 @@ define({
       if (a.kind === 'grid' && (!Array.isArray(a.count) || !Array.isArray(a.step) || a.step.length !== 2)) {
         ctx.addIssue({ code: 'custom', message: 'grid needs count as [nx, ny] and step as [dx, dy]' })
       }
+      if (a.kind === 'polar' && (Array.isArray(a.count) || a.step !== undefined)) {
+        ctx.addIssue({ code: 'custom', message: 'polar needs count as a number, an axis and a center; it takes no step' })
+      }
+      if (a.kind !== 'polar' && (a.axis !== undefined || a.center !== undefined || a.angle !== undefined)) {
+        ctx.addIssue({ code: 'custom', message: 'axis, center and angle are for kind "polar" only' })
+      }
     }),
   examples: [
     { name: 'vents', kind: 'linear', target: 'vent_slot', count: 6, step: [4, 0, 0] },
     { name: 'standoffs', kind: 'grid', target: 'standoff', count: [2, 2], step: ['hole_dx', 'hole_dy'] },
+    { name: 'spokes', kind: 'polar', target: 'spoke', count: 8, axis: 'Y', center: [0, 0, 'wheel_r'] },
   ],
   apply(doc, a) {
     const { replace: r, ...rest } = a as Record<string, unknown> & { replace?: boolean }
@@ -356,11 +476,35 @@ define({
 })
 
 define({
+  name: 'mirror',
+  group: 'cad',
+  kind: 'mutate',
+  description:
+    'Mirror a feature across a plane: XY (z = offset), XZ (y = offset) or YZ (x = offset). By default keep: true fuses the original and its mirror image into one body (model one side of a symmetric part, then mirror it: left/right wheels, brackets); keep: false leaves only the mirrored copy. The original is consumed.',
+  args: z.object({
+    ...common,
+    target: featureRef,
+    plane: z.enum(['XY', 'XZ', 'YZ']).describe('Mirror plane: XY flips Z, XZ flips Y, YZ flips X'),
+    offset: expr.optional().describe('Position of the plane along its normal (default 0)'),
+    keep: z.boolean().optional().describe('Fuse the original with its mirror image (default true)'),
+    replace,
+  }),
+  examples: [
+    { name: 'wheels', target: 'wheels_left', plane: 'XZ' },
+    { name: 'bracket_r', target: 'bracket_l', plane: 'YZ', keep: false },
+  ],
+  apply(doc, a) {
+    const { replace: r, ...rest } = a
+    return upsert(doc, compact({ ...rest, type: 'mirror' }) as unknown as Feature, r)
+  },
+})
+
+define({
   name: 'update_feature',
   group: 'cad',
   kind: 'mutate',
   description:
-    'Change some fields of an existing feature without restating it, e.g. {"name":"case_round","set":{"r":2}}. Use null to remove an optional field. The feature type cannot change; use the feature command with replace: true for that.',
+    'Change some fields of an existing feature without restating it, e.g. {"name":"case_round","set":{"r":2}}. Use null to remove an optional field. The feature type cannot change; use the feature command with replace: true for that. Adding a tool to a boolean that was created after it (a new cutter) moves that tool before the boolean.',
   args: z.object({
     name: featureRef,
     set: z.record(z.string(), z.unknown()).describe('Fields to change, as in the feature command'),
@@ -368,7 +512,7 @@ define({
   examples: [{ name: 'case_body', set: { size: ['case_w', 'case_d', 30] } }],
   apply(doc, a) {
     const next = clone(doc)
-    const i = next.features.findIndex((f) => f.name === a.name)
+    let i = next.features.findIndex((f) => f.name === a.name)
     if (i < 0) throw new Error(`no feature "${a.name}"; features are: ${next.features.map((f) => f.name).join(', ') || '(none)'}`)
     if ('type' in a.set || 'name' in a.set) throw new Error('set cannot change type or name; use rename_feature or the feature command with replace: true')
     const f = { ...next.features[i] } as Record<string, unknown>
@@ -377,6 +521,39 @@ define({
       else f[k] = v
     }
     next.features[i] = f as unknown as Feature
+    // Inputs defined later (a cutting tool added after the cut): move them,
+    // with the features they are built from, to just before this feature,
+    // when nothing else uses them and they need nothing defined after it.
+    for (const input of inputsOf(next.features[i])) {
+      const j = next.features.findIndex((x) => x.name === input)
+      if (j <= i) continue
+      // The tool and its inputs, transitively.
+      const tree = new Set<string>()
+      const walk = (n: string) => {
+        if (tree.has(n)) return
+        tree.add(n)
+        const f2 = next.features.find((x) => x.name === n)
+        if (f2) for (const d of inputsOf(f2)) walk(d)
+      }
+      walk(input)
+      const members = next.features.filter((x) => tree.has(x.name))
+      const usedElsewhere = next.features.some((x) => x.name !== a.name && !tree.has(x.name) && inputsOf(x).some((d) => tree.has(d)))
+      if (usedElsewhere || members.some((x) => sketchesOf(x).length || refsOf(x).length)) continue
+      next.features = next.features.filter((x) => !tree.has(x.name))
+      const at = next.features.findIndex((x) => x.name === a.name)
+      next.features.splice(at, 0, ...members)
+      i = at + members.length
+    }
+    const before = new Set(next.features.slice(0, i).map((x) => x.name))
+    for (const input of inputsOf(next.features[i])) {
+      if (before.has(input)) continue
+      const later = next.features.some((x) => x.name === input)
+      throw new Error(
+        later
+          ? `"${input}" is defined after "${a.name}"; a feature can only use features before it. Create a new feature after "${input}" that combines them instead`
+          : `"${input}" does not exist; features are: ${[...before].join(', ') || '(none before this one)'}`,
+      )
+    }
     return { doc: next, summary: `updated ${a.name}: ${Object.keys(a.set).join(', ')}` }
   },
 })
@@ -420,8 +597,13 @@ define({
   name: 'rename_feature',
   group: 'cad',
   kind: 'mutate',
-  description: 'Rename a feature and every reference to it.',
-  args: z.object({ name: featureRef, to: featureName }),
+  description:
+    'Rename a feature and every reference to it. To put a new step after a finished body (one more cut on case_shell), rename it to case_shell_a and add the step under the old name: checks and decals stay on the final body with keep_checks: true.',
+  args: z.object({
+    name: featureRef,
+    to: featureName,
+    keep_checks: z.boolean().optional().describe('Leave checks and decals on the old name (the body that will replace it), default false'),
+  }),
   apply(doc, a) {
     const next = clone(doc)
     if (!findFeature(next, a.name)) throw new Error(`no feature "${a.name}"`)
@@ -433,11 +615,13 @@ define({
       if (Array.isArray(g.tools)) g.tools = (g.tools as string[]).map(ren)
       return g as unknown as Feature
     })
+    if (a.keep_checks) return { doc: next, summary: `renamed ${a.name} → ${a.to} (checks and decals stay on ${a.name})` }
     next.checks = next.checks.map((c) => {
       const g = { ...c } as Record<string, unknown>
       for (const k of ['a', 'b', 'inner', 'outer', 'target']) if (typeof g[k] === 'string') g[k] = ren(g[k] as string)
       return g as unknown as typeof c
     })
+    if (next.decals) next.decals = next.decals.map((d) => ({ ...d, target: ren(d.target) }))
     return { doc: next, summary: `renamed ${a.name} → ${a.to}` }
   },
 })
@@ -474,9 +658,11 @@ define({
     const refs = (c: Record<string, unknown>) => ['a', 'b', 'inner', 'outer', 'target'].some((k) => drop.has(c[k] as string))
     const droppedChecks = next.checks.filter((c) => refs(c as never)).map((c) => c.name)
     next.checks = next.checks.filter((c) => !refs(c as never))
+    const droppedDecals = (next.decals ?? []).filter((d) => drop.has(d.target)).map((d) => d.name)
+    if (next.decals) next.decals = next.decals.filter((d) => !drop.has(d.target))
     return {
       doc: next,
-      summary: `deleted ${[...drop].join(', ')}${droppedChecks.length ? `; removed checks ${droppedChecks.join(', ')}` : ''}`,
+      summary: `deleted ${[...drop].join(', ')}${droppedChecks.length ? `; removed checks ${droppedChecks.join(', ')}` : ''}${droppedDecals.length ? `; removed decals ${droppedDecals.join(', ')}` : ''}`,
     }
   },
 })

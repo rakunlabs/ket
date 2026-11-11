@@ -31,14 +31,10 @@ owns any projects made before accounts). Then **Settings**:
   verified email, or created on first sign-in); roles and groups can follow
   the provider's claims (`groups`, `realm_access.roles`, ...).
 - **Access & server**: open sign-up, role of new accounts, public URL.
-- **PCB tools**: Java and Freerouting jar for autoroute.
 
 `ket.yaml` (optional, see `ket.example.yaml`) holds infrastructure only:
-database DSN, port, base path. An `ai:` or `pcb:` section from an older
-config seeds the settings once, on first start.
-
-Autorouting needs Java 17+ on the server; the matching Freerouting release
-is downloaded on first use (2.1 for Java 17-24, 2.5 for Java 25+).
+database DSN, port, base path. An `ai:` section from an older config seeds
+the settings once, on first start.
 
 Development: `make run` (backend on :8080) and `make run-ui` (Vite with
 hot reload, proxies the API).
@@ -51,6 +47,12 @@ claude mcp add --transport http ket http://localhost:8080/mcp
 ```
 
 ## How it works
+
+**Project files and production handoff:** save/reopen editable `.ket` projects
+from **Project file** in the workspace. **Manufacture** produces a checked
+prototype package and official JLCPCB/PCBWay quote links; it never uploads,
+orders or pays automatically. See [project files and manufacturing](docs/project-files.md)
+for the versioned format, external-asset limitations and readiness checks.
 
 ```
 MCP client ─┐                         ┌─ browser tab (Svelte UI)
@@ -91,9 +93,12 @@ chat panel ─┘  (ada, hub, agent)      └─ kernel worker (OpenCascade WASM
   constraints by number. Extrude or revolve them; inner loops are holes.
 - **PCB**: real parts from the LCSC / JLCPCB library (fetched by the server,
   cached in PostgreSQL, footprint and pin names parsed in the browser),
-  nets by pin name (`U1.VIN`), net classes, Freerouting autoroute (Java on
-  the server), JLCPCB DRC, ratsnest, Gerber X2 + Excellon + BOM + CPL zip.
-  The parsing and Specctra conventions follow Flamingo (MIT).
+  nets by pin name (`U1.VIN`), net classes, generic footprints by name
+  (`0603`, `soic8`, `pinrow4`; tscircuit footprinter, ISC), auto placement,
+  Ket's own octilinear autorouter in the browser (grid A*, negotiated
+  congestion, 45° clean-up; no Java, nothing on the server),
+  JLCPCB DRC, ratsnest, Gerber X2 + Excellon + BOM + CPL zip. The parsing
+  conventions follow Flamingo (MIT).
 - **Copper pours** (Clipper2): clearance to other nets, thermal spokes to
   same-net pads, floating islands dropped; the ratsnest and DRC count pour
   connectivity, Gerber writes them with clear polarity for holes.
@@ -142,11 +147,11 @@ internal/catalog/   generated command catalog (catalog.json)
 internal/mcpserver/ tools from the catalog; MCP streamable HTTP
 internal/agent/     built-in chat agent (OpenAI-compatible)
 internal/auth/      ada Auth Kit (copied reference: users, roles, OAuth wiring)
-internal/parts/     LCSC/EasyEDA parts proxy + cache, Freerouting runner
+internal/parts/     LCSC/EasyEDA parts proxy + cache
 internal/server/    ada routes, websocket, SSE chat, embedded UI
 _ui/src/engine/     document, expressions, commands, kernel (replicad),
                     sketches (planegcs)
-_ui/src/engine/pcb/ footprints, board, DRC, ratsnest, DSN/SES, Gerber
+_ui/src/engine/pcb/ footprints, board, DRC, ratsnest, autoroute, Gerber
 _ui/src/lib/        session (op log + sync), kernel worker client, 3D scene
 _ui/src/components/ sidebar, viewport, chat
 ```
@@ -155,7 +160,7 @@ _ui/src/components/ sidebar, viewport, chat
 
 1. ~~Skeleton, op log, MCP, chat agent, CAD primitives and operations~~
 2. ~~Constrained 2D sketches (planegcs), revolve~~
-3. ~~PCB: LCSC parts, nets by pin name, Freerouting, DRC, Gerber/BOM/CPL~~
+3. ~~PCB: LCSC parts, nets by pin name, autoroute, DRC, Gerber/BOM/CPL~~
 4. ~~Board ↔ enclosure: outline from a sketch, part blocks as bodies, fit checks~~
 5. ~~Copper pours, real 3D part models, schematic view~~
 6. ~~Proposal branches with review/accept, ada Auth Kit (users, roles, MCP OAuth)~~

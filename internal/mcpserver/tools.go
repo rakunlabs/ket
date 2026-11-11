@@ -111,6 +111,7 @@ const (
 	toolCreateProject = "create_project"
 	toolOpenProject   = "open_project"
 	toolCloseProject  = "close_project"
+	toolReload        = "reload_ui"
 	toolUndo          = "undo"
 	toolRedo          = "redo"
 	toolPropose       = "start_proposal"
@@ -144,6 +145,12 @@ func (t *Tools) List(scope Scope) []Tool {
 				Name:        toolCloseProject,
 				Description: "Close the project's tab in the user's Ket windows when you are done with it. The design is saved; nothing is lost.",
 				Schema:      json.RawMessage(`{"type":"object","properties":{"project":{"type":"string","description":"Project id or name."}},"required":["project"]}`),
+				ReadOnly:    true,
+			},
+			Tool{
+				Name:        toolReload,
+				Description: "Reload the user's Ket windows so they load the UI this server serves (after the UI was rebuilt, or when a command answers \"unknown command ... older build\"). Waits until the open projects are connected again; designs are saved, nothing is lost. A UI built into the binary only changes when the server restarts; with server.ui_dir set, a rebuild is picked up at once.",
+				Schema:      json.RawMessage(`{"type":"object","properties":{}}`),
 				ReadOnly:    true,
 			},
 		)
@@ -280,6 +287,8 @@ func (t *Tools) call(ctx context.Context, name string, args json.RawMessage, cal
 		return jsonResult(out)
 	case toolOpenProject, toolCloseProject:
 		return t.openClose(ctx, name, args)
+	case toolReload:
+		return t.reload(ctx)
 	}
 
 	if name == toolFinish {
@@ -471,6 +480,60 @@ func (t *Tools) openClose(ctx context.Context, name string, args json.RawMessage
 	}
 
 	return jsonResult(map[string]any{"ok": true, "id": p.ID, "project": p.Name, "note": note})
+}
+
+// reload reloads the user's windows and waits until the projects that were
+// open have a connected tab again (or a timeout).
+func (t *Tools) reload(ctx context.Context) (Result, error) {
+	list := t.store.ListProjects
+	if t.access != nil {
+		list = t.access.Visible
+	}
+	projects, err := list(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	var open []*store.Project
+	for _, p := range projects {
+		if t.hub.Sessions(p.ID) > 0 {
+			open = append(open, p)
+		}
+	}
+
+	n, err := t.hub.ReloadWindows(ctx, t.subject(ctx))
+	if err != nil {
+		return Result{}, err
+	}
+
+	// Tabs drop and come back; wait for the drop first so we do not see the old ones.
+	deadline := time.Now().Add(hub.OpenTimeout)
+	time.Sleep(800 * time.Millisecond)
+	var missing []string
+	for {
+		missing = missing[:0]
+		for _, p := range open {
+			if t.hub.Sessions(p.ID) == 0 {
+				missing = append(missing, p.Name)
+			}
+		}
+		if len(missing) == 0 || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	out := map[string]any{"ok": len(missing) == 0, "windows": n, "build": t.hub.CurrentBuild()}
+	if len(missing) > 0 {
+		out["note"] = "Reloaded, but these projects did not reconnect yet: " + strings.Join(missing, ", ") + "; try open_project"
+	} else {
+		out["note"] = "Reloaded; the windows run the current UI and commands can run now."
+	}
+
+	return jsonResult(out)
 }
 
 func (t *Tools) listProjects(ctx context.Context) (Result, error) {

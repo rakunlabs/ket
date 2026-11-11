@@ -57,6 +57,41 @@ function rotate(p: P, deg: number): P {
 
 const r4 = (v: number) => Math.round(v * 1e4) / 1e4
 
+/** EasyEDA escapes some characters in pad numbers and pin names ("1&#96;"). */
+const unescape = (s: string) =>
+  s
+    .replace(/&#(\d+);/g, (_, c) => String.fromCharCode(Number(c)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCharCode(parseInt(c, 16)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+
+/** End points of an SVG path's M/L/A commands (arc radii and flags are not points). */
+function pathPoints(d: string): [number, number][] {
+  const out: [number, number][] = []
+  const toks = d.match(/[MLAZHVmlazhv]|-?\d*\.?\d+(?:e-?\d+)?/g) ?? []
+  let cmd = 'M'
+  let i = 0
+  while (i < toks.length) {
+    if (/^[A-Za-z]$/.test(toks[i])) {
+      cmd = toks[i++].toUpperCase()
+      continue
+    }
+    const take = cmd === 'A' ? 7 : cmd === 'H' || cmd === 'V' ? 1 : cmd === 'Z' ? 0 : 2
+    if (!take) {
+      i++
+      continue
+    }
+    const v = toks.slice(i, i + take).map(Number)
+    i += take
+    if (v.length < take) break
+    if (cmd === 'A') out.push([v[5], v[6]])
+    else if (cmd === 'M' || cmd === 'L') out.push([v[0], v[1]])
+  }
+  return out
+}
+
 export function parsePart(raw: unknown): { footprint: Footprint; info: PartInfo } {
   const root = ((raw as { result?: Raw })?.result ?? raw) as Raw
   const ds = root.packageDetail?.dataStr
@@ -87,7 +122,7 @@ export function parsePart(raw: unknown): { footprint: Footprint; info: PartInfo 
             rawShape === 'ELLIPSE' ? (Math.abs(w - h) < 1e-6 ? 'circle' : 'oval') : rawShape === 'OVAL' ? 'oval' : rawShape === 'POLYGON' ? 'polygon' : 'rect'
           const at = conv(n(f[2]), n(f[3]))
           const pad: Pad = {
-            number: (f[8] ?? '').trim(),
+            number: unescape((f[8] ?? '').trim()),
             shape,
             at,
             rotation: norm(-n(f[11])),
@@ -132,8 +167,7 @@ export function parsePart(raw: unknown): { footprint: Footprint; info: PartInfo 
         }
         case 'SOLIDREGION': {
           if (!BODY_LAYERS.has(Math.round(n(f[1])))) break
-          const nums = (f[3] ?? '').match(/-?\d*\.?\d+/g)?.map(Number) ?? []
-          for (let i = 0; i + 1 < nums.length; i += 2) body.push(conv(nums[i], nums[i + 1]))
+          for (const [x, y] of pathPoints(f[3] ?? '')) body.push(conv(x, y))
           break
         }
         case 'HOLE': {
@@ -175,8 +209,8 @@ export function parsePart(raw: unknown): { footprint: Footprint; info: PartInfo 
   for (const line of root.dataStr?.shape ?? []) {
     if (typeof line !== 'string' || !line.startsWith('P~')) continue
     const segs = line.split('^^')
-    const num = (segs[4]?.split('~')[4] ?? segs[0].split('~')[3] ?? '').trim()
-    const name = (segs[3]?.split('~')[4] ?? '').trim()
+    const num = unescape((segs[4]?.split('~')[4] ?? segs[0].split('~')[3] ?? '').trim())
+    const name = unescape((segs[3]?.split('~')[4] ?? '').trim())
     if (num && name) pins[num] = name
   }
 
@@ -284,17 +318,30 @@ function parseSymbol(ds: { head?: { x?: number | string; y?: number | string }; 
   if (!ds?.shape?.length) return undefined
   const ox = n(String(ds.head?.x ?? 0))
   const oy = n(String(ds.head?.y ?? 0))
-  const sym: SymbolDef = { rects: [], circles: [], pins: [] }
+  const sym: SymbolDef = { rects: [], circles: [], pins: [], lines: [] }
   for (const line of ds.shape) {
     if (typeof line !== 'string') continue
     const f = line.split('~')
     if (f[0] === 'R') sym.rects.push([n(f[1]) - ox, n(f[2]) - oy, n(f[5]), n(f[6])])
     else if (f[0] === 'E') sym.circles.push([n(f[1]) - ox, n(f[2]) - oy, n(f[3])])
+    else if (f[0] === 'PL' || f[0] === 'PG') {
+      // Polyline / polygon body drawing: switch contacts, diode triangles, arrows.
+      const v = (f[1] ?? '').trim().split(/[\s,]+/).map(Number)
+      const pts: number[] = []
+      for (let i = 0; i + 1 < v.length; i += 2) if (Number.isFinite(v[i]) && Number.isFinite(v[i + 1])) pts.push(v[i] - ox, v[i + 1] - oy)
+      if (f[0] === 'PG' && pts.length >= 4) pts.push(pts[0], pts[1])
+      if (pts.length >= 4) sym.lines!.push(pts)
+    } else if (f[0] === 'PT') {
+      // Path (M/L/A): straight pieces are enough for the outline.
+      const pts: number[] = []
+      for (const [x, y] of pathPoints(f[1] ?? '')) pts.push(x - ox, y - oy)
+      if (pts.length >= 4) sym.lines!.push(pts)
+    }
     else if (f[0] === 'P') {
       const segs = line.split('^^')
       const head = segs[0].split('~')
-      const number = (segs[4]?.split('~')[4] ?? head[3] ?? '').trim()
-      const name = (segs[3]?.split('~')[4] ?? '').trim()
+      const number = unescape((segs[4]?.split('~')[4] ?? head[3] ?? '').trim())
+      const name = unescape((segs[3]?.split('~')[4] ?? '').trim())
       // Pin line path "M x y h ±L" or "v ±L": its length and direction.
       const path = segs[2]?.split('~')[0] ?? ''
       const m = /M\s*([-\d.]+)[ ,]+([-\d.]+)\s*([hv])\s*([-\d.]+)/i.exec(path)
@@ -310,8 +357,9 @@ function parseSymbol(ds: { head?: { x?: number | string; y?: number | string }; 
     }
   }
   if (!sym.pins.length) return undefined
+  if (!sym.lines!.length) delete sym.lines
   // Packages with no body drawing get a box around the pins' inner ends.
-  if (!sym.rects.length && !sym.circles.length) {
+  if (!sym.rects.length && !sym.circles.length && !sym.lines) {
     const xs = sym.pins.map((p) => p.x)
     const ys = sym.pins.map((p) => p.y)
     sym.rects.push([Math.min(...xs) + 10, Math.min(...ys) - 5, Math.max(Math.max(...xs) - Math.min(...xs) - 20, 10), Math.max(...ys) - Math.min(...ys) + 10])

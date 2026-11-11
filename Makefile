@@ -25,8 +25,8 @@ build: build-ui ## Build the single binary into bin/ket
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o bin/$(PROJECT) $(MAIN_PKG)
 
 .PHONY: run
-run: ## Run the backend (reads ket.yaml if present)
-	go run -ldflags="$(LDFLAGS)" $(MAIN_PKG)
+run: ## Run the backend (reads ket.yaml if present); serves the UI from internal/server/dist, so `make build-ui` needs no restart
+	KET_SERVER_UI_DIR=$${KET_SERVER_UI_DIR:-internal/server/dist} go run -ldflags="$(LDFLAGS)" $(MAIN_PKG)
 
 .PHONY: run-ui
 run-ui: ## Run the Vite dev server (proxies /api, /ws and /mcp to :8080)

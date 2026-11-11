@@ -76,6 +76,12 @@ export function drawSchematic(ctx: CanvasRenderingContext2D, w: number, h: numbe
       ctx.strokeStyle = hl ? C.hl : C.body
       ctx.strokeRect(X(s.x + rx), Y(s.y + ry), rw * k, rh * k)
     }
+    ctx.strokeStyle = hl ? C.hl : C.body
+    for (const l of s.def.lines ?? []) {
+      ctx.beginPath()
+      for (let i = 0; i + 1 < l.length; i += 2) (i ? ctx.lineTo(X(s.x + l[i]), Y(s.y + l[i + 1])) : ctx.moveTo(X(s.x + l[i]), Y(s.y + l[i + 1])))
+      ctx.stroke()
+    }
     for (const [cx, cy, r] of s.def.circles) {
       ctx.beginPath()
       ctx.arc(X(s.x + cx), Y(s.y + cy), r * k, 0, Math.PI * 2)
@@ -108,6 +114,22 @@ export function drawSchematic(ctx: CanvasRenderingContext2D, w: number, h: numbe
         ctx.fillStyle = C.pin
         ctx.font = font(3.5)
         ctx.fillText(p.number, X((ix + ex) / 2), Y(ey - 2.5))
+      } else {
+        // Vertical pin: number beside the pin line, name inside the body.
+        ctx.fillStyle = C.pin
+        ctx.font = font(3.5)
+        ctx.textAlign = 'left'
+        ctx.fillText(p.number, X(ex + 1.5), Y((iy + ey) / 2))
+        if (p.name !== p.number) {
+          ctx.save()
+          ctx.translate(X(ix), Y(iy - Math.sin(a) * 2))
+          ctx.rotate(-Math.PI / 2)
+          ctx.fillStyle = C.pinText
+          ctx.font = font(4.5)
+          ctx.textAlign = Math.sin(a) > 0 ? 'left' : 'right'
+          ctx.fillText(p.name, 0, 0)
+          ctx.restore()
+        }
       }
 
       // Net label at the pin end.
@@ -135,21 +157,31 @@ export function drawSchematic(ctx: CanvasRenderingContext2D, w: number, h: numbe
           ctx.textAlign = 'center'
           ctx.fillText(net, X(x0 + tw / 2), Y(ly))
         } else {
+          // Vertical pin: the label runs along the pin direction, rotated.
+          ctx.save()
+          ctx.translate(X(ex), Y(ey))
+          ctx.rotate(dy < 0 ? -Math.PI / 2 : Math.PI / 2)
+          ctx.beginPath()
+          ctx.moveTo(0, 0)
+          ctx.lineTo(2 * k, 0)
+          ctx.stroke()
+          ctx.strokeRect(2 * k, -3.5 * k, tw * k, 7 * k)
           ctx.textAlign = 'center'
-          ctx.textBaseline = dy > 0 ? 'top' : 'bottom'
-          ctx.fillText(net, X(lx), Y(ly + dy * 2))
           ctx.textBaseline = 'middle'
+          ctx.fillText(net, (2 + tw / 2) * k, 0)
+          ctx.restore()
         }
       }
     }
 
     // Ref and value above the body.
-    const top = Math.min(...s.def.rects.map((r) => r[1]), ...s.def.circles.map((c) => c[1] - c[2]), ...s.def.pins.map((p) => p.y))
+    const lineYs = (s.def.lines ?? []).flatMap((l) => l.filter((_, i) => i % 2 === 1))
+    const top = Math.min(...s.def.rects.map((r) => r[1]), ...s.def.circles.map((c) => c[1] - c[2]), ...lineYs, ...s.def.pins.map((p) => p.y))
     ctx.fillStyle = hl ? C.hl : C.text
     ctx.textAlign = 'left'
     ctx.textBaseline = 'bottom'
     ctx.font = font(6, 700)
-    const left = Math.min(...s.def.rects.map((r) => r[0]), 0)
+    const left = Math.min(...s.def.rects.map((r) => r[0]), ...(s.def.lines ?? []).flatMap((l) => l.filter((_, i) => i % 2 === 0)), 0)
     ctx.fillText(s.ref, X(s.x + left), Y(s.y + top - 2))
     const refW = ctx.measureText(s.ref + ' ').width
     ctx.font = font(5)

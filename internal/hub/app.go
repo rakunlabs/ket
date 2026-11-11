@@ -11,9 +11,10 @@ package hub
 //
 // server → browser:
 //
-//	{"t":"hello","client":"a1"}
+//	{"t":"hello","client":"a1","build":"<ui build id>"}
 //	{"t":"open","project":"<id>","name":"...","activate":true}
 //	{"t":"close","project":"<id>"}
+//	{"t":"reload"}                      reload the window (new UI build)
 
 import (
 	"context"
@@ -56,7 +57,7 @@ func (h *Hub) Connect(ctx context.Context, conn Conn, user string) (*Client, err
 	h.clients[user] = append(h.clients[user], c)
 	h.mu.Unlock()
 
-	if err := c.send(ctx, map[string]any{"t": "hello", "client": c.ID}); err != nil {
+	if err := c.send(ctx, map[string]any{"t": "hello", "client": c.ID, "build": h.CurrentBuild()}); err != nil {
 		h.Disconnect(c)
 		return nil, err
 	}
@@ -177,6 +178,27 @@ func (h *Hub) OpenProject(ctx context.Context, user string, p *store.Project, ac
 			}
 		}
 	}
+}
+
+// ReloadWindows reloads every Ket window of the user (all tabs), e.g. after
+// the UI was rebuilt. Open projects come back by themselves; nothing is lost.
+func (h *Hub) ReloadWindows(ctx context.Context, user string) (int, error) {
+	h.mu.Lock()
+	targets := append([]*Client(nil), h.clients[user]...)
+	h.mu.Unlock()
+
+	if len(targets) == 0 {
+		return 0, ErrNoApp
+	}
+
+	var errs []error
+	for _, c := range targets {
+		if err := c.send(ctx, map[string]any{"t": "reload"}); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return len(targets) - len(errs), errors.Join(errs...)
 }
 
 // CloseProject closes the project's tab in every window of the user.

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AlertTriangle, Box, CheckCircle2, CircleX, EyeOff, History, Layers, ListChecks, PenTool, SlidersHorizontal } from '@lucide/svelte'
+  import { AlertTriangle, Box, CheckCircle2, CircleX, EyeOff, History, Layers, ListChecks, Palette, PenTool, SlidersHorizontal } from '@lucide/svelte'
 
   import { inputsOf } from '../engine/doc'
   import type { CheckResult } from '../engine/kernel'
@@ -186,6 +186,40 @@
           </li>
         {/each}
       </ul>
+
+      <div class="panel-title flex items-center gap-1.5"><Palette size={12} /> Materials <span class="ml-auto text-[10px] font-normal normal-case text-ink-3">display only</span></div>
+      {#if (session.doc.materials?.length ?? 0) === 0}
+        <p class="px-3 pb-2 text-xs text-ink-2">None yet. Ask for a look, e.g. <em>“brushed aluminum case, rubber feet”</em>.</p>
+      {/if}
+      <ul class="px-1.5 pb-2">
+        {#each session.doc.materials ?? [] as m (m.name)}
+          {@const users = session.doc.features.filter((f) => f.material === m.name).map((f) => f.name)}
+          {@const maps = Object.entries(m.maps ?? {}).filter(([, v]) => v).map(([k, v]) => `${k}${v?.pattern ? ` (${v.pattern})` : ' (image)'}`)}
+          <li class="rounded px-1.5 py-1 hover:bg-hover" title={m.note ?? ''}>
+            <div class="flex items-center gap-2">
+              <span
+                class="size-3.5 shrink-0 border border-control"
+                style="background: {m.color}; box-shadow: inset 0 0 0 1px rgba(255,255,255,{(m.metalness ?? 0) * 0.5}), inset -3px -3px 4px rgba(0,0,0,{0.4 - (m.roughness ?? 0.6) * 0.3})"
+              ></span>
+              <span class="min-w-0 flex-1 truncate">{m.name}</span>
+              <span class="font-mono text-[11px] text-ink-3">M {(m.metalness ?? 0).toFixed(1)} · R {(m.roughness ?? 0.6).toFixed(1)}</span>
+            </div>
+            <div class="truncate pl-5.5 text-[11px] text-ink-3">
+              {users.length ? users.join(', ') : 'not assigned'}{maps.length ? ` · ${maps.join(', ')}` : ''}{m.uv ? ` · uv ${m.uv.projection} ${m.uv.scale ?? 10} mm` : ''}
+            </div>
+          </li>
+        {/each}
+      </ul>
+      {#if session.doc.decals?.length}
+        {@const counts = session.doc.decals.reduce((m, d) => m.set(d.target, (m.get(d.target) ?? 0) + 1), new Map<string, number>())}
+        <div class="px-3 pb-2 text-[11px] text-ink-3">
+          <span class="text-ink-2">Decals:</span>
+          {[...counts].map(([t, n]) => `${n} on ${t}`).join(' · ')}
+        </div>
+      {/if}
+      {#each session.build?.appearance ?? [] as p}
+        <p class="note warn mx-3 mb-1 py-1 text-[11px]">{p}</p>
+      {/each}
 
       <div class="panel-title flex items-center gap-1.5"><ListChecks size={12} /> Checks</div>
       {#if session.doc.checks.length === 0}

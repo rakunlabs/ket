@@ -17,6 +17,8 @@ export const JLCPCB = {
   copperToEdge: 0.3,
   minHole: 0.3,
   holeToHole: 0.5,
+  /** Unplated to unplated (JLCPCB same-net hole spacing). */
+  npthToNpth: 0.254,
 }
 
 export interface Violation {
@@ -195,13 +197,23 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
     }
 
   // Track widths and clearance between copper of different nets.
+  // A neck: a thin run where the class width does not fit, because at that
+  // width it would come within clearance of another net's pad (a power
+  // track passing between fine-pitch pads). A thin track in open space is
+  // still reported.
+  const neck = (t: Pcb['tracks'][number], cls: { track: number; clearance: number }) =>
+    t.points.slice(1).some((p, i) => {
+      const a = { x: t.points[i][0], y: t.points[i][1] }
+      const c = { x: p[0], y: p[1] }
+      return b.pads.some((pad) => pad.net !== t.net && pad.layers.includes(t.layer) && distSegPoly(a, c, pad.outline) < cls.track / 2 + cls.clearance)
+    })
   type Cu = { kind: 'pad' | 'track' | 'via'; id: string; net?: string; layers: string[]; poly?: Poly; seg?: [{ x: number; y: number }, { x: number; y: number }]; w?: number; c?: { x: number; y: number }; r?: number }
   const cu: Cu[] = []
   for (const p of b.pads) cu.push({ kind: 'pad', id: `${p.ref}.${p.pin}`, net: p.net, layers: p.layers, poly: p.outline })
   pcb.tracks.forEach((t, ti) => {
     const cls = b.netClass.get(t.net)
     if (t.width < R.minTrack - 1e-9) out.push({ rule: 'track_width', message: `track ${ti + 1} (${t.net}) is ${f(t.width)} mm wide; JLCPCB minimum is ${R.minTrack}`, at: t.points[0], objects: [`track ${ti + 1}`] })
-    else if (cls && t.width < cls.track - 1e-9 && cls.name !== 'default')
+    else if (cls && t.width < cls.track - 1e-9 && cls.name !== 'default' && !neck(t, cls))
       out.push({ rule: 'track_width', message: `track ${ti + 1} (${t.net}) is ${f(t.width)} mm; class ${cls.name} asks for ${cls.track}`, at: t.points[0] })
     for (let i = 0; i + 1 < t.points.length; i++) {
       const a = { x: t.points[i][0], y: t.points[i][1] }
@@ -282,9 +294,10 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
 
   // Holes.
   const holes = [
-    ...b.holes.map((h, i) => ({ id: `hole ${i + 1}`, c: h.at, d: h.d })),
-    ...pcb.vias.map((v, i) => ({ id: `via ${i + 1}`, c: { x: v.at[0], y: v.at[1] }, d: v.drill })),
-    ...b.pads.filter((p) => p.drill).map((p) => ({ id: `${p.ref}.${p.pin}`, c: p.center, d: p.drill! })),
+    ...b.holes.filter((h) => !h.ref).map((h, i) => ({ id: `hole ${i + 1}`, c: h.at, d: h.d, npth: true })),
+    ...b.holes.filter((h) => h.ref).map((h) => ({ id: `${h.ref}.hole${b.holes.filter((o) => o.ref === h.ref).indexOf(h) + 1}`, c: h.at, d: h.d, npth: true })),
+    ...pcb.vias.map((v, i) => ({ id: `via ${i + 1}`, c: { x: v.at[0], y: v.at[1] }, d: v.drill, npth: false })),
+    ...b.pads.filter((p) => p.drill).map((p) => ({ id: `${p.ref}.${p.pin}`, c: p.center, d: p.drill!, npth: false })),
   ]
   for (const h of holes) if (h.d < R.minHole - 1e-9) out.push({ rule: 'drill', message: `${h.id} drill ${f(h.d)} < ${R.minHole} mm`, at: pt(h.c) })
   for (let i = 0; i < holes.length; i++)
@@ -292,8 +305,11 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
       const a = holes[i]
       const c = holes[j]
       const gap = Math.hypot(a.c.x - c.c.x, a.c.y - c.c.y) - a.d / 2 - c.d / 2
-      if (gap < R.holeToHole - 1e-6 && !(a.id.split('.')[0] === c.id.split('.')[0] && a.id.includes('.')))
-        out.push({ rule: 'hole_to_hole', message: `${a.id} and ${c.id} are ${f(gap)} mm apart; keep ${R.holeToHole}`, at: pt(a.c) })
+      // Two unplated holes only need the drill web (like same-net holes):
+      // the MX switch pegs and hot-swap pin holes sit 0.47 mm apart by design.
+      const keep = a.npth && c.npth ? R.npthToNpth : R.holeToHole
+      if (gap < keep - 1e-6 && !(a.id.split('.')[0] === c.id.split('.')[0] && a.id.includes('.')))
+        out.push({ rule: 'hole_to_hole', message: `${a.id} and ${c.id} are ${f(gap)} mm apart; keep ${keep}`, at: pt(a.c) })
     }
 
   return out

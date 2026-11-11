@@ -1,8 +1,13 @@
 // Importing this module registers every command.
 import './commands'
 import './sketch-commands'
+import './appearance-commands'
+import './motion-commands'
+import './mechanism-commands'
 import './pcb/commands'
+import './pcb/manufacturing'
 import './queries'
+import './project-file'
 
 export { GUIDE } from './guide'
 export * from './registry'

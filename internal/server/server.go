@@ -41,7 +41,6 @@ type Deps struct {
 	Agent   *agent.Agent
 	Catalog *catalog.Catalog
 	Parts   *parts.Service
-	Router  *parts.Router
 	// Settings are what an administrator edits in the UI.
 	Settings *settings.Service
 	// UI is nil when only the placeholder was embedded.
@@ -70,11 +69,6 @@ func Start(ctx context.Context, cfg *config.Config, deps Deps) error {
 	s.guard = guard{kit: kit}
 	s.access = access.New(s.Store, kit.Users)
 	s.Tools.SetAccess(s.access)
-
-	// Settings that other parts read at run time.
-	apply := func(cur settings.Settings) { s.Router.Configure(cur.FreeroutingJar, cur.Java) }
-	apply(s.Settings.Get())
-	s.Settings.OnChange(apply)
 
 	srv, err := s.build(ast)
 	if err != nil {
@@ -117,8 +111,6 @@ func (s *Server) build(ast *authstore.Store) (*ada.Server, error) {
 	root.HandleFunc(apiPrefix+"/projects/{id}/ws", s.websocket, g.with(permRead)...)
 	root.HandleFunc(apiPrefix+"/app/ws", s.appWebsocket, g.with(permRead)...)
 	root.HandleFunc(apiPrefix+"/conversations/{id}/messages", s.chat, g.with(permAI)...)
-	// Long-running; outside the compressing group.
-	root.POST(apiPrefix+"/route", s.route, g.with(permWrite)...)
 
 	// /info is public: the version and the MCP address.
 	root.GET(apiPrefix+"/info", s.info)
@@ -194,6 +186,7 @@ func (s *Server) routes(api *ada.Mux) {
 	api.GET("/parts/search", s.searchParts, read)
 	api.GET("/parts/{lcsc}", s.getPart, read)
 	api.GET("/models/{uuid}", s.getModel, read)
+	api.GET("/assets", s.getAsset, read)
 	api.POST("/parts/offers", s.offers, read)
 
 	api.HandleFuncWildcard("/", func(c *ada.Context) error {

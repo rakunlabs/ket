@@ -31,6 +31,8 @@ export function diffDocs(main: Doc, next: Doc): Change[] {
   out.push(...compare('sketch', main.sketches, next.sketches, (s) => s.name))
   out.push(...compare('feature', main.features, next.features, (f) => f.name, (f) => f.type))
   out.push(...compare('check', main.checks, next.checks, (c) => c.name))
+  out.push(...compare('material', main.materials, next.materials, (m) => m.name))
+  out.push(...compare('decal', main.decals, next.decals, (d) => d.name, (d) => d.target))
   const mp = main.pcb
   const np = next.pcb
   if (!mp && np) out.push({ kind: 'added', what: 'board' })

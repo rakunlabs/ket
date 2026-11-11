@@ -31,8 +31,6 @@ export interface AdminSettings {
   providers: (ProviderIn & { has_key: boolean })[]
   default_provider?: string
   max_steps: number
-  java?: string
-  freerouting_jar?: string
 }
 
 export type AdminSettingsIn = Omit<AdminSettings, 'providers'> & { providers: ProviderIn[]; clear_keys?: string[] }

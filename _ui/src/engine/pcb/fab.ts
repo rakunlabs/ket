@@ -161,11 +161,6 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Fa
   for (const v of pcb.vias) hits.push({ t: tool(v.drill, true), x: v.at[0], y: v.at[1], plated: true })
   for (const p of b.pads) if (p.drill) hits.push({ t: tool(p.drill, true), x: p.center.x, y: p.center.y, plated: true })
   for (const h of b.holes) hits.push({ t: tool(h.d, false), x: h.at.x, y: h.at.y, plated: false })
-  for (const c of b.components)
-    for (const h of c.footprint.holes ?? []) {
-      const q = rot({ x: c.side === 'bottom' ? -h.at.x : h.at.x, y: h.at.y }, c.rotation)
-      hits.push({ t: tool(h.d, false), x: c.at.x + q.x, y: c.at.y + q.y, plated: false })
-    }
   const drl = ['M48', '; ket drill file', 'FMAT,2', 'METRIC,TZ']
   for (const [key, t] of tools) drl.push(`; ${key.endsWith('P') ? 'plated' : 'non-plated'}`, `T${t}C${parseFloat(key)}`)
   drl.push('%', 'G90', 'G05')
@@ -179,7 +174,8 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Fa
   // BOM grouped by LCSC part, CPL per placement (JLCPCB column names).
   const csv = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
   const groups = new Map<string, typeof b.components>()
-  for (const c of b.components) {
+  const fitted = b.components.filter((c) => !c.dnp)
+  for (const c of fitted) {
     const k = c.lcsc || `${c.mpn}|${c.package}`
     if (!groups.has(k)) groups.set(k, [])
     groups.get(k)!.push(c)
@@ -190,7 +186,7 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Fa
   ].join('\n') + '\n'
   files['cpl.csv'] = [
     'Designator,Mid X,Mid Y,Layer,Rotation',
-    ...b.components.map((c) => [c.ref, `${c.at.x.toFixed(3)}mm`, `${c.at.y.toFixed(3)}mm`, c.side === 'bottom' ? 'Bottom' : 'Top', (((c.rotation % 360) + 360) % 360).toFixed(1)].map(csv).join(',')),
+    ...fitted.map((c) => [c.ref, `${c.at.x.toFixed(3)}mm`, `${c.at.y.toFixed(3)}mm`, c.side === 'bottom' ? 'Bottom' : 'Top', (((c.rotation % 360) + 360) % 360).toFixed(1)].map(csv).join(',')),
   ].join('\n') + '\n'
 
   return files

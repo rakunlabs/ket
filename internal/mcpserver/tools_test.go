@@ -20,8 +20,8 @@ func TestToolsFromCatalog(t *testing.T) {
 
 	mcp := tools.List(ScopeMCP)
 	agent := tools.List(ScopeAgent)
-	if len(mcp) != len(agent)+6 {
-		t.Fatalf("MCP has %d tools, agent %d: MCP should add list_projects, create_project, open_project, close_project, start_proposal and finish_proposal", len(mcp), len(agent))
+	if len(mcp) != len(agent)+7 {
+		t.Fatalf("MCP has %d tools, agent %d: MCP should add list_projects, create_project, open_project, close_project, reload_ui, start_proposal and finish_proposal", len(mcp), len(agent))
 	}
 
 	for _, tool := range mcp {
@@ -32,7 +32,7 @@ func TestToolsFromCatalog(t *testing.T) {
 		if s["type"] != "object" {
 			t.Errorf("%s: schema type = %v, want object", tool.Name, s["type"])
 		}
-		if tool.Name == toolListProjects || tool.Name == toolCreateProject || tool.Name == toolFinish || tool.Name == toolOpenProject || tool.Name == toolCloseProject {
+		if tool.Name == toolListProjects || tool.Name == toolCreateProject || tool.Name == toolFinish || tool.Name == toolOpenProject || tool.Name == toolCloseProject || tool.Name == toolReload {
 			continue
 		}
 		props, _ := s["properties"].(map[string]any)

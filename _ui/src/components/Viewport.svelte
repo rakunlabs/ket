@@ -1,20 +1,75 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
 
-  import { Eye, Ruler, X } from '@lucide/svelte'
+  import { Box, Eye, Focus, LoaderCircle, Move3d, Pause, Play, RotateCcw, Ruler, Scan, Sparkles, Square, X } from '@lucide/svelte'
 
   import { projectAccess } from '../lib/access.svelte'
   import { boardModels } from '../lib/models'
+  import { Player } from '../lib/player.svelte'
   import { theme } from '../lib/theme.svelte'
-  import { type Pick, type SnapKind, Scene3D } from '../lib/scene'
+  import { type Pick, type Shading, type SnapKind, Scene3D } from '../lib/scene'
   import type { Session } from '../lib/session.svelte'
 
   let { session }: { session: Session } = $props()
   const access = projectAccess()
 
+  const SHADING_KEY = 'ket.shading'
+  const SHADINGS: { id: Shading; label: string; title: string; icon: typeof Box }[] = [
+    { id: 'normal', label: 'Normal', title: 'CAD view: plain colors and edges (Alt+1)', icon: Box },
+    { id: 'realistic', label: 'Realistic', title: 'Materials, decals and reflections as the product looks (Alt+2)', icon: Sparkles },
+    { id: 'wireframe', label: 'Wire', title: 'Edges only (Alt+3)', icon: Scan },
+    { id: 'xray', label: 'X-ray', title: 'See-through bodies, to look inside (Alt+4)', icon: Eye },
+  ]
+  function savedShading(): Shading {
+    try {
+      const v = localStorage.getItem(SHADING_KEY)
+      if (v && SHADINGS.some((s) => s.id === v)) return v as Shading
+    } catch {
+      // Storage blocked.
+    }
+    return 'normal'
+  }
+  let shading = $state<Shading>(savedShading())
+  function setShading(s: Shading) {
+    shading = s
+    try {
+      localStorage.setItem(SHADING_KEY, s)
+    } catch {
+      // Storage blocked: the choice lasts for this page.
+    }
+  }
+  $effect(() => {
+    scene?.setShading(shading)
+  })
+
+  // Playback (display only): poses meshes; the document changes only on "keep".
+  const player = new Player((p) => scene?.setPoses(p))
+  const SPEEDS = [0.25, 0.5, 1, 2, 4]
+  async function play() {
+    if (player.paused) return player.resume()
+    try {
+      const plan = (await session.run('get_motion', {})) as import('../engine/motion').MotionPlan
+      await player.start(plan, session.meshes)
+    } catch (e) {
+      player.error = (e as Error).message
+    }
+  }
+  async function keep() {
+    const name = player.param
+    const v = Math.round(player.value * 1000) / 1000
+    player.reset()
+    if (name && access.canEdit) await session.run('set_parameters', { parameters: [{ name, expr: v }] })
+  }
+  // A rebuild invalidates the poses: stop.
+  $effect(() => {
+    void session.meshes
+    player.reset()
+  })
+  onDestroy(() => player.reset())
+
   let canvas: HTMLCanvasElement
   let host: HTMLDivElement
-  let scene: Scene3D | undefined
+  let scene = $state<Scene3D>()
   let hover = $state<Pick>()
   let ro: ResizeObserver | undefined
 
@@ -57,6 +112,32 @@
     clearRuler()
   }
 
+  /** Inspect: pull the assembly apart (explode slider) and drag bodies
+   *  around to look at them. Display only: the document never changes. */
+  let inspecting = $state(false)
+  let explode = $state(0)
+  let movedCount = $state(0)
+  const hasExplode = $derived(!!session.doc.explode?.steps.length)
+  function toggleInspect() {
+    inspecting = !inspecting
+    if (inspecting) {
+      ruler = false
+      clearRuler()
+      if (hasExplode && explode === 0) explode = 1
+    } else {
+      // Leaving inspect puts the assembly back together.
+      resetInspect()
+    }
+  }
+  function resetInspect() {
+    scene?.resetMoved()
+    movedCount = 0
+    explode = 0
+  }
+  $effect(() => {
+    scene?.setExplode(explode)
+  })
+
   function rulerPick(e: PointerEvent): Pick | undefined {
     return e.altKey ? scene?.pick(e.clientX, e.clientY) : scene?.pickSnap(e.clientX, e.clientY)
   }
@@ -78,11 +159,25 @@
     if (e.key === 'Escape' && ruler) {
       if (points.length) clearRuler()
       else ruler = false
-    } else if (e.key === 'm' && !e.ctrlKey && !e.metaKey) toggleRuler()
+    } else if (e.key === 'Escape' && inspecting) toggleInspect()
+    else if (e.key === 'm' && !e.ctrlKey && !e.metaKey) toggleRuler()
+    else if (e.key === 'e' && !e.ctrlKey && !e.metaKey) toggleInspect()
+    else if (e.key === 'f' && !e.ctrlKey && !e.metaKey) scene?.frame()
+    else if (e.key === ' ' && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault()
+      if (player.playing) player.pause()
+      else void play()
+    }
+    else if (e.altKey && /^Digit[1-4]$/.test(e.code)) {
+      e.preventDefault()
+      setShading(SHADINGS[+e.code.slice(5) - 1].id)
+    }
   }
 
   onMount(() => {
     scene = new Scene3D(canvas)
+    scene.setShading(shading)
+    scene.onMoved = () => (movedCount = scene?.movedCount ?? 0)
     session.renderer = (opts) => scene!.renderViews(opts)
     ro = new ResizeObserver(() => scene?.resize(host.clientWidth, host.clientHeight))
     ro.observe(host)
@@ -110,6 +205,10 @@
 
   $effect(() => {
     scene?.setSketches(session.sketchLines)
+  })
+
+  $effect(() => {
+    scene?.setCopper(session.doc.pcb, session.board)
   })
 
   $effect(() => {
@@ -149,7 +248,12 @@
       if (p) void measurePoint(p)
       return
     }
-    session.selected = scene?.pick(e.clientX, e.clientY)?.name
+    const name = scene?.pick(e.clientX, e.clientY)?.name
+    if (inspecting) {
+      scene?.inspect(name)
+      return
+    }
+    session.selected = name
   }
 
   function onMove(e: PointerEvent) {
@@ -209,7 +313,19 @@
     }}
   ></canvas>
 
-  {#if empty}
+  {#if !session.ready}
+    <div class="absolute inset-0 grid place-items-center bg-bg/70" role="status" aria-live="polite">
+      <div class="pop corners flex items-center gap-2.5 px-4 py-3 text-ink-2">
+        <LoaderCircle size={16} class="shrink-0 animate-spin motion-reduce:animate-none" />
+        <div>
+          <div class="font-medium text-ink">{session.building ? 'Building the model' : 'Loading the design'}</div>
+          {#if session.building && session.doc.features.length}
+            <div class="text-xs">{session.doc.features.length} features; imported parts take a few seconds the first time</div>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {:else if empty}
     <div class="pointer-events-none absolute inset-0 grid place-items-center">
       <div class="pop corners max-w-sm p-4 text-center text-ink-2">
         <div class="mb-1 font-medium text-ink">Empty design</div>
@@ -219,6 +335,23 @@
   {/if}
 
   <div class="absolute top-2 left-2 flex gap-1">
+    <div class="flex border border-line-strong bg-surface/90" role="radiogroup" aria-label="Shading">
+      {#each SHADINGS as s (s.id)}
+        {@const Icon = s.icon}
+        <button
+          role="radio"
+          aria-checked={shading === s.id}
+          class={['flex items-center gap-1 px-2 py-1 text-xs', shading === s.id ? 'bg-sel text-sel-ink' : 'text-ink-2 hover:bg-hover hover:text-ink']}
+          title={s.title}
+          onclick={() => setShading(s.id)}
+        >
+          <Icon size={13} /><span class="hidden lg:inline">{s.label}</span>
+        </button>
+      {/each}
+    </div>
+    <button class="btn px-2" onclick={() => scene?.frame()} title="Fit the model in view (F)">
+      <Focus size={14} />
+    </button>
     <button class={['btn px-2', ruler && 'on']} aria-pressed={ruler} onclick={toggleRuler} title="Measure between two points (M)">
       <Ruler size={14} />
       {#if ruler}<span class="text-xs">{points.length === 1 ? 'click the second point' : 'click a point'}</span>{/if}
@@ -226,7 +359,49 @@
     {#if ruler}
       <span class="self-center border border-line bg-surface/90 px-2 py-0.5 text-[11px] text-ink-2">snaps to corners, midpoints, centers and edges · <kbd>Alt</kbd> free point · <kbd>Esc</kbd> clear</span>
     {/if}
+    <button class={['btn px-2', inspecting && 'on']} aria-pressed={inspecting} onclick={toggleInspect} title="Inspect: pull the parts apart and drag them around to look; the design does not change (E)">
+      <Move3d size={14} />
+      {#if inspecting}<span class="text-xs">inspect</span>{/if}
+    </button>
+    {#if inspecting || (hasExplode && explode > 0)}
+      <div class="flex items-center gap-2 border border-line bg-surface/90 px-2 py-0.5 text-[11px] text-ink-2">
+        {#if hasExplode}
+          <label class="flex items-center gap-1.5">
+            explode
+            <input type="range" min="0" max="1" step="0.01" bind:value={explode} class="h-1 w-28 accent-[var(--text)]" aria-label="Explode" />
+          </label>
+        {/if}
+        {#if inspecting}<span>click a part, drag the arrows</span>{/if}
+        {#if movedCount || explode > 0}
+          <button class="btn btn-ghost px-1 py-0 text-[11px]" onclick={resetInspect} title="Put everything back"><RotateCcw size={12} /> reset</button>
+        {/if}
+        <span class="text-ink-3">view only</span>
+      </div>
+    {/if}
   </div>
+
+  {#if !empty}
+    <div class="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 border border-line-strong bg-surface/95 px-1.5 py-1 text-xs shadow-[var(--shadow-pop)]">
+      {#if player.playing}
+        <button class="btn btn-ghost px-1.5" onclick={() => player.pause()} title="Pause (Space)"><Pause size={14} /></button>
+      {:else}
+        <button class="btn btn-ghost px-1.5" onclick={play} title="Play the motion (Space)"><Play size={14} /></button>
+      {/if}
+      <button class="btn btn-ghost px-1.5" disabled={!player.playing && !player.paused} onclick={() => player.reset()} title="Stop and put everything back"><Square size={13} /></button>
+      <div class="mx-1 flex border border-line" role="radiogroup" aria-label="Speed">
+        {#each SPEEDS as s (s)}
+          <button role="radio" aria-checked={player.speed === s} class={['px-1.5 py-0.5 font-mono text-[11px]', player.speed === s ? 'bg-sel text-sel-ink' : 'text-ink-2 hover:bg-hover']} onclick={() => (player.speed = s)}>{s}×</button>
+        {/each}
+      </div>
+      {#if player.param && (player.playing || player.paused)}
+        <span class="num w-28 font-mono text-[11px] text-ink-2">{player.param} = {player.value.toFixed(1)}</span>
+        {#if access.canEdit}<button class="btn btn-ghost px-1.5 text-[11px]" onclick={keep} title="Stop and set the parameter to this value">keep</button>{/if}
+      {:else if player.time > 0 || player.playing}
+        <span class="num font-mono text-[11px] text-ink-2">{player.time.toFixed(1)} s</span>
+      {/if}
+      {#if player.error}<span class="max-w-72 truncate text-[11px] text-warn" title={player.error}>{player.error}</span>{/if}
+    </div>
+  {/if}
 
   {#if snapAt}
     <div class="pointer-events-none absolute translate-x-3 translate-y-3 border border-line-strong bg-surface px-1.5 py-px text-[11px] text-ink-2" style="left: {snapAt.x}px; top: {snapAt.y}px">
@@ -281,6 +456,26 @@
             <span class="num w-8 text-right font-mono text-[11px]">{Math.round(op * 100)}%</span>
           </label>
           {#if appearanceError}<p class="mt-1 text-danger">{appearanceError}</p>{/if}
+          {#if session.doc.materials?.length}
+            <label class="mt-2 flex items-center gap-2">
+              <span class="w-12 text-ink-3">material</span>
+              <select
+                class="input flex-1 px-1 py-0.5 text-[11px]"
+                value={feature.material ?? ''}
+                onchange={async (e) => {
+                  appearanceError = ''
+                  try {
+                    await session.run('assign_material', { names: [feature.name], material: e.currentTarget.value || null })
+                  } catch (err) {
+                    appearanceError = (err as Error).message
+                  }
+                }}
+              >
+                <option value="">none (plain color)</option>
+                {#each session.doc.materials as m (m.name)}<option value={m.name}>{m.name}</option>{/each}
+              </select>
+            </label>
+          {/if}
         </div>
       {/if}
     </div>

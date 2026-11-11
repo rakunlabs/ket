@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bot, Cpu, Info, LogIn, ShieldCheck, UsersRound, User } from '@lucide/svelte'
+  import { Bot, Info, LogIn, ShieldCheck, UsersRound, User } from '@lucide/svelte'
 
   import TopBar from '../components/TopBar.svelte'
   import ProvidersSettings from '../components/settings/ProvidersSettings.svelte'
@@ -17,7 +17,6 @@
     { id: 'groups', label: 'Groups', icon: UsersRound, perm: 'users:read' },
     { id: 'sso', label: 'Sign-in providers', icon: LogIn, perm: 'settings:write' },
     { id: 'general', label: 'Access & server', icon: ShieldCheck, perm: 'settings:write' },
-    { id: 'pcb', label: 'PCB tools', icon: Cpu, perm: 'settings:write' },
     { id: 'about', label: 'About & MCP', icon: Info, perm: '' },
   ] as const
 
@@ -51,8 +50,7 @@
             {:else if tab?.id === 'users'}<UsersSettings />
             {:else if tab?.id === 'groups'}<GroupsSettings />
             {:else if tab?.id === 'sso'}<SSOSettings />
-            {:else if tab?.id === 'general'}<GeneralSettings section="general" />
-            {:else if tab?.id === 'pcb'}<GeneralSettings section="pcb" />
+            {:else if tab?.id === 'general'}<GeneralSettings />
             {:else if tab?.id === 'about'}<AboutSettings />
             {/if}
           {/key}

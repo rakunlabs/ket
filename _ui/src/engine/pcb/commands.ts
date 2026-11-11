@@ -5,16 +5,19 @@
 
 import { z } from 'zod'
 
-import type { Component, Doc, Net, Pcb, Wire } from '../doc'
+import type { Component, Doc, Footprint, Net, Pcb, Track, Via, Wire } from '../doc'
 import { normalizeDoc } from '../doc'
 import { define } from '../registry'
-import { expr, ident, vec2 } from '../schema'
+import { expr, ident, vec2, vec3 } from '../schema'
+import { tidyTracks } from './autoroute'
 import { DEFAULT_CLASS, emptyPcb } from './board'
 import { parsePart } from './easyeda'
+import { footprintFromName } from './footprints'
+import { placeParts } from './place'
 import { parseOBJ, placeModel } from './model3d'
 import { fabFiles } from './fab'
 import { schematic } from './schematic'
-import { exportDSN, importSES } from './specctra'
+import { fillZones, stitchPoints } from './zones'
 
 function clone(doc: Doc): Doc {
   return normalizeDoc(JSON.parse(JSON.stringify(doc)) as Doc)
@@ -57,6 +60,35 @@ function nextRef(pcb: Pcb, prefix: string) {
   let n = 1
   while (pcb.components.some((c) => c.ref === `${prefix}${n}`)) n++
   return `${prefix}${n}`
+}
+
+const partModel = z
+  .object({
+    url: z.string().url().describe('https URL of a STEP/STL file (zip: add #file); same hosts as the import command'),
+    rotate: vec3.optional().describe('Degrees about X, Y, Z in footprint space (applied first)'),
+    translate: vec3.optional().describe('[x, y, z] in footprint space; z up from the board face the part sits on'),
+    scale: expr.optional(),
+  })
+  .describe('A real 3D model for the part body (replaces the courtyard block part_<ref>): e.g. kiswitch MX switch or hot-swap STEP, a dev board STEP. Placed in footprint coordinates, then follows the part (side, rotation, position). Check it with render and measure part_<ref>.')
+
+/** Ref letter for a generic footprint name (and the value, for bare passive sizes like "0603"). */
+function genericPrefix(name: string, value = ''): string {
+  const s = name.toLowerCase()
+  if (/^\d{4}$/.test(s) || /^(01005|0201)$/.test(s)) {
+    if (/[0-9.]\s*[unp]?f$/i.test(value)) return 'C'
+    if (/[0-9.]\s*[unm]?h$/i.test(value)) return 'L'
+    if (/led/i.test(value)) return 'D'
+    return 'R'
+  }
+  if (/^res/.test(s)) return 'R'
+  if (/^cap|electrolytic/.test(s)) return 'C'
+  if (/^led/.test(s)) return 'D'
+  if (/^(diode|sod|sma|smb|smc|melf)/.test(s)) return 'D'
+  if (/^(pinrow|jst|usb|rj45|fpc|headermodule|smdpinheader|breakoutheaders)/.test(s)) return 'J'
+  if (/button|switch/.test(s)) return 'SW'
+  if (/^(crystal|hc49)/.test(s)) return 'Y'
+  if (/^(pad|smtpad|platedhole|smdpads)/.test(s)) return 'TP'
+  return 'U'
 }
 
 function refPrefix(pkg: string, desc: string, mpn: string): string {
@@ -133,7 +165,7 @@ define({
   args: z.object({ lcsc: z.string() }),
   async run(ctx, a) {
     if (!ctx.services) throw new Error('the parts library is only available with the server')
-    const { footprint, info } = parsePart(await ctx.services.getPart(a.lcsc))
+    const { footprint, info } = parsePart(await ctx.services.getPart(a.lcsc!))
     return {
       ...info,
       footprint: footprint.name,
@@ -155,9 +187,11 @@ define({
   group: 'pcb',
   kind: 'mutate',
   description:
-    'Place a real part from LCSC on the board by its LCSC number (from find_parts). ref is chosen automatically (U1, R3, ...) unless given. at is the part center in board coordinates [x, y] (expressions allowed), rotation in degrees CCW, side top or bottom. value is the BOM comment ("10k", "100nF").',
+    'Place a part on the board: a real LCSC part by its number (from find_parts: footprint, pin names, 3D model, price), or a generic footprint by name with footprint_name when there is no LCSC entry or the exact part does not matter yet ("0603", "0805", "soic8", "sot23", "sot223", "qfn16_p0.5mm", "tssop20", "pinrow4", "pinrow6_p2mm", "dip8", "jst_ph_4", "to220", "sod123", ...; pins numbered 1, 2, ... and named with pin_names). Give one of lcsc or footprint_name; lcsc can still be given with a footprint_name for the BOM. ref is chosen automatically (U1, R3, ...) unless given. at is the part center in board coordinates [x, y] (expressions allowed), rotation in degrees CCW, side top or bottom. value is the BOM comment ("10k", "100nF").',
   args: z.object({
-    lcsc: z.string().describe('LCSC part number, e.g. "C6186"'),
+    lcsc: z.string().optional().describe('LCSC part number, e.g. "C6186"'),
+    footprint_name: z.string().optional().describe('A generic footprint by name instead of the LCSC library, e.g. "0603", "soic8", "pinrow4"'),
+    pin_names: z.record(z.string(), z.string()).optional().describe('footprint_name: names for pin numbers, e.g. {"1": "VCC", "2": "GND"}'),
     ref: z.string().regex(refRe, 'letters then a number, e.g. U1, R12, J2').optional(),
     at: vec2,
     rotation: expr.optional(),
@@ -166,6 +200,8 @@ define({
     value: z.string().optional(),
     note: z.string().optional().describe('What it does on this board'),
     height: expr.optional().describe('Override the estimated body height (mm)'),
+    model: partModel.optional(),
+    dnp: z.boolean().optional().describe('Do not populate: left out of the BOM and CPL (bare solder pads, test points, parts fitted by hand). Default true for pad/smtpad/testpoint footprints'),
     footprint: footprintSchema.optional().describe('(filled in automatically)'),
     info: footprintSchema.optional().describe('(filled in automatically)'),
   }),
@@ -173,11 +209,18 @@ define({
   examples: [
     { lcsc: 'C6186', at: [0, 0], value: 'AMS1117-3.3', note: '3.3V LDO' },
     { lcsc: 'C165948', ref: 'J1', at: ['-board_w/2 + 3.5', 0], rotation: 270, edge: true, note: 'USB-C power' },
+    { footprint_name: 'pinrow4', ref: 'J2', at: [10, 0], pin_names: { 1: 'VCC', 2: 'SDA', 3: 'SCL', 4: 'GND' }, note: 'I2C header' },
   ],
   async prepare(ctx, a) {
     if (a.footprint && a.info) return a
+    if (a.footprint_name) {
+      const footprint = await footprintFromName(a.footprint_name, a.pin_names)
+      const info = { lcsc: a.lcsc ?? '', mpn: a.value ?? a.footprint_name, description: a.footprint_name, package: a.footprint_name, basic: false }
+      return { ...a, footprint: footprint as unknown as Record<string, unknown>, info: info as unknown as Record<string, unknown> }
+    }
+    if (!a.lcsc) throw new Error('give lcsc (an LCSC part number from find_parts) or footprint_name (a generic footprint, e.g. "0603", "soic8", "pinrow4")')
     if (!ctx.services) throw new Error('adding parts needs the server (parts library)')
-    const { footprint, info } = parsePart(await ctx.services.getPart(a.lcsc))
+    const { footprint, info } = parsePart(await ctx.services.getPart(a.lcsc!))
     // The real model gives the true body height for enclosure checks.
     if (footprint.model && ctx.services.getModel) {
       try {
@@ -194,11 +237,11 @@ define({
     const next = clone(doc)
     const pcb = pcbOf(next)
     const info = a.info as unknown as ReturnType<typeof parsePart>['info']
-    const ref = a.ref ?? nextRef(pcb, refPrefix(info.package, info.description, info.mpn))
+    const ref = a.ref ?? nextRef(pcb, a.footprint_name ? genericPrefix(a.footprint_name, a.value) : refPrefix(info.package, info.description, info.mpn))
     if (pcb.components.some((c) => c.ref === ref)) throw new Error(`${ref} exists already; pick another ref or use move_component`)
     const c: Component = {
       ref,
-      lcsc: info.lcsc || a.lcsc,
+      lcsc: info.lcsc || a.lcsc || '',
       ...(a.value ? { value: a.value } : {}),
       mpn: info.mpn,
       description: info.description,
@@ -210,6 +253,8 @@ define({
       ...(a.edge ? { edge: true } : {}),
       ...(a.note ? { note: a.note } : {}),
       ...(a.height !== undefined ? { height: a.height } : {}),
+      ...(a.model ? { model: a.model } : {}),
+      ...((a.dnp ?? /^(pad|smtpad|smdpad|testpoint|platedhole)/i.test(a.footprint_name ?? '')) ? { dnp: true } : {}),
       footprint: a.footprint as unknown as Component['footprint'],
     }
     pcb.components.push(c)
@@ -221,10 +266,62 @@ define({
 })
 
 define({
+  name: 'refresh_parts',
+  group: 'pcb',
+  kind: 'mutate',
+  description:
+    'Fetch the footprint, pin names and schematic symbol of placed LCSC parts again from the library (after a parser fix, or when a part showed wrong). Position, rotation, side, nets, value, notes and 3D model stay. Pads keep their numbers, so connections hold; a pad that no longer exists is reported.',
+  args: z.object({
+    refs: z.array(z.string()).optional().describe('Default: every LCSC part'),
+    parts: z.record(z.string(), footprintSchema).optional().describe('(filled in automatically)'),
+  }),
+  internal: ['parts'],
+  async prepare(ctx, a) {
+    if (a.parts) return a
+    const pcb = ctx.doc.pcb
+    if (!pcb) throw new Error('no board yet')
+    if (!ctx.services) throw new Error('refresh_parts needs the server (parts library)')
+    const want = pcb.components.filter((c) => c.lcsc && (!a.refs || a.refs.includes(c.ref)))
+    const unknown = (a.refs ?? []).filter((r) => !pcb.components.some((c) => c.ref === r))
+    if (unknown.length) throw new Error(`no part ${unknown.join(', ')}`)
+    const parts: Record<string, Record<string, unknown>> = {}
+    const byLcsc = new Map<string, Footprint>()
+    for (const c of want) {
+      let fp = byLcsc.get(c.lcsc)
+      if (!fp) {
+        fp = parsePart(await ctx.services.getPart(c.lcsc)).footprint
+        // Keep the measured height from the first add (the 3D model is not re-read).
+        if (c.footprint.height !== undefined) fp.height = c.footprint.height
+        byLcsc.set(c.lcsc, fp)
+      }
+      parts[c.ref] = fp as unknown as Record<string, unknown>
+    }
+    return { ...a, parts }
+  },
+  apply(doc, a) {
+    if (!a.parts) throw new Error('refresh_parts must be called through Ket')
+    const next = clone(doc)
+    const pcb = pcbOf(next)
+    const lost: string[] = []
+    for (const [ref, fp] of Object.entries(a.parts)) {
+      const c = comp(pcb, ref)
+      const f = fp as unknown as Footprint
+      const nums = new Set(f.pads.map((p) => p.number))
+      // Old pad numbers with escapes ("1&#96;") map to the clean ones.
+      for (const n of pcb.nets) n.pins = n.pins.map((pin) => (pin.startsWith(`${ref}.`) ? `${ref}.${pin.slice(ref.length + 1).replace(/&#96;/g, '`')}` : pin))
+      for (const n of pcb.nets) for (const pin of n.pins) if (pin.startsWith(`${ref}.`) && !nums.has(pin.slice(ref.length + 1))) lost.push(`${pin} (${n.name})`)
+      c.footprint = f
+    }
+    return { doc: next, summary: `refreshed ${Object.keys(a.parts).join(', ')}${lost.length ? `; these pins are no longer on the part: ${lost.join(', ')}` : ''}` }
+  },
+})
+
+define({
   name: 'move_component',
   group: 'pcb',
   kind: 'mutate',
-  description: 'Move, rotate or flip parts. Fields left out keep their value. Moving a part leaves its tracks; unroute and route again after big moves.',
+  description:
+    'Move, rotate or flip parts. Fields left out keep their value. Tracks stay where they were, so after a part changes place, rotation or side they no longer reach its pads and can short under the new ones: pass unroute: true to remove the copper of its nets, then autoroute (and stitch_vias if the board has pours).',
   args: z.object({
     moves: z
       .array(
@@ -237,15 +334,20 @@ define({
           value: z.string().optional(),
           note: z.string().optional(),
           height: expr.optional(),
+          model: partModel.nullable().optional().describe('Set a real 3D model (or null to go back to the block / EasyEDA model)'),
+          dnp: z.boolean().optional().describe('Do not populate (left out of the BOM and CPL)'),
         }),
       )
       .min(1),
+    unroute: z.boolean().optional().describe('Remove the tracks and vias of the nets of parts that changed place (default false)'),
   }),
   apply(doc, a) {
     const next = clone(doc)
     const pcb = pcbOf(next)
+    const moved = new Set<string>()
     for (const m of a.moves) {
       const c = comp(pcb, m.ref)
+      const was = JSON.stringify([c.at, c.rotation ?? 0, c.side ?? 'top'])
       if (m.at) c.at = m.at
       if (m.rotation !== undefined) c.rotation = m.rotation
       if (m.side) c.side = m.side
@@ -253,8 +355,81 @@ define({
       if (m.value !== undefined) c.value = m.value
       if (m.note !== undefined) c.note = m.note
       if (m.height !== undefined) c.height = m.height
+      if (m.dnp !== undefined) {
+        if (m.dnp) c.dnp = true
+        else delete c.dnp
+      }
+      if (m.model === null) delete c.model
+      else if (m.model) c.model = m.model
+      if (JSON.stringify([c.at, c.rotation ?? 0, c.side ?? 'top']) !== was) moved.add(m.ref)
     }
-    return { doc: next, summary: `moved ${a.moves.map((m) => m.ref).join(', ')}` }
+    // Replaying older logs must give the same board, so copper is only removed when asked.
+    const nets = new Set(moved.size ? pcb.nets.filter((n) => n.pins.some((pin) => moved.has(pin.slice(0, pin.indexOf('.'))))).map((n) => n.name) : [])
+    const stale = pcb.tracks.filter((t) => nets.has(t.net)).length + pcb.vias.filter((v) => !v.stitch && nets.has(v.net)).length
+    let note = ''
+    if (stale && a.unroute) {
+      pcb.tracks = pcb.tracks.filter((t) => !nets.has(t.net))
+      // Stitching vias of a pour stay: stitch_vias replaces them.
+      pcb.vias = pcb.vias.filter((v) => v.stitch || !nets.has(v.net))
+      note = `; removed ${stale} tracks/vias of their nets (autoroute again)`
+    } else if (stale) {
+      note = `; ${stale} tracks/vias of ${[...nets].join(', ')} were routed to the old position: unroute these nets (or move with unroute: true) and autoroute again`
+    }
+    return { doc: next, summary: `moved ${a.moves.map((m) => m.ref).join(', ')}${note}` }
+  },
+})
+
+define({
+  name: 'auto_place',
+  group: 'pcb',
+  kind: 'mutate',
+  description:
+    'Place parts automatically where their connections are shortest: parts go one by one (most connected first) to the free spot inside the board with no courtyard overlap that minimises their ratsnest, trying 0/90/180/270° (rotations to restrict), then improvement passes move and swap them. Edge connectors (edge: true) and parts in keep stay; with refs only those are placed. Connect nets first, put connectors and mounting holes where they must be, then auto_place, then autoroute. The result is ordinary positions: move_component to adjust. It also says the total ratsnest length before and after.',
+  args: z.object({
+    refs: z.array(z.string()).optional().describe('Only these parts (default all except edge connectors)'),
+    keep: z.array(z.string()).optional().describe('Parts that must not move'),
+    gap: z.number().min(0).max(10).optional().describe('Courtyard to courtyard, mm (default 0.5)'),
+    margin: z.number().min(0).max(20).optional().describe('From the board edge, mm (default 1)'),
+    rotations: z.array(z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)])).optional().describe('Allowed rotations (default all four)'),
+    unroute: z.boolean().optional().describe('Remove the tracks and vias of moved parts (default true; they no longer fit)'),
+    result: z.record(z.string(), z.unknown()).optional().describe('(filled in automatically)'),
+  }),
+  internal: ['result'],
+  async prepare(ctx, a) {
+    if (a.result) return a
+    const pcb = ctx.doc.pcb
+    if (!pcb?.components.length) throw new Error('no parts to place; add_component first')
+    const unknown = [...(a.refs ?? []), ...(a.keep ?? [])].filter((r) => !pcb.components.some((c) => c.ref === r))
+    if (unknown.length) throw new Error(`no part ${unknown.join(', ')}; parts are ${pcb.components.map((c) => c.ref).join(', ')}`)
+    const st = await ctx.kernel.board()
+    if (!st) throw new Error('the project has no board yet; start with set_board')
+    const r = placeParts(pcb, st.board, { refs: a.refs, keep: a.keep, gap: a.gap, margin: a.margin, rotations: a.rotations })
+    return { ...a, result: r as unknown as Record<string, unknown> }
+  },
+  apply(doc, a) {
+    if (!a.result) throw new Error('auto_place must be called through Ket')
+    const next = clone(doc)
+    const pcb = pcbOf(next)
+    const r = a.result as unknown as ReturnType<typeof placeParts>
+    const moved = new Set<string>()
+    for (const p of r.placements) {
+      const c = comp(pcb, p.ref)
+      const same = Array.isArray(c.at) && c.at[0] === p.at[0] && c.at[1] === p.at[1] && (c.rotation ?? 0) === p.rotation
+      if (same) continue
+      c.at = p.at
+      c.rotation = p.rotation
+      moved.add(p.ref)
+    }
+    let cut = 0
+    if (a.unroute !== false && moved.size) {
+      // Copper on nets that touch a moved part no longer lines up with its pads.
+      const nets = new Set(pcb.nets.filter((n) => n.pins.some((pin) => moved.has(pin.slice(0, pin.indexOf('.'))))).map((n) => n.name))
+      const before = pcb.tracks.length + pcb.vias.length
+      pcb.tracks = pcb.tracks.filter((t) => !nets.has(t.net))
+      pcb.vias = pcb.vias.filter((v) => !nets.has(v.net))
+      cut = before - pcb.tracks.length - pcb.vias.length
+    }
+    return { doc: next, summary: `placed ${moved.size} part(s); ratsnest ${r.before} → ${r.after} mm${cut ? `; removed ${cut} tracks/vias of their nets (autoroute again)` : ''}` }
   },
 })
 
@@ -570,6 +745,49 @@ define({
 })
 
 define({
+  name: 'stitch_vias',
+  group: 'pcb',
+  kind: 'mutate',
+  description:
+    "Stitch a net's copper pours together with vias: on a grid (pitch, default 5 mm) wherever the net's fill is on two or more layers, keeping clearance to other nets, pads, holes and existing vias. Use after add_zone on F.Cu and B.Cu (usually GND), so the two pours become one ground and pads that only one layer reaches join the net. Replaces earlier stitching vias of the net. Check with get_board (routing) and run_drc.",
+  args: z.object({
+    net: z.string().optional().describe('Default GND'),
+    pitch: z.number().min(1).max(30).optional().describe('Grid spacing, mm (default 5)'),
+    points: z.array(z.tuple([z.number(), z.number()])).optional().describe('(filled in automatically)'),
+  }),
+  internal: ['points'],
+  async prepare(ctx, a) {
+    if (a.points) return a
+    const pcb = ctx.doc.pcb
+    const net = a.net ?? 'GND'
+    if (!pcb?.nets.some((n) => n.name === net)) throw new Error(`no net "${net}"; nets are ${pcb?.nets.map((n) => n.name).join(', ') || 'none'}`)
+    // Fill the pours without this net's old stitching vias.
+    const st = await ctx.kernel.board()
+    if (!st) throw new Error('the project has no board yet; start with set_board')
+    const cls = pcb.classes.find((c) => c.name === pcb.nets.find((n) => n.name === net)!.class) ?? DEFAULT_CLASS
+    const mine = pcb.vias.filter((v) => v.net === net && v.stitch)
+    const rest = { ...pcb, vias: pcb.vias.filter((v) => !mine.includes(v)) }
+    const fills = mine.length ? fillZones(rest, st.board) : st.zones
+    const points = stitchPoints(rest, st.board, fills, net, { pitch: a.pitch ?? 5, diameter: cls.via_diameter, drill: cls.via_drill, clearance: Math.max(...pcb.classes.map((c) => c.clearance), cls.clearance) })
+    if (!points.length) throw new Error(`no room for stitching vias on ${net}: it needs pours on two layers (add_zone on F.Cu and B.Cu) with free copper; try a smaller pitch`)
+    return { ...a, points }
+  },
+  apply(doc, a) {
+    if (!a.points) throw new Error('stitch_vias must be called through Ket')
+    const next = clone(doc)
+    const pcb = pcbOf(next)
+    const net = a.net ?? 'GND'
+    const n = pcb.nets.find((x) => x.name === net)
+    if (!n) throw new Error(`no net "${net}"`)
+    const cls = pcb.classes.find((c) => c.name === n.class) ?? DEFAULT_CLASS
+    const before = pcb.vias.length
+    pcb.vias = pcb.vias.filter((v) => !(v.net === net && v.stitch))
+    for (const at of a.points) pcb.vias.push({ net, at, drill: cls.via_drill, diameter: cls.via_diameter, stitch: true })
+    return { doc: next, summary: `${a.points.length} stitching vias on ${net}${before - (pcb.vias.length - a.points.length) ? ` (replaced ${before - (pcb.vias.length - a.points.length)})` : ''}` }
+  },
+})
+
+define({
   name: 'unroute',
   group: 'pcb',
   kind: 'mutate',
@@ -613,6 +831,24 @@ define({
 })
 
 define({
+  name: 'remove_mounting_holes',
+  group: 'pcb',
+  kind: 'mutate',
+  description: 'Remove mounting holes by number (1-based, in the order get_board lists the board holes; part holes like hot-swap pins belong to their part), or all of them.',
+  args: z.object({ numbers: z.array(z.number().int().positive()).optional(), all: z.boolean().optional() }),
+  apply(doc, a) {
+    const next = clone(doc)
+    const pcb = pcbOf(next)
+    if (!a.all && !a.numbers?.length) throw new Error('give numbers (from get_board holes) or all: true')
+    const bad = (a.numbers ?? []).filter((n) => n > pcb.holes.length)
+    if (bad.length) throw new Error(`no mounting hole ${bad.join(', ')}; there are ${pcb.holes.length}`)
+    const before = pcb.holes.length
+    pcb.holes = a.all ? [] : pcb.holes.filter((_, i) => !a.numbers!.includes(i + 1))
+    return { doc: next, summary: `removed ${before - pcb.holes.length} mounting hole(s)` }
+  },
+})
+
+define({
   name: 'remove_zones',
   group: 'pcb',
   kind: 'mutate',
@@ -641,38 +877,126 @@ define({
   },
 })
 
+/** Nets with copper or pads inside a box [[x0, y0], [x1, y1]]. */
+function netsIn(pcb: Pcb, box: [[number, number], [number, number]], pads: { center: { x: number; y: number }; net?: string }[]): string[] {
+  const [[x0, y0], [x1, y1]] = box
+  const lo = [Math.min(x0, x1), Math.min(y0, y1)]
+  const hi = [Math.max(x0, x1), Math.max(y0, y1)]
+  const inBox = (x: number, y: number) => x >= lo[0] && x <= hi[0] && y >= lo[1] && y <= hi[1]
+  const out = new Set<string>()
+  for (const t of pcb.tracks) if (t.points.some((p, i) => inBox(p[0], p[1]) || (i > 0 && inBox((p[0] + t.points[i - 1][0]) / 2, (p[1] + t.points[i - 1][1]) / 2)))) out.add(t.net)
+  for (const v of pcb.vias) if (inBox(v.at[0], v.at[1])) out.add(v.net)
+  for (const p of pads) if (p.net && inBox(p.center.x, p.center.y)) out.add(p.net)
+  return [...out]
+}
+
+const vec2n = z.tuple([z.number(), z.number()])
+const region = z
+  .tuple([vec2n, vec2n])
+  .describe('A box [[x0, y0], [x1, y1]] on the board, mm: the nets with copper or pads in it')
+
 define({
   name: 'autoroute',
   group: 'pcb',
   kind: 'mutate',
   description:
-    'Route the board with Freerouting (on the server): every net with 2+ pins, keeping existing tracks. Takes seconds to a few minutes. Place parts and set net classes first; then run_drc. If nets stay unrouted, give parts more room or allow 4 layers.',
+    "Route the board with Ket's autorouter (runs in the browser): every net with 2+ pins. Tracks are 0/45/90° only, leave pads along their long side, keep each net class's width and clearance (power nets wide; they neck down only to reach fine-pitch pads) and use few vias; crowded nets are rerouted until they fit. Nets poured on every layer are left to the pour. Without nets/region it keeps existing copper and adds to it; with nets (or region) it reroutes just those: their old tracks and vias are replaced, everything else stays as an obstacle. Use it for \"redo this part of the board\": e.g. the user points at an area, pass region. Takes seconds. Then run_drc. If it fails or nets stay unrouted, give parts more room, move connectors to the edge or use 4 layers.",
   args: z.object({
-    passes: z.number().int().min(1).max(100).optional(),
+    nets: z.array(z.string()).optional().describe('Reroute only these nets'),
+    region: region.optional(),
     timeout: z.number().int().min(10).max(600).optional().describe('Seconds, default 180'),
     result: z.record(z.string(), z.unknown()).optional().describe('(filled in automatically)'),
   }),
   internal: ['result'],
   async prepare(ctx, a) {
     if (a.result) return a
-    if (!ctx.services) throw new Error('autoroute needs the server')
-    const st = await ctx.kernel.board()
-    if (!st) throw new Error('the project has no board yet; start with set_board')
-    if (st.board.errors.length) throw new Error(`fix the board first: ${st.board.errors.join('; ')}`)
-    if (!ctx.doc.pcb!.nets.some((n) => n.pins.length >= 2)) throw new Error('nothing to route: connect pins into nets first')
-    const dsn = exportDSN(ctx.doc.pcb!, st.board, { skip: pourOnlyNets(ctx.doc.pcb!) })
-    const ses = await ctx.services.route(dsn, { passes: a.passes, timeout: a.timeout })
-    const r = importSES(ses, new Set(ctx.doc.pcb!.nets.map((n) => n.name)))
-    return { ...a, result: r as unknown as Record<string, unknown> }
+    const pcb = ctx.doc.pcb
+    if (!pcb) throw new Error('the project has no board yet; start with set_board')
+    if (!pcb.nets.some((n) => n.pins.length >= 2)) throw new Error('nothing to route: connect pins into nets first')
+    let nets = a.nets
+    if (a.region) {
+      const st = await ctx.kernel.board()
+      const found = netsIn(pcb, a.region, st?.board.pads ?? [])
+      if (!found.length) throw new Error(`no net has copper or pads in [[${a.region[0]}], [${a.region[1]}]]; get_board shows the outline (x right, y up)`)
+      nets = [...new Set([...(nets ?? []), ...found])]
+    }
+    const unknown = (nets ?? []).filter((n) => !pcb.nets.some((x) => x.name === n))
+    if (unknown.length) throw new Error(`no net ${unknown.map((n) => `"${n}"`).join(', ')}; nets are: ${pcb.nets.map((n) => n.name).join(', ')}`)
+    const r = await ctx.kernel.autoroute({ timeout: a.timeout, skip: [...pourOnlyNets(pcb)], nets })
+    return { ...a, nets, result: { ...(r as unknown as Record<string, unknown>), replaced: nets ?? null } }
   },
   apply(doc, a) {
     if (!a.result) throw new Error('autoroute must be called through Ket')
     const next = clone(doc)
     const pcb = pcbOf(next)
-    const r = a.result as unknown as ReturnType<typeof importSES>
+    const r = a.result as unknown as { tracks: Track[]; vias: Via[]; seconds?: number; unrouted?: string[]; violations?: string[]; replaced?: string[] | null }
+    if (r.replaced?.length) {
+      const drop = new Set(r.replaced)
+      pcb.tracks = pcb.tracks.filter((t) => !drop.has(t.net))
+      pcb.vias = pcb.vias.filter((v) => !drop.has(v.net))
+    }
     pcb.tracks.push(...r.tracks)
     pcb.vias.push(...r.vias)
-    return { doc: next, summary: `autorouted: ${r.tracks.length} tracks, ${r.vias.length} vias` }
+    const which = r.replaced?.length ? ` (rerouted ${r.replaced.join(', ')})` : ''
+    const miss = r.unrouted?.length ? `; not routed: ${r.unrouted.join(', ')}` : ''
+    const bad = r.violations?.length ? `; ${r.violations.length} DRC problem(s) left in the new copper (run_drc; fix by hand or move parts and route again): ${r.violations.slice(0, 3).join('; ')}` : ''
+    return { doc: next, summary: `autorouted${which}: ${r.tracks.length} tracks, ${r.vias.length} vias${r.seconds !== undefined ? ` in ${r.seconds} s` : ''}${miss}${bad}` }
+  },
+})
+
+define({
+  name: 'tidy_tracks',
+  group: 'pcb',
+  kind: 'mutate',
+  description:
+    'Clean up existing tracks without rerouting: straighten them (drop wiggles, stair steps and tiny back-and-forth segments, pulling each track tight while it keeps clearance to other copper and the board edge) and widen them to their net class width where it fits. Optionally set a new width first (e.g. "make GND thicker": nets ["GND"], width 0.6, or set_net_class). Limit it with nets or region; default all tracks. Connections stay as they are; run_drc after.',
+  args: z.object({
+    nets: z.array(z.string()).optional(),
+    region: region.optional(),
+    width: z.number().positive().optional().describe('New width for these nets, mm: they move to a net class of that width; where it does not fit the track is as wide as fits'),
+    result: z.record(z.string(), z.unknown()).optional().describe('(filled in automatically)'),
+  }),
+  internal: ['result'],
+  async prepare(ctx, a) {
+    if (a.result) return a
+    const pcb = ctx.doc.pcb
+    if (!pcb?.tracks.length) throw new Error('there are no tracks to tidy; autoroute or add_track first')
+    const st = await ctx.kernel.board()
+    if (!st) throw new Error('the project has no board yet; start with set_board')
+    let nets = a.nets
+    if (a.region) nets = [...new Set([...(nets ?? []), ...netsIn(pcb, a.region, st.board.pads)])]
+    const pick = (t: Track) => !nets || nets.includes(t.net)
+    const mine = pcb.tracks.filter(pick)
+    if (!mine.length) throw new Error(nets ? `no tracks on ${nets.join(', ')}` : 'no tracks')
+    const rest = pcb.tracks.filter((t) => !pick(t))
+    const board = a.width ? { ...st.board, netClass: new Map([...st.board.netClass, ...(nets ?? pcb.nets.map((n) => n.name)).map((n) => [n, { ...(st.board.netClass.get(n) ?? DEFAULT_CLASS), track: a.width! }] as const)]) } : st.board
+    // Start each at the narrowest it may be, so widening decides the width.
+    const start = mine.map((t) => ({ ...t, width: Math.min(t.width, (board.netClass.get(t.net) ?? DEFAULT_CLASS).track, DEFAULT_CLASS.track) }))
+    const tidy = tidyTracks(start, rest, pcb.vias, pcb, board)
+    return { ...a, nets, result: { tracks: tidy, nets: nets ?? null } }
+  },
+  apply(doc, a) {
+    if (!a.result) throw new Error('tidy_tracks must be called through Ket')
+    const next = clone(doc)
+    const pcb = pcbOf(next)
+    const r = a.result as unknown as { tracks: Track[]; nets: string[] | null }
+    const pick = (t: Track) => !r.nets || r.nets.includes(t.net)
+    const before = pcb.tracks.filter(pick)
+    const corners = (ts: Track[]) => ts.reduce((s, t) => s + Math.max(0, t.points.length - 2), 0)
+    pcb.tracks = [...pcb.tracks.filter((t) => !pick(t)), ...r.tracks]
+    // A new width becomes the nets' class: one class per width, so DRC and later routes keep it.
+    let cls = ''
+    if (a.width) {
+      cls = `w${String(a.width).replace('.', '_')}`
+      const base = pcb.classes.find((c) => c.name === pcb.nets.find((n) => pick({ net: n.name } as Track))?.class) ?? DEFAULT_CLASS
+      if (!pcb.classes.some((c) => c.name === cls)) pcb.classes.push({ ...base, name: cls, track: a.width })
+      for (const n of pcb.nets) if (pick({ net: n.name } as Track)) n.class = cls
+    }
+    const thin = r.tracks.filter((t) => a.width && t.width < a.width - 1e-9).length
+    return {
+      doc: next,
+      summary: `tidied ${r.nets ? r.nets.join(', ') : 'all tracks'}: ${corners(before)} → ${corners(r.tracks)} corners, ${before.length} → ${r.tracks.length} tracks${cls ? `; nets now in class ${cls} (${a.width} mm)${thin ? `, ${thin} piece(s) narrower where ${a.width} mm does not fit` : ''}` : ''}`,
+    }
   },
 })
 
@@ -745,7 +1069,7 @@ define({
         tracks: pcb.tracks.length,
         vias: pcb.vias.length,
       },
-      holes: board.holes.map((h) => ({ at: [r2(h.at.x), r2(h.at.y)], d: h.d })),
+      holes: board.holes.map((h) => ({ at: [r2(h.at.x), r2(h.at.y)], d: h.d, ...(h.ref ? { part: h.ref } : {}) })),
       zones: st.zones.map((zf) => ({ number: zf.index + 1, net: zf.net, layer: zf.layer, area: zf.area, islands: zf.regions.length, dropped_islands: zf.dropped || undefined })),
       wires: pcb.wires?.length ? pcb.wires.map((w) => `${w.a} — ${w.b}`) : undefined,
     }
@@ -841,6 +1165,7 @@ define({
     const groups = new Map<string, Component[]>()
     const noPart: string[] = []
     for (const c of pcb.components) {
+      if (c.dnp) continue
       if (!c.lcsc) {
         noPart.push(c.ref)
         continue
@@ -880,7 +1205,7 @@ define({
         type: o.basic ? 'basic' : 'extended',
       }
     })
-    for (const r of noPart) problems.push(`${r} has no LCSC part number: JLCPCB cannot place it`)
+    for (const r of noPart) problems.push(`${r} has no LCSC part number: JLCPCB cannot place it (set dnp: true with move_component if it is bare copper or fitted by hand)`)
     const fees = extended * EXTENDED_FEE
     const checked = offers.map((o) => o.checked).filter(Boolean).sort()[0]
     return {

@@ -11,6 +11,8 @@ log_level: info
 server:
   port: 8080
   # base_path: /ket          # when served under a path prefix
+  # ui_dir: internal/server/dist   # development: serve the UI from disk, so
+  #                                # `make build-ui` needs no restart
 
 store:
   postgres:

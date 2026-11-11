@@ -7,8 +7,9 @@
 
 import { z } from 'zod'
 
-import type { Doc, Selector } from './doc'
+import type { Doc, Selector, Track, Via } from './doc'
 import type { BuildResult, CheckResult, EdgeInfo, FaceInfo, Kernel, MeshData } from './kernel'
+import type { MotionPlan } from './motion'
 import type { BoardState } from './pcb/state'
 import type { SolvedSketch } from './sketch'
 
@@ -29,6 +30,47 @@ export interface KernelAPI {
   /** The resolved board with DRC and ratsnest; undefined without a PCB. */
   board(opts?: { drc?: boolean }): Promise<BoardState | undefined>
   export(format: 'step' | 'stl', names: string[], models?: Record<string, string>): Promise<Blob>
+  /** Solved gears: placement, sizes, ratios, warnings. */
+  gears(): Promise<Record<string, unknown>[]>
+  /** What Play moves. */
+  motion(): Promise<MotionPlan>
+  /** Runs physics headless; where loose bodies go. */
+  simulate(seconds: number, samples: number): Promise<Record<string, unknown>>
+  /** Steps the driven parameter and reports bodies that overlap. */
+  sweep(opts: SweepOptions): Promise<Record<string, unknown>>
+  /** Solved cams, geneva drives and belts. */
+  mechanisms(): Promise<Record<string, unknown>[]>
+  /** Routes the board with the built-in autorouter (in the kernel worker). */
+  autoroute(opts: AutorouteOptions): Promise<AutorouteResult>
+}
+
+export interface AutorouteOptions {
+  timeout?: number
+  /** Nets left to pours. */
+  skip?: string[]
+  /** Only these nets (their old copper is replaced; the rest stays as obstacles). */
+  nets?: string[]
+}
+
+export interface AutorouteResult {
+  tracks: Track[]
+  vias: Via[]
+  nets: number
+  seconds: number
+  unrouted: string[]
+  /** Solver runs (it reroutes with larger keepouts where DRC found new copper too close). */
+  rounds: number
+  /** DRC problems the new copper still has. */
+  violations: string[]
+}
+
+export interface SweepOptions {
+  from?: number
+  to?: number
+  steps?: number
+  bodies?: string[]
+  ignore?: [string, string][]
+  min_volume?: number
 }
 
 /** Wraps an in-process Kernel (Node, tests) as a KernelAPI for doc. */
@@ -45,12 +87,20 @@ export function localKernel(kernel: Kernel, doc: Doc): KernelAPI {
     sketch: async (n) => (await build(), kernel.sketch(n)),
     board: async (o) => (await build(), kernel.boardState(doc, o)),
     export: async (f, names, models) => (await build(), kernel.export(f, names, models)),
+    gears: async () => (await build(), kernel.gearReport()),
+    motion: async () => (await build(), kernel.motion(doc)),
+    simulate: async (s, n) => (await build(), kernel.simulate(doc, s, n)),
+    sweep: async (o) => (await build(), kernel.sweep(doc, o)),
+    mechanisms: async () => (await build(), kernel.mechanismReport()),
+    autoroute: async (o) => (await build(), kernel.autoroute(doc, o)),
   }
 }
 
 /** What a command can use while running. */
 export interface Ctx {
   doc: Doc
+  /** Applied, prepared operations at the current head, without user/server metadata. */
+  projectOps?: Op[]
   kernel: KernelAPI
   /** Renders views of the current model; only in the browser. */
   render?(opts: RenderOptions): Promise<{ images: { mime: string; data: string }[]; views: string[] }>
@@ -72,8 +122,6 @@ export interface Services {
   getModel?(uuid: string): Promise<string>
   /** Price and stock for quantities (LCSC → pieces); refreshed daily. */
   offers?(parts: Record<string, number>): Promise<Offer[]>
-  /** Runs Freerouting on a DSN and returns the SES. */
-  route(dsn: string, opts?: { passes?: number; timeout?: number }): Promise<string>
 }
 
 export interface Offer {
@@ -106,6 +154,10 @@ export interface RenderOptions {
   edges?: boolean
   labels?: boolean
   section?: { axis: 'X' | 'Y' | 'Z'; at: number }
+  /** normal (CAD), realistic (materials, no edges), wireframe or xray. */
+  shading?: 'normal' | 'realistic' | 'wireframe' | 'xray'
+  /** Body name → display offset (exploded view). */
+  offsets?: Record<string, [number, number, number]>
 }
 
 export interface MutateOut {

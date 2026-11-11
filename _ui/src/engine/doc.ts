@@ -91,11 +91,15 @@ export type SketchConstraint =
   | { kind: 'symmetric'; a: string; b: string; about: string }
 
 /** 2D profile for extrusions; points are in the plane's local coordinates. */
-export type Profile =
+export type Profile = (
   | { kind: 'rect'; w: Expr; h: Expr; r?: Expr; center?: Vec2E }
   | { kind: 'circle'; r: Expr; center?: Vec2E }
   | { kind: 'polygon'; points: Vec2E[] }
   | { kind: 'slot'; length: Expr; width: Expr; center?: Vec2E; angle?: Expr }
+) & {
+  /** Offset the outline inwards by this many mm (negative grows it): walls, lips and clearances from one outline. */
+  inset?: Expr
+}
 
 /** One cross-section of a loft: a sketch, or a profile on a plane. */
 export interface Section {
@@ -116,6 +120,8 @@ interface FeatureBase {
   color?: string
   /** Viewport opacity 0..1; lower shows what is inside. Display only. */
   opacity?: number
+  /** Name of a material (doc.materials). Display only. */
+  material?: string
 }
 
 export type Feature =
@@ -126,13 +132,103 @@ export type Feature =
   | (FeatureBase & { type: 'revolve'; sketch?: string; plane?: Plane; offset?: Expr; profile?: Profile; axis: 'X' | 'Y' | 'Z'; angle?: Expr } & Transform)
   | (FeatureBase & { type: 'loft'; sections: Section[]; ruled?: boolean } & Transform)
   | (FeatureBase & { type: 'sweep'; sketch?: string; profile?: Profile; path: Vec3E[]; bend?: Expr } & Transform)
-  | (FeatureBase & { type: 'boolean'; op: 'union' | 'cut' | 'intersect'; target: string; tools: string[] })
+  | (FeatureBase & { type: 'boolean'; op: 'union' | 'cut' | 'intersect'; target: string; tools: string[]; separate?: boolean })
   | (FeatureBase & { type: 'fillet'; target: string; r: Expr; edges?: Selector })
   | (FeatureBase & { type: 'chamfer'; target: string; d: Expr; edges?: Selector })
   | (FeatureBase & { type: 'shell'; target: string; thickness: Expr; open?: Selector })
   | (FeatureBase & { type: 'transform'; target: string } & Transform)
+  | (FeatureBase & { type: 'import'; url: string; scale?: Expr } & Transform)
   | (FeatureBase & { type: 'pattern'; target: string; kind: 'linear'; count: Expr; step: Vec3E })
   | (FeatureBase & { type: 'pattern'; target: string; kind: 'grid'; count: Vec2E; step: Vec2E })
+  | (FeatureBase & { type: 'pattern'; target: string; kind: 'polar'; count: Expr; axis?: 'X' | 'Y' | 'Z'; center?: Vec3E; angle?: Expr })
+  | (FeatureBase & { type: 'mirror'; target: string; plane: Plane; offset?: Expr; keep?: boolean })
+  | (FeatureBase & {
+      type: 'gear'
+      kind: 'spur' | 'helical' | 'herringbone' | 'internal' | 'rack' | 'worm' | 'bevel'
+      teeth?: Expr
+      module: Expr
+      width?: Expr
+      length?: Expr
+      pressure_angle?: Expr
+      helix?: Expr
+      hand?: 'right' | 'left'
+      profile_shift?: Expr | 'auto'
+      backlash?: Expr
+      diameter?: Expr
+      pair_teeth?: Expr
+      cone_angle?: Expr
+      bore?: Expr
+      hub?: { d: Expr; length: Expr }
+      shaft?: { d: Expr; length: Expr }
+      holes?: { count: Expr; d: Expr; at?: Expr }
+      rim?: Expr
+      center?: Vec3E
+      axis?: 'X' | 'Y' | 'Z' | '-X' | '-Y' | '-Z'
+      rotation?: Expr
+      travel?: Expr
+      mesh?: { with: string; angle?: Expr; toward?: Vec3E }
+      coaxial?: { with: string; offset?: Expr; phase?: Expr }
+    })
+  | (FeatureBase & {
+      type: 'cam'
+      /** Center of the cam, on its axis. */
+      center?: Vec3E
+      axis?: 'X' | 'Y' | 'Z' | '-X' | '-Y' | '-Z'
+      /** Turn of the cam, degrees: drive it with a parameter. */
+      rotation?: Expr
+      /** Radius under the follower at zero lift. */
+      base_r: Expr
+      /** Follower lift, mm, as an expression of t (cam angle 0..360 degrees, in the cam's own frame). */
+      lift: string
+      width: Expr
+      /** Roller follower radius (0 or absent: knife edge). */
+      roller?: Expr
+      bore?: Expr
+      /** Where the follower sits, degrees around the cam in its plane (default 90). */
+      follower_at?: Expr
+    })
+  | (FeatureBase & {
+      type: 'geneva'
+      part: 'drive'
+      slots: Expr
+      /** Distance between the drive and wheel axes. */
+      distance: Expr
+      pin_d: Expr
+      width: Expr
+      /** Drive center. */
+      center?: Vec3E
+      axis?: 'X' | 'Y' | 'Z' | '-X' | '-Y' | '-Z'
+      /** Direction from the drive to the wheel, degrees in the drive's plane. */
+      toward?: Expr
+      /** Drive angle, degrees from the line of centers (180: pin away, wheel locked). Drive it with a parameter. */
+      angle?: Expr
+      bore?: Expr
+      clearance?: Expr
+    })
+  | (FeatureBase & { type: 'geneva'; part: 'wheel'; drive: string; bore?: Expr })
+  | (FeatureBase & {
+      type: 'belt'
+      plane: Plane
+      offset?: Expr
+      /** Pulleys around which the belt runs: center in plane coordinates, pitch diameter (or teeth with the belt's pitch); body: the pulley body, which then turns with the belt. */
+      pulleys: { at: Vec2E; d?: Expr; teeth?: Expr; body?: string }[]
+      thickness: Expr
+      width: Expr
+      /** Chain or timing belt pitch: pulley d = pitch / sin(180°/teeth). */
+      pitch?: Expr
+    })
+  | (FeatureBase & {
+      type: 'text'
+      text: string
+      size: Expr
+      depth: Expr
+      plane: Plane
+      offset?: Expr
+      at?: Vec2E
+      anchor?: 'center' | 'left' | 'right'
+      angle?: Expr
+      font?: FontName
+    } & Transform)
 
 export type FeatureType = Feature['type']
 
@@ -144,7 +240,7 @@ export type FeatureType = Feature['type']
 export type Check =
   | { name: string; kind: 'expr'; expr: string; note?: string }
   | { name: string; kind: 'min_distance'; a: string; b: string; min: Expr; note?: string }
-  | { name: string; kind: 'no_overlap'; a: string; b: string; note?: string }
+  | { name: string; kind: 'no_overlap'; a: string; b: string; /** Intended overlap, mm³ (snap-fit clips). */ allow?: number; note?: string }
   | { name: string; kind: 'inside'; inner: string; outer: string; margin?: Expr; note?: string }
   | { name: string; kind: 'volume'; target: string; min?: Expr; max?: Expr; note?: string }
 
@@ -156,7 +252,159 @@ export interface Doc {
   features: Feature[]
   checks: Check[]
   pcb?: Pcb
+  /** How bodies look (display only): PBR materials, assigned per feature. */
+  materials?: Material[]
+  /** Labels and images projected onto bodies (display only). */
+  decals?: Decal[]
+  /** How the model moves: a driven parameter, joints, and bodies that fall and collide. */
+  motion?: Motion
+  /** Exploded view (display only): bodies moved apart to show the assembly. */
+  explode?: Explode
   meta: { description?: string }
+}
+
+/**
+ * An exploded view: each listed body (or every body of a group) is drawn
+ * moved by offset [x, y, z] mm when the view is exploded. Display only: the
+ * model, checks and exports stay where they are built.
+ */
+export interface Explode {
+  steps: { names: string[]; offset: Vec3E; note?: string }[]
+}
+
+// ── Motion ─────────────────────────────────────────────────────────────
+// Kinematics are exact: a joint turns or slides a body in proportion to a
+// parameter (gears get their joints from the mesh solver). Physics is for
+// loose parts: they fall and collide with everything else, which is solid
+// (moving joint bodies push them). Neither changes the document while it
+// plays; stopping writes the driven parameter back once.
+
+export interface Joint {
+  body: string
+  /**
+   * rotate: about axis through origin; slide: along axis. follow: copy
+   * another body's motion (a crank on a worm shaft). cam: the body slides as
+   * the follower of a cam feature.
+   */
+  kind: 'rotate' | 'slide' | 'follow' | 'cam'
+  axis?: Vec3E
+  origin?: Vec3E
+  /** Degrees (rotate) or mm (slide) per unit of param. */
+  rate?: Expr
+  /** Instead of rate: the angle or travel as an expression of the drive parameter (nonlinear, e.g. "8*sin(crank)"). */
+  position?: string
+  param?: string
+  follow?: string
+  /** cam: the cam feature this body follows. */
+  cam?: string
+}
+
+export interface PhysicsBody {
+  name: string
+  /** g/cm³ (steel 7.8, PLA 1.25, wood 0.6). */
+  density?: number
+  friction?: number
+  restitution?: number
+  /** Start velocity, mm/s. */
+  velocity?: [number, number, number]
+  /** Start spin, degrees/s about x, y, z. */
+  spin?: [number, number, number]
+}
+
+export interface Motion {
+  /** The parameter Play advances, and how. */
+  drive?: { param: string; speed: number; mode?: 'forever' | 'loop' | 'bounce'; range?: [number, number] }
+  joints?: Joint[]
+  physics?: { bodies: PhysicsBody[]; gravity?: number; floor?: boolean }
+}
+
+/** Fonts for text features (outlines become geometry). */
+export type FontName = 'regular' | 'bold'
+
+// ── Appearance ─────────────────────────────────────────────────────────
+// Materials and decals never change geometry, exports or checks; they only
+// change how the viewport and render draw a body.
+
+export type TexturePattern = 'noise' | 'brushed' | 'scratches' | 'wood' | 'leather' | 'checker' | 'grid' | 'dots' | 'knurl'
+
+/**
+ * One texture map: a procedural pattern (tileable, seeded) or an image URL.
+ * Values follow the map's meaning: albedo mixes color → color2, roughness
+ * and metallic vary around the material's value by ±strength/2, normal and
+ * displacement use the pattern as a height field.
+ */
+export interface TextureMap {
+  pattern?: TexturePattern
+  image?: string
+  /** Tile size in mm (default: the material's uv.scale). */
+  scale?: number
+  /** 0..1 for most maps; mm of relief for displacement. */
+  strength?: number
+  /** albedo: second color the pattern mixes in. */
+  color2?: string
+  seed?: number
+}
+
+export interface UVMapping {
+  /** box: each face from its dominant axis; planar: along axis; cylindrical: around axis. */
+  projection: 'box' | 'planar' | 'cylindrical'
+  axis?: 'X' | 'Y' | 'Z'
+  /** Tile size in mm. */
+  scale?: number
+  /** Degrees. */
+  rotation?: number
+  /** [u, v] in mm. */
+  offset?: [number, number]
+}
+
+export interface Material {
+  name: string
+  color: string
+  /** 0 dielectric .. 1 metal. */
+  metalness?: number
+  /** 0 mirror .. 1 matte. */
+  roughness?: number
+  opacity?: number
+  /** Light it gives off, 0..1 of its color (screens, LEDs). */
+  emissive?: number
+  /** Clear lacquer layer, 0..1 (car paint, glossy plastic). */
+  clearcoat?: number
+  uv?: UVMapping
+  maps?: { albedo?: TextureMap; normal?: TextureMap; roughness?: TextureMap; metallic?: TextureMap; ao?: TextureMap; displacement?: TextureMap }
+  note?: string
+}
+
+/**
+ * A decal is projected onto a body along -normal at a point: text (drawn
+ * with a CSS font) or an image, size [w, h] mm on the surface, depth the
+ * thickness of the projection box.
+ */
+export interface Decal {
+  name: string
+  target: string
+  at: Vec3E
+  /** Direction the decal faces (out of the surface). */
+  normal: [number, number, number]
+  /** Which way is up on the decal (default +Z, or +Y when the decal faces ±Z). */
+  up?: [number, number, number]
+  size: Vec2E
+  depth?: Expr
+  rotation?: Expr
+  text?: string
+  image?: string
+  /** Text color, or a tint for images. */
+  color?: string
+  background?: string
+  /** Cap height of the text in mm (default fits the decal). */
+  font_size?: Expr
+  font?: string
+  weight?: number
+  align?: 'left' | 'center' | 'right'
+  valign?: 'top' | 'middle' | 'bottom'
+  roughness?: number
+  metalness?: number
+  emissive?: number
+  opacity?: number
 }
 
 // ── PCB ────────────────────────────────────────────────────────────────
@@ -212,6 +460,8 @@ export interface Footprint {
 export interface SymbolDef {
   rects: [number, number, number, number][]
   circles: [number, number, number][]
+  /** Body lines (EasyEDA PL/PG polylines): [x0, y0, x1, y1, ...]. */
+  lines?: number[][]
   pins: { number: string; name: string; x: number; y: number; /** direction the pin points out of the body, degrees */ dir: number; length: number }[]
 }
 
@@ -244,6 +494,22 @@ export interface Component {
   note?: string
   height?: Expr
   footprint: Footprint
+  /** Not assembled: bare copper (solder pads, test points) or a part fitted by hand. Left out of the BOM and CPL. */
+  dnp?: boolean
+  /**
+   * A real 3D model (STEP/STL URL) for the part body, in footprint
+   * coordinates: x/y on the board, z up from the board face the part sits on.
+   * Replaces the courtyard block as body part_<ref>.
+   */
+  model?: PartModel
+}
+
+export interface PartModel {
+  url: string
+  /** Degrees about X, Y, Z (applied first), then translate. */
+  rotate?: Vec3E
+  translate?: Vec3E
+  scale?: Expr
 }
 
 export interface Net {
@@ -273,6 +539,8 @@ export interface Via {
   at: [number, number]
   drill: number
   diameter: number
+  /** Placed by stitch_vias (replaced when it runs again). */
+  stitch?: boolean
 }
 
 /**
@@ -336,6 +604,16 @@ export function sketchesOf(f: Feature): string[] {
   return []
 }
 
+/** Features a feature depends on without consuming them (a gear follows the gear it meshes with). */
+export function refsOf(f: Feature): string[] {
+  if (f.type === 'gear') {
+    const r = f.mesh?.with ?? f.coaxial?.with
+    return r ? [r] : []
+  }
+  if (f.type === 'geneva' && f.part === 'wheel') return [f.drive]
+  return []
+}
+
 /** Features that consume other features; consumed bodies are not shown. */
 export function inputsOf(f: Feature): string[] {
   switch (f.type) {
@@ -346,6 +624,7 @@ export function inputsOf(f: Feature): string[] {
     case 'shell':
     case 'transform':
     case 'pattern':
+    case 'mirror':
       return [f.target]
     default:
       return []

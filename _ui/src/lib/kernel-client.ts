@@ -3,10 +3,12 @@
 
 import type { Doc, Selector } from '../engine/doc'
 import type { BuildResult, CheckResult, EdgeInfo, FaceInfo, MeshData, SketchLines } from '../engine/kernel'
-import type { KernelAPI } from '../engine/registry'
+import type { AutorouteOptions, AutorouteResult, KernelAPI, SweepOptions } from '../engine/registry'
+import type { MotionPlan } from '../engine/motion'
 import type { SolvedSketch } from '../engine/sketch'
 import type { BoardState } from '../engine/pcb/state'
 import type { WorkerRequest } from '../engine/worker'
+import { base } from './api'
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
@@ -65,7 +67,7 @@ export class KernelClient {
     if (this.builtDoc === doc && this.lastBuilt) return this.lastBuilt
     // structuredClone through postMessage; $state proxies must be unwrapped.
     const plain = JSON.parse(JSON.stringify(doc)) as Doc
-    const out = await this.send<Built>({ type: 'build', doc: plain })
+    const out = await this.send<Built>({ type: 'build', doc: plain, assets: `${location.origin}${base}/api/v1/assets` })
     this.builtDoc = doc
     this.lastBuilt = out
     return out
@@ -89,6 +91,12 @@ export class KernelClient {
       sketch: async (name: string) => (await ensure(), this.send<SolvedSketch>({ type: 'sketch', name })),
       board: async (o?: { drc?: boolean }) => (await ensure(), this.send<BoardState | undefined>({ type: 'board', drc: o?.drc })),
       export: async (format: 'step' | 'stl', names: string[], models?: Record<string, string>) => (await ensure(), this.send<Blob>({ type: 'export', format, names, models })),
+      gears: async () => (await ensure(), this.send<Record<string, unknown>[]>({ type: 'gears' })),
+      motion: async () => (await ensure(), this.send<MotionPlan>({ type: 'motion' })),
+      simulate: async (seconds: number, samples: number) => (await ensure(), this.send<Record<string, unknown>>({ type: 'simulate', seconds, samples })),
+      sweep: async (opts: SweepOptions) => (await ensure(), this.send<Record<string, unknown>>({ type: 'sweep', opts })),
+      mechanisms: async () => (await ensure(), this.send<Record<string, unknown>[]>({ type: 'mechanisms' })),
+      autoroute: async (opts: AutorouteOptions) => (await ensure(), this.send<AutorouteResult>({ type: 'autoroute', opts })),
     }
   }
 }

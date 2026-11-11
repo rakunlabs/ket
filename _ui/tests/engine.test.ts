@@ -107,6 +107,74 @@ describe('enclosure', () => {
     expect(() => run(doc, 'delete_features', { names: ['a'] })).toThrow(/cut uses a/)
   }, 120_000)
 
+  it('cuts and joins many tools in one pass with the same result', () => {
+    let doc = emptyDoc()
+    doc = run(doc, 'box', { name: 'outer', size: [60, 50, 12] })
+    doc = run(doc, 'box', { name: 'inner', size: [56, 46, 12], translate: [0, 0, 1.5] })
+    doc = run(doc, 'boolean', { name: 'tray', op: 'cut', target: 'outer', tools: ['inner'] })
+    const bosses: string[] = []
+    const holes: string[] = []
+    for (let i = 0; i < 6; i++) {
+      const at = [-20 + (i % 3) * 20, i < 3 ? -15 : 15]
+      doc = run(doc, 'cylinder', { name: `boss${i}`, r: 2.5, h: 8, translate: [...at, 1] })
+      doc = run(doc, 'cylinder', { name: `hole${i}`, r: 0.8, h: 9, translate: [...at, 3] })
+      bosses.push(`boss${i}`)
+      holes.push(`hole${i}`)
+    }
+    // Two tools that overlap each other, and one loose in the cavity.
+    doc = run(doc, 'box', { name: 'slot_a', size: [6, 10, 4], translate: [30, 0, 5] })
+    doc = run(doc, 'box', { name: 'slot_b', size: [10, 6, 4], translate: [30, 0, 6] })
+    doc = run(doc, 'box', { name: 'loose', size: [2, 2, 2], translate: [10, 0, 6] })
+    doc = run(doc, 'boolean', { name: 'built', op: 'union', target: 'tray', tools: bosses })
+    doc = run(doc, 'boolean', { name: 'done', op: 'cut', target: 'built', tools: [...holes, 'slot_a', 'slot_b', 'loose'] })
+    const k = new Kernel()
+    const b = k.build(doc)
+    expect(b.features.filter((f) => !f.ok)).toEqual([])
+    const st = (n: string) => b.features.find((f) => f.name === n)!
+    expect(st('built').solids).toBe(1)
+    expect(st('built').warnings).toBeUndefined()
+    const boss = Math.PI * 2.5 ** 2 * 7.5
+    expect(st('built').volume!).toBeCloseTo(st('tray').volume! + 6 * boss, 0)
+    const hole = Math.PI * 0.8 ** 2 * 6
+    // The slots overlap: together they remove their union from the 2 mm wall.
+    expect(st('done').volume!).toBeCloseTo(st('built').volume! - 6 * hole - (2 * 10 * 4 + 2 * 6 * 4 - 2 * 6 * 3), 0)
+    expect(st('done').warnings).toEqual(['cutting "loose" removed no material: it does not overlap "built"'])
+  }, 120_000)
+
+  it('reads and/or/not in check expressions', async () => {
+    let doc = emptyDoc()
+    doc = run(doc, 'set_parameters', { parameters: [{ name: 'w', expr: 10 }, { name: 'h', expr: 4 }] })
+    doc = run(doc, 'set_checks', {
+      checks: [
+        { name: 'both', kind: 'expr', expr: 'w <= 12 and h >= 4' },
+        { name: 'either', kind: 'expr', expr: 'w > 50 or not (h > 5)' },
+        { name: 'neither', kind: 'expr', expr: 'w > 50 and h >= 4' },
+      ],
+    })
+    const k = new Kernel()
+    k.build(doc)
+    const r = await query(doc, k, 'run_checks')
+    expect(r.checks.map((c: { name: string; ok: boolean }) => [c.name, c.ok])).toEqual([['both', true], ['either', true], ['neither', false]])
+  }, 60_000)
+
+  it('keeps unrelated primitive geometry cached while following derived parameters', () => {
+    let doc = emptyDoc()
+    doc = run(doc, 'set_parameters', { parameters: [{ name: 'w', expr: 10 }, { name: 'derived', expr: 'w * 2' }, { name: 'other', expr: 5 }] })
+    doc = run(doc, 'box', { name: 'a', size: ['derived', 4, 3] })
+    doc = run(doc, 'cylinder', { name: 'b', r: 'other', h: 4 })
+    const k = new Kernel()
+    const first = k.build(doc)
+    const changed = run(doc, 'set_parameters', { parameters: [{ name: 'other', expr: 6 }] })
+    const second = k.build(changed)
+    expect(second.features[0]).toBe(first.features[0])
+    expect(second.features[1]).not.toBe(first.features[1])
+    const changedWidth = run(changed, 'set_parameters', { parameters: [{ name: 'w', expr: 12 }] })
+    const third = k.build(changedWidth)
+    expect(third.features[0]).not.toBe(second.features[0])
+    expect(third.features[0].bbox).toEqual([[-12, -2, 0], [12, 2, 3]])
+    expect(third.features[1]).toBe(second.features[1])
+  })
+
   it('selects faces and edges by meaning', async () => {
     let doc = emptyDoc()
     doc = run(doc, 'box', { name: 'b', size: [20, 10, 5] })

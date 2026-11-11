@@ -54,6 +54,8 @@ export class Session {
   log = $state<LogEntry[]>([])
   connected = $state(false)
   building = $state(false)
+  /** The log is replayed and the first build is on screen (or failed). */
+  ready = $state(false)
   error = $state<string | undefined>(undefined)
   activity = $state<Activity | undefined>(undefined)
   selected = $state<string | undefined>(undefined)
@@ -175,6 +177,7 @@ export class Session {
     this.doc = doc
     this.head = head
     this.log = log
+    this.replayed = true
     void this.rebuild()
   }
 
@@ -278,6 +281,8 @@ export class Session {
   }
 
   private rebuildSeq = 0
+  /** The stored log has been applied: a build from here on shows the real design. */
+  private replayed = false
 
   /** Builds the current doc in the worker and publishes meshes. */
   async rebuild(): Promise<Built | undefined> {
@@ -298,7 +303,10 @@ export class Session {
       if (seq === this.rebuildSeq) this.error = (e as Error).message
       return undefined
     } finally {
-      if (seq === this.rebuildSeq) this.building = false
+      if (seq === this.rebuildSeq) {
+        this.building = false
+        if (this.replayed) this.ready = true
+      }
     }
   }
 
@@ -315,11 +323,12 @@ export class Session {
 
   private async exec(cmd: string, args: unknown, author: string): Promise<unknown> {
     const def = command(cmd)
-    if (!def) throw new Error(`unknown command "${cmd}"`)
+    if (!def) throw new Error(`unknown command "${cmd}" in this Ket tab; if the server offers it, the tab runs an older build: call reload_ui (or ask the user to reload the page)`)
     let parsed = parseArgs(def, args)
 
     const ctx = {
       doc: this.doc,
+      projectOps: this.ops.filter((o) => o.seq <= this.head).map((o) => o.op as Op),
       kernel: this.kernel.api(this.doc),
       render: this.renderer,
       renderBoard: this.boardRenderer,
@@ -336,7 +345,7 @@ export class Session {
       const prepared = []
       for (const [i, s] of steps.entries()) {
         const d = command(s.cmd)
-        if (!d) throw new Error(`step ${i + 1}: unknown command "${s.cmd}"`)
+        if (!d) throw new Error(`step ${i + 1}: unknown command "${s.cmd}" in this Ket tab; if the server offers it, the tab runs an older build: call reload_ui (or ask the user to reload the page)`)
         prepared.push({ cmd: s.cmd, args: d.prepare ? await d.prepare(ctx, parseArgs(d, s.args) as never) : s.args })
       }
       parsed = { steps: prepared }
@@ -443,14 +452,6 @@ const services: Services = {
   async getModel(uuid) {
     const r = await fetch(`${base}/api/v1/models/${encodeURIComponent(uuid)}`)
     if (!r.ok) throw new Error(r.statusText)
-    return r.text()
-  },
-  async route(dsn, opts) {
-    const q = new URLSearchParams()
-    if (opts?.passes) q.set('passes', String(opts.passes))
-    if (opts?.timeout) q.set('timeout', String(opts.timeout))
-    const r = await fetch(`${base}/api/v1/route?${q}`, { method: 'POST', body: dsn, headers: { 'Content-Type': 'text/plain' } })
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message ?? r.statusText)
     return r.text()
   },
 }

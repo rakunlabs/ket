@@ -48,11 +48,6 @@ type Settings struct {
 	DefaultProvider string `json:"default_provider,omitempty"`
 	// MaxSteps caps the tool-calling rounds of one user turn.
 	MaxSteps int `json:"max_steps"`
-
-	// Java and FreeroutingJar run the autorouter; empty = "java" and a
-	// downloaded jar.
-	Java           string `json:"java,omitempty"`
-	FreeroutingJar string `json:"freerouting_jar,omitempty"`
 }
 
 const (

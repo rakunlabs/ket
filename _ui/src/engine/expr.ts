@@ -1,6 +1,6 @@
 // A small, safe expression language for parameters and dimensions:
 //   numbers (with optional "mm"), names, + - * / % ^, parentheses,
-//   comparisons (< <= > >= == !=), && || !, and functions
+//   comparisons (< <= > >= == !=), && || ! (also and, or, not), and functions
 //   min max abs sqrt sin cos tan asin acos atan atan2 round floor ceil pi.
 // No eval; unknown names fail with a message listing what is known.
 
@@ -12,6 +12,9 @@ type Tok =
   | { k: 'op'; v: string }
 
 const OPS = ['<=', '>=', '==', '!=', '&&', '||', '+', '-', '*', '/', '%', '^', '(', ')', ',', '<', '>', '!']
+
+/** Models write boolean checks either way: "a <= b and c > 0" is "a <= b && c > 0". */
+const WORD_OPS: Record<string, string> = { and: '&&', or: '||', not: '!' }
 
 function tokenize(src: string): Tok[] {
   const out: Tok[] = []
@@ -34,7 +37,8 @@ function tokenize(src: string): Tok[] {
     }
     if (/[A-Za-z_]/.test(c)) {
       const m = /^[A-Za-z_][A-Za-z0-9_.]*/.exec(src.slice(i))!
-      out.push({ k: 'id', v: m[0] })
+      const word = WORD_OPS[m[0]]
+      out.push(word ? { k: 'op', v: word } : { k: 'id', v: m[0] })
       i += m[0].length
       continue
     }

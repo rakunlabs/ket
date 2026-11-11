@@ -39,8 +39,7 @@ type Config struct {
 
 	// Legacy sections, read once to seed the admin settings on first
 	// start; ignored afterwards.
-	AI  LegacyAI  `cfg:"ai"`
-	PCB LegacyPCB `cfg:"pcb"`
+	AI LegacyAI `cfg:"ai"`
 }
 
 // Roles and permissions:
@@ -60,6 +59,10 @@ type Server struct {
 	Host     string `cfg:"host"`
 	Port     string `cfg:"port" default:"8080"`
 	BasePath string `cfg:"base_path"`
+	// UIDir serves the UI from this folder instead of the embedded build,
+	// so `make build-ui` (and reload_ui) take effect without a restart.
+	// For development, e.g. internal/server/dist.
+	UIDir string `cfg:"ui_dir"`
 }
 
 type Store struct {
@@ -94,11 +97,6 @@ type LegacyProvider struct {
 	Model       string  `cfg:"model"`
 	Vision      bool    `cfg:"vision"`
 	Temperature float64 `cfg:"temperature"`
-}
-
-type LegacyPCB struct {
-	FreeroutingJar string `cfg:"freerouting_jar"`
-	Java           string `cfg:"java"`
 }
 
 func Load(ctx context.Context) (*Config, error) {

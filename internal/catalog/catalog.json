@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "guide": "# Ket: parametric CAD for agents\n\nKet is a parametric CAD and PCB tool that you drive with\ntools. The design is a JSON document: parameters, an ordered list of named\nfeatures, and checks. Geometry is rebuilt from it by OpenCascade every time\nit changes, so every dimension can be an expression over parameters.\n\n## Coordinates\n- Millimetres and degrees. Z is up. The XY plane at z=0 is the build plate.\n- box is centered on X/Y and sits on z=0 by default; cylinder starts at the\n  origin and grows along +axis.\n\n## Projects and tabs\n- Each open project is a tab in the user's Ket window; several can be open\n  at once. Over MCP, open_project opens one (activate: false keeps the\n  user's current tab), close_project closes it, and commands on a closed\n  project open it in a background tab by themselves.\n\n## Workflow\n1. get_document to see what exists. If the project is new, set_description\n   with the brief.\n2. set_parameters for every dimension that matters (sizes, wall, clearances,\n   hole positions). Derive the rest: case_w = \"board_w + 2*wall + 2*gap\".\n3. set_checks for the requirements (fits, clearances, minimum walls) before\n   modelling, so you can verify instead of guess.\n4. Model with features, in a few calls: primitives and extrusions, then\n   boolean (cut/union), then shell, then fillet/chamfer last.\n5. run_checks after each group of changes. Fix every failed feature and\n   failed check before continuing. Read warnings: a cut that removes nothing\n   is a misplaced tool.\n6. render (iso + another view) to look at the result when it matters, or\n   section to see inside. Compare the picture with the intent.\n7. Summarize for the user in a few lines.\n\n## Sketches\n- For any outline that is not a plain box or cylinder, sketch it: sketch\n  on a plane, then extrude or revolve with sketch: \"<name>\".\n- add_to_sketch shapes (rect, circle, slot, polygon) come fully\n  constrained; loops inside the outer loop become holes.\n- For custom outlines, give points (rough guesses are fine), lines/arcs that\n  share points, and constraints (horizontal, vertical, length, distance,\n  radius, tangent, ...). Drive values with parameters.\n- solve_sketch after editing: aim for status \"solved\" with dof 0. A\n  conflict names the constraint numbers to change.\n- Revolve: draw the half cross-section on XZ on the +X side and revolve\n  about Z.\n- Loft blends between sections on parallel planes (rect base to round top);\n  sweep moves a cross-section along a path of points with rounded corners\n  (bend), for handles, channels and bent rods. Both need single loops: make\n  hollow shapes by lofting/sweeping the inside too and cutting it.\n\n## PCB\n1. set_board with an outline (rect, or an XY sketch driven by the same\n   parameters as the enclosure). The board becomes body \"board\" and each\n   part \"part_<REF>\" in the 3D model.\n2. find_parts by part number, part_info to see pins, add_component by LCSC\n   number. Prefer JLCPCB basic parts in stock.\n3. connect pins into nets by name (\"U1.VIN\", \"J1.GND\"); set_net_class for\n   power nets (e.g. 0.5 mm).\n4. Place parts with room to route: connectors at the edge, decoupling caps\n   next to their pins. get_board shows sizes; run_drc catches overlaps.\n5. autoroute, then run_drc. Fix violations, re-route if needed.\n6. render_board to look at it; export_fab writes the JLCPCB package.\n7. For an enclosure: model around \"board\" / \"part_*\" bodies and verify with\n   checks (inside, no_overlap, min_distance).\n\n## Rules of thumb\n- Name features by purpose: case_body, usb_cutout, standoff_pattern.\n- A feature's inputs are consumed: after a cut only the result is a body.\n- To change a feature, use update_feature (a few fields) or the feature\n  command with replace: true; everything downstream rebuilds.\n- Selectors pick faces/edges by meaning (\">Z\" top, \"|Z\" vertical edges).\n  Check them with list_faces / list_edges when unsure.\n- Make cutting tools overlap the material they cut by at least 0.5 mm on\n  each open side, and avoid coplanar faces between tool and target.\n- Prefer one shell over many cuts for enclosures; add clearance (0.2-0.5 mm)\n  for parts that must fit together when 3D printed.\n- If a command fails, read the message: it says what to change.\n",
+  "guide": "# Ket: parametric CAD for agents\n\nKet is a parametric CAD and PCB tool that you drive with\ntools. The design is a JSON document: parameters, an ordered list of named\nfeatures, and checks. Geometry is rebuilt from it by OpenCascade every time\nit changes, so every dimension can be an expression over parameters.\n\n## Coordinates\n- Millimetres and degrees. Z is up. The XY plane at z=0 is the build plate.\n- box is centered on X/Y and sits on z=0 by default; cylinder starts at the\n  origin and grows along +axis.\n\n## Projects and tabs\n- Each open project is a tab in the user's Ket window; several can be open\n  at once. Over MCP, open_project opens one (activate: false keeps the\n  user's current tab), close_project closes it, and commands on a closed\n  project open it in a background tab by themselves.\n\n## Workflow\n1. get_document to see what exists. If the project is new, set_description\n   with the brief.\n2. set_parameters for every dimension that matters (sizes, wall, clearances,\n   hole positions). Derive the rest: case_w = \"board_w + 2*wall + 2*gap\".\n3. set_checks for the requirements (fits, clearances, minimum walls) before\n   modelling, so you can verify instead of guess.\n4. Model with features, in a few calls: primitives and extrusions, then\n   boolean (cut/union), then shell, then fillet/chamfer last.\n5. run_checks after each group of changes. Fix every failed feature and\n   failed check before continuing. Read warnings: a cut that removes nothing\n   is a misplaced tool.\n6. render (iso + another view) to look at the result when it matters, or\n   section to see inside. Compare the picture with the intent.\n7. Summarize for the user in a few lines.\n\n## Sketches\n- For any outline that is not a plain box or cylinder, sketch it: sketch\n  on a plane, then extrude or revolve with sketch: \"<name>\".\n- add_to_sketch shapes (rect, circle, slot, polygon) come fully\n  constrained; loops inside the outer loop become holes.\n- For custom outlines, give points (rough guesses are fine), lines/arcs that\n  share points, and constraints (horizontal, vertical, length, distance,\n  radius, tangent, ...). Drive values with parameters.\n- solve_sketch after editing: aim for status \"solved\" with dof 0. A\n  conflict names the constraint numbers to change.\n- Revolve: draw the half cross-section on XZ on the +X side and revolve\n  about Z.\n- Loft blends between sections on parallel planes (rect base to round top);\n  sweep moves a cross-section along a path of points with rounded corners\n  (bend), for handles, channels and bent rods. Both need single loops: make\n  hollow shapes by lofting/sweeping the inside too and cutting it.\n- Symmetric parts: model one side, then mirror it (XZ for left/right).\n  Repeat around an axis with pattern kind \"polar\" (spokes, bolt circles).\n- Lettering that must exist in the part (raised, engraved): the text\n  feature, then union or cut it.\n\n- Gears: the gear command makes involute spur, helical, herringbone,\n  internal, rack, worm and bevel gears. Place the first one; every other\n  gear uses mesh: { with, angle } (or coaxial for a shared shaft), so\n  centers and tooth phases are solved. Drive the whole train with one\n  parameter in the first gear's rotation and check it with get_gears.\n- Motion: Play advances the driven parameter (a gear train drives itself).\n  set_motion adds joints for other moving bodies and physics for loose\n  ones (balls, loads) that fall and collide; check with get_motion and\n  simulate.\n- Mechanisms: planetary picks tooth counts for a ratio and places sun,\n  planets (they orbit), ring and carrier; cam (lift as an expression of t,\n  follower joint kind \"cam\"), geneva (drive + wheel), belt (pulleys turn\n  together). get_mechanisms for sizes and warnings.\n- sweep_motion steps the motion and reports the first parameter value\n  where moving parts collide; run it before calling a mechanism done.\n\n## Appearance (display only)\n- set_material from a preset (aluminum, brushed_steel, chrome, glass,\n  rubber, wood, screen, ...) and assign_material to bodies. Materials are\n  PBR: base color, metalness, roughness, plus texture maps (albedo, normal,\n  roughness, metallic, ao, displacement) from procedural patterns, laid on\n  with uv (box for any shape, cylindrical for round parts).\n- add_decal / add_decals print text or images onto a body: labels, key\n  legends, logos. Point normal out of the surface at at.\n- Check with render shading: \"realistic\". Problems show as appearance_problems.\n\n## PCB\n1. set_board with an outline (rect, or an XY sketch driven by the same\n   parameters as the enclosure). The board becomes body \"board\" and each\n   part \"part_<REF>\" in the 3D model.\n2. find_parts by part number, part_info to see pins, add_component by LCSC\n   number. Prefer JLCPCB basic parts in stock.\n3. connect pins into nets by name (\"U1.VIN\", \"J1.GND\"); set_net_class for\n   power nets (e.g. 0.5 mm).\n4. Place parts with room to route: connectors at the edge, decoupling caps\n   next to their pins. get_board shows sizes; run_drc catches overlaps.\n   Moving a routed part: move_component with unroute: true, then\n   autoroute and stitch_vias again.\n5. autoroute, then run_drc. Fix violations, re-route if needed. To redo\n   part of the board (\"this area again, straighter/wider\"), autoroute with\n   region (or nets): only those nets are replaced. tidy_tracks straightens\n   and widens existing tracks without rerouting (width for \"thicker\").\n6. render_board to look at it; export_fab writes the JLCPCB package.\n   manufacturing_quote is local preflight (not a live price quote);\n   export_manufacturing adds board specs, check results and ordering notes\n   for JLCPCB/PCBWay, without uploading, ordering or paying.\n7. For an enclosure: model around \"board\" / \"part_*\" bodies and verify with\n   checks (inside, no_overlap, min_distance).\n8. Real parts: give board parts a STEP model (add_component model, e.g.\n   KiCad kicad-packages3D or kiswitch for MX switches and hot-swap\n   sockets) and import loose ones (switches, keycaps, dev boards); measure\n   them before placing. Footprint holes (switch pins, pegs) are drilled.\n   GND usually goes in pours on both layers plus stitch_vias.\n\n## Enclosures that print and assemble\n- One outline, many offsets: extrude the outline polygon, and its inside\n  with profile inset: \"wall\" (lip: inset \"lip_t\", rebate: inset\n  \"lip_t + lip_c\"). Never hand-offset points.\n- Two shells: split at the board top; the base gets a lip around the\n  outer wall, the top a matching rebate (0.15 mm clearance). Arms and\n  legs locate with flat tongue-and-groove plates, not thin pins.\n- Board screws from inside: pilot holes in bosses in the base; the top\n  presses on the screw heads. Two screws are enough for a small board:\n  give the board tabs (sketch outline) into solid parts of the case, such\n  as arms, and screw there, so the cavity under the board stays free for\n  the battery.\n- Every opening a user looks through or touches gets a closed part: a\n  rounded-rect hole for USB-C sized to the connector shell + 0.2 mm, with\n  the connector mouth flush with the outside wall (measure part_<REF>:\n  a recessed port does not take a plug), closed windows for slide\n  switches (knob + travel), a closed well for keys.\n- Light: a clear cap seated flush in the top of the opening (seat 0.4 mm\n  wider than the opening) with a hood around the LED so light does not\n  bleed; not a solid block down to the board. Status LEDs of a dev board\n  get a clear window in the wall next to them; a clear bezel can frame a\n  port and cover its LEDs as one part. Cut openings after the fillet so\n  their edges stay sharp.\n- It must print: no strip of wall thinner than about 1.2 mm between an\n  opening and an edge or the split (extend the opening to the edge\n  instead); ribs, tongues and blocks join the walls on every side they\n  reach (overlap them 0.3 mm into the wall), never stand free with a gap\n  beside them. A union that leaves separate solids says so: fix it.\n- Openings at the split must be cut from both shells.\n- Check: no_overlap between shells, every part against both shells,\n  min_distance for moving parts (keycaps, buttons). measure_between\n  lists where two bodies clash (boxes of each overlap piece).\n- set_explode for an exploded view; render with explode: 1.\n\n## Rules of thumb\n- Save editable source with export_project (.ket); open it in another empty\n  project with import_project. Prepared footprints/routes travel with it,\n  but remote models/textures still need network access. STEP/STL are\n  geometry backups, not replacements for the editable project.\n- Name features by purpose: case_body, usb_cutout, standoff_pattern.\n- A feature's inputs are consumed: after a cut only the result is a body.\n- To change a feature, use update_feature (a few fields) or the feature\n  command with replace: true; everything downstream rebuilds.\n- Selectors pick faces/edges by meaning (\">Z\" top, \"|Z\" vertical edges).\n  Check them with list_faces / list_edges when unsure.\n- Make cutting tools overlap the material they cut by at least 0.5 mm on\n  each open side, and avoid coplanar faces between tool and target.\n- Prefer one shell over many cuts for enclosures; add clearance (0.2-0.5 mm)\n  for parts that must fit together when 3D printed.\n- If a command fails, read the message: it says what to change.\n",
   "commands": [
     {
       "name": "set_parameters",
@@ -574,10 +574,18 @@
             ]
           },
           "profile": {
+            "description": "2D outline in the sketch plane",
             "oneOf": [
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "rect"
@@ -636,6 +644,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "circle"
@@ -679,6 +694,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "slot"
@@ -737,6 +759,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "polygon"
@@ -775,8 +804,7 @@
                   "points"
                 ]
               }
-            ],
-            "description": "2D outline in the sketch plane"
+            ]
           },
           "distance": {
             "description": "Extrusion length; negative goes the other way",
@@ -938,10 +966,18 @@
             "description": "Sketch plane: XY extrudes along +Z, XZ along +Y, YZ along +X"
           },
           "profile": {
+            "description": "2D outline in the sketch plane",
             "oneOf": [
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "rect"
@@ -1000,6 +1036,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "circle"
@@ -1043,6 +1086,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "slot"
@@ -1101,6 +1151,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "polygon"
@@ -1139,8 +1196,7 @@
                   "points"
                 ]
               }
-            ],
-            "description": "2D outline in the sketch plane"
+            ]
           },
           "axis": {
             "type": "string",
@@ -1293,10 +1349,18 @@
                   ]
                 },
                 "profile": {
+                  "description": "2D outline in the sketch plane",
                   "oneOf": [
                     {
                       "type": "object",
                       "properties": {
+                        "inset": {
+                          "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
                         "kind": {
                           "type": "string",
                           "const": "rect"
@@ -1355,6 +1419,13 @@
                     {
                       "type": "object",
                       "properties": {
+                        "inset": {
+                          "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
                         "kind": {
                           "type": "string",
                           "const": "circle"
@@ -1398,6 +1469,13 @@
                     {
                       "type": "object",
                       "properties": {
+                        "inset": {
+                          "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
                         "kind": {
                           "type": "string",
                           "const": "slot"
@@ -1456,6 +1534,13 @@
                     {
                       "type": "object",
                       "properties": {
+                        "inset": {
+                          "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
                         "kind": {
                           "type": "string",
                           "const": "polygon"
@@ -1494,8 +1579,7 @@
                         "points"
                       ]
                     }
-                  ],
-                  "description": "2D outline in the sketch plane"
+                  ]
                 }
               }
             }
@@ -1631,10 +1715,18 @@
             "type": "boolean"
           },
           "profile": {
+            "description": "2D outline in the sketch plane",
             "oneOf": [
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "rect"
@@ -1693,6 +1785,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "circle"
@@ -1736,6 +1835,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "slot"
@@ -1794,6 +1900,13 @@
               {
                 "type": "object",
                 "properties": {
+                  "inset": {
+                    "description": "Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: \"wall\"; a lip \"wall - lip_t\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
                   "kind": {
                     "type": "string",
                     "const": "polygon"
@@ -1832,8 +1945,7 @@
                   "points"
                 ]
               }
-            ],
-            "description": "2D outline in the sketch plane"
+            ]
           },
           "sketch": {
             "description": "Use a sketch's outline as the cross-section (its plane is ignored)",
@@ -1985,10 +2097,642 @@
       ]
     },
     {
+      "name": "gear",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Add an involute gear: spur, helical, herringbone, internal (ring), rack, worm or bevel. Size: module (tooth size; pitch diameter = module × teeth) and teeth; width is the face width along the axis. Place the first gear of a train with center, axis and rotation; every other gear uses mesh: { with: \"<earlier gear>\", angle } (angle in degrees around the partner, or toward [x,y,z]) and gets its center, axis, hand and tooth phase solved so the teeth interlock, or coaxial: { with, offset } to share a shaft (compound trains). Then the whole train turns from one parameter: make the first gear's rotation an expression (e.g. \"crank\") and change it. Worm: teeth = starts, length, diameter; its wheel meshes with it as kind \"helical\" and gets the lead angle as helix. Bevel: pair_teeth = teeth of its mate (90° shafts; teeth are tapered involutes, fine for prints and models). Rack: length, meshes with a spur gear and slides. Optional: bore, hub, shaft, lightening holes, profile_shift for few teeth, backlash. get_gears lists ratios and diameters.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "spur",
+              "helical",
+              "herringbone",
+              "internal",
+              "rack",
+              "worm",
+              "bevel"
+            ]
+          },
+          "teeth": {
+            "description": "Teeth; for a worm the number of starts (1-6); not needed for a rack",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "module": {
+            "description": "Module in mm (0.5..3 for printed gears; ≥ 1 for FDM). Meshing gears share it; a worm pair uses the axial module",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "width": {
+            "description": "Face width along the axis (rack: across it). Not for worms",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "length": {
+            "description": "Worm or rack length",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "pressure_angle": {
+            "description": "Degrees, default 20",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "helix": {
+            "description": "Helical/herringbone helix angle, degrees (default 20; + right hand, − left). A mate gets the opposite hand by itself",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "hand": {
+            "description": "Worm thread hand (default right)",
+            "type": "string",
+            "enum": [
+              "right",
+              "left"
+            ]
+          },
+          "profile_shift": {
+            "description": "Profile shift coefficient x (-0.8..0.8); \"auto\" picks the smallest shift that avoids undercut (for pinions under 17 teeth)",
+            "anyOf": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "type": "string",
+                "const": "auto"
+              }
+            ]
+          },
+          "backlash": {
+            "description": "Play between teeth, mm (default 0.04·module + 0.03)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "diameter": {
+            "description": "Worm pitch diameter (default 8 × module)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "pair_teeth": {
+            "description": "Bevel: teeth of the mating bevel (sets the cone angle for 90° shafts)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "cone_angle": {
+            "description": "Bevel: pitch cone angle, degrees (instead of pair_teeth)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "bore": {
+            "description": "Shaft hole diameter",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "hub": {
+            "description": "Boss on the +axis side (bevels: on the back)",
+            "type": "object",
+            "properties": {
+              "d": {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "length": {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "d",
+              "length"
+            ]
+          },
+          "shaft": {
+            "description": "A solid shaft through the gear, centered on it",
+            "type": "object",
+            "properties": {
+              "d": {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "length": {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "d",
+              "length"
+            ]
+          },
+          "holes": {
+            "description": "Lightening holes in the web",
+            "type": "object",
+            "properties": {
+              "count": {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "d": {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "at": {
+                "description": "Radius of the hole circle (default midway)",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "count",
+              "d"
+            ]
+          },
+          "rim": {
+            "description": "Internal gear: outside diameter of the ring; rack: thickness behind the roots",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "center": {
+            "description": "First gear only: center (mid-face; back face for bevels)",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "axis": {
+            "description": "First gear only: axis direction (default Z)",
+            "type": "string",
+            "enum": [
+              "X",
+              "Y",
+              "Z",
+              "-X",
+              "-Y",
+              "-Z"
+            ]
+          },
+          "rotation": {
+            "description": "First gear only: rotation about its axis, degrees; drive the train with an expression",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "travel": {
+            "description": "First gear only (a free rack): position along its length",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "mesh": {
+            "type": "object",
+            "properties": {
+              "with": {
+                "type": "string",
+                "description": "An earlier gear"
+              },
+              "angle": {
+                "description": "Where around the partner, degrees in its plane (0 = its reference direction)",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "toward": {
+                "description": "Or: a direction from the partner center toward this gear",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              }
+            },
+            "required": [
+              "with"
+            ]
+          },
+          "coaxial": {
+            "description": "Same shaft as an earlier gear: turns with it",
+            "type": "object",
+            "properties": {
+              "with": {
+                "type": "string",
+                "description": "Name of an existing feature"
+              },
+              "offset": {
+                "description": "Along the shared axis, mm",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "phase": {
+                "description": "Extra rotation, degrees",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "with"
+            ]
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "module"
+        ]
+      },
+      "examples": [
+        {
+          "name": "drive",
+          "kind": "spur",
+          "teeth": 20,
+          "module": 1.5,
+          "width": 6,
+          "bore": 5,
+          "rotation": "crank"
+        },
+        {
+          "name": "idler",
+          "kind": "spur",
+          "teeth": 32,
+          "module": 1.5,
+          "width": 6,
+          "bore": 5,
+          "mesh": {
+            "with": "drive",
+            "angle": 0
+          }
+        },
+        {
+          "name": "worm",
+          "kind": "worm",
+          "teeth": 1,
+          "module": 1.5,
+          "length": 30,
+          "diameter": 14,
+          "axis": "X",
+          "rotation": "crank"
+        },
+        {
+          "name": "wheel",
+          "kind": "helical",
+          "teeth": 30,
+          "module": 1.5,
+          "width": 8,
+          "mesh": {
+            "with": "worm",
+            "toward": [
+              0,
+              0,
+              1
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "text",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Lettering as real geometry: the outline of a text extruded by depth from a plane (raised labels, engraved serials, embossed logos that must print or machine). size is the cap height in mm; at is where the middle of the text sits in plane coordinates (u, v as in sketch); anchor picks which end of the text is at at. Union it onto a body to raise it, or give a negative depth / cut it to engrave. For printed-on labels that need no geometry use add_decal.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "size": {
+            "description": "Cap height in mm (≥ 1.5 for FDM, ≥ 0.6 for resin)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "depth": {
+            "description": "Extrusion along the plane normal; negative goes the other way",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "XY",
+              "XZ",
+              "YZ"
+            ],
+            "description": "Sketch plane: XY extrudes along +Z, XZ along +Y, YZ along +X"
+          },
+          "offset": {
+            "description": "Distance of the plane from the origin along its normal",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "at": {
+            "description": "[u, v] of the text anchor in plane coordinates (default [0, 0])",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "anchor": {
+            "description": "Which part of the text sits at at (default center); vertically the cap height is centered",
+            "type": "string",
+            "enum": [
+              "center",
+              "left",
+              "right"
+            ]
+          },
+          "angle": {
+            "description": "Rotation in the plane, degrees counter-clockwise",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "font": {
+            "description": "Monospace font weight (default regular)",
+            "type": "string",
+            "enum": [
+              "regular",
+              "bold"
+            ]
+          },
+          "translate": {
+            "description": "Move by [x, y, z] after rotating",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "rotate": {
+            "description": "Rotate by [rx, ry, rz] degrees about the origin, X then Y then Z",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "text",
+          "size",
+          "depth",
+          "plane"
+        ]
+      },
+      "examples": [
+        {
+          "name": "label",
+          "text": "KET-01",
+          "size": 4,
+          "depth": 0.6,
+          "plane": "XY",
+          "offset": "case_h",
+          "at": [
+            0,
+            -10
+          ]
+        },
+        {
+          "name": "serial_cut",
+          "text": "SN 0042",
+          "size": 2.5,
+          "depth": -0.4,
+          "plane": "XZ",
+          "offset": "-case_d/2",
+          "font": "bold"
+        }
+      ]
+    },
+    {
       "name": "boolean",
       "group": "cad",
       "kind": "mutate",
-      "description": "Combine features: union merges the tools into the target, cut subtracts them, intersect keeps the common volume. Inputs are consumed: only the result is a visible body. To cut a hole, first add the tool body (box, cylinder, extrude), then cut it from the target.",
+      "description": "Combine features: union merges the tools into the target, cut subtracts them, intersect keeps the common volume. Inputs are consumed: only the result is a visible body. To cut a hole, first add the tool body (box, cylinder, extrude), then cut it from the target. A union of parts that do not touch (keys, wheels) is one body of separate solids: pass separate: true to say that is intended.",
       "schema": {
         "type": "object",
         "properties": {
@@ -2034,6 +2778,10 @@
               "type": "string",
               "description": "Name of an existing feature"
             }
+          },
+          "separate": {
+            "description": "union: the parts are meant to stay separate solids; skips the \"does not touch\" warnings",
+            "type": "boolean"
           },
           "replace": {
             "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
@@ -2713,10 +3461,144 @@
       ]
     },
     {
+      "name": "import",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Bring in a real 3D model from a STEP or STL file on the web (vendor or library model: a switch, a keycap, a dev board, a battery), as a solid body you can place, check (inside, no_overlap, min_distance) and cut with. url must be https on an open model library: raw.githubusercontent.com (e.g. kiswitch/kiswitch for Cherry MX switches and Kailh hot-swap sockets, anhthang/dsa-keycap for keycaps, adafruit/Adafruit_CAD_Parts), gitlab.com (KiCad kicad-packages3D) or a vendor (files.seeedstudio.com). For a zip add #<file> to pick the model inside. The file is downloaded once by the server and cached. The model keeps its own origin and orientation: measure it, then rotate (applied first) and translate it into place; scale converts units (0.0254 for inches... rarely needed).",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "https URL of a .step/.stp/.stl file (or a zip with #file inside)"
+          },
+          "scale": {
+            "description": "Uniform scale about the file origin (default 1)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "translate": {
+            "description": "Move by [x, y, z] after rotating",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "rotate": {
+            "description": "Rotate by [rx, ry, rz] degrees about the origin, X then Y then Z",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ]
+      },
+      "examples": [
+        {
+          "name": "mx_switch",
+          "url": "https://raw.githubusercontent.com/kiswitch/kiswitch/main/library/3dmodels/3d-library.3dshapes/SW_Cherry_MX_PCB.stp",
+          "translate": [
+            0,
+            0,
+            5
+          ]
+        },
+        {
+          "name": "xiao",
+          "url": "https://files.seeedstudio.com/wiki/XIAO-BLE/seeed-studio-xiao-nrf52840-3d-model.zip#XIAO-nRF52840 v15.step",
+          "rotate": [
+            90,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
       "name": "pattern",
       "group": "cad",
       "kind": "mutate",
-      "description": "Repeat a feature: linear (count copies, each moved by step [x,y,z] from the previous) or grid (count [nx, ny] copies with step [dx, dy] on XY). The copies are fused into one body; use it as a tool to cut many holes at once.",
+      "description": "Repeat a feature: linear (count copies, each moved by step [x,y,z] from the previous), grid (count [nx, ny] copies with step [dx, dy] on XY) or polar (count copies rotated about an axis through center: spokes, bolt circles, gear teeth; angle is the total sweep, default 360 = evenly spaced all round). The copies are fused into one body; use it as a tool to cut many holes at once.",
       "schema": {
         "type": "object",
         "properties": {
@@ -2747,7 +3629,8 @@
             "type": "string",
             "enum": [
               "linear",
-              "grid"
+              "grid",
+              "polar"
             ]
           },
           "target": {
@@ -2787,9 +3670,10 @@
                 "description": "[x, y]"
               }
             ],
-            "description": "linear: number of copies; grid: [nx, ny]"
+            "description": "linear/polar: number of copies; grid: [nx, ny]"
           },
           "step": {
+            "description": "linear: [dx, dy, dz] between copies; grid: [dx, dy]",
             "anyOf": [
               {
                 "type": "array",
@@ -2844,8 +3728,53 @@
                 "maxItems": 2,
                 "description": "[x, y]"
               }
+            ]
+          },
+          "axis": {
+            "description": "polar: rotation axis direction (default Z)",
+            "type": "string",
+            "enum": [
+              "X",
+              "Y",
+              "Z"
+            ]
+          },
+          "center": {
+            "description": "polar: a point on the rotation axis (default [0, 0, 0])",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
             ],
-            "description": "linear: [dx, dy, dz] between copies; grid: [dx, dy]"
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "angle": {
+            "description": "polar: total angle in degrees (default 360: copies spaced 360/count; less: first and last copy at the ends)",
+            "type": [
+              "number",
+              "string"
+            ]
           },
           "replace": {
             "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
@@ -2856,8 +3785,7 @@
           "name",
           "kind",
           "target",
-          "count",
-          "step"
+          "count"
         ]
       },
       "examples": [
@@ -2884,6 +3812,98 @@
             "hole_dx",
             "hole_dy"
           ]
+        },
+        {
+          "name": "spokes",
+          "kind": "polar",
+          "target": "spoke",
+          "count": 8,
+          "axis": "Y",
+          "center": [
+            0,
+            0,
+            "wheel_r"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mirror",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Mirror a feature across a plane: XY (z = offset), XZ (y = offset) or YZ (x = offset). By default keep: true fuses the original and its mirror image into one body (model one side of a symmetric part, then mirror it: left/right wheels, brackets); keep: false leaves only the mirrored copy. The original is consumed.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string",
+            "description": "Name of an existing feature"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "XY",
+              "XZ",
+              "YZ"
+            ],
+            "description": "Mirror plane: XY flips Z, XZ flips Y, YZ flips X"
+          },
+          "offset": {
+            "description": "Position of the plane along its normal (default 0)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "keep": {
+            "description": "Fuse the original with its mirror image (default true)",
+            "type": "boolean"
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "target",
+          "plane"
+        ]
+      },
+      "examples": [
+        {
+          "name": "wheels",
+          "target": "wheels_left",
+          "plane": "XZ"
+        },
+        {
+          "name": "bracket_r",
+          "target": "bracket_l",
+          "plane": "YZ",
+          "keep": false
         }
       ]
     },
@@ -2891,7 +3911,7 @@
       "name": "update_feature",
       "group": "cad",
       "kind": "mutate",
-      "description": "Change some fields of an existing feature without restating it, e.g. {\"name\":\"case_round\",\"set\":{\"r\":2}}. Use null to remove an optional field. The feature type cannot change; use the feature command with replace: true for that.",
+      "description": "Change some fields of an existing feature without restating it, e.g. {\"name\":\"case_round\",\"set\":{\"r\":2}}. Use null to remove an optional field. The feature type cannot change; use the feature command with replace: true for that. Adding a tool to a boolean that was created after it (a new cutter) moves that tool before the boolean.",
       "schema": {
         "type": "object",
         "properties": {
@@ -2992,7 +4012,7 @@
       "name": "rename_feature",
       "group": "cad",
       "kind": "mutate",
-      "description": "Rename a feature and every reference to it.",
+      "description": "Rename a feature and every reference to it. To put a new step after a finished body (one more cut on case_shell), rename it to case_shell_a and add the step under the old name: checks and decals stay on the final body with keep_checks: true.",
       "schema": {
         "type": "object",
         "properties": {
@@ -3004,6 +4024,10 @@
             "type": "string",
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
             "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "keep_checks": {
+            "description": "Leave checks and decals on the old name (the body that will replace it), default false",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3131,6 +4155,11 @@
                     "b": {
                       "type": "string",
                       "description": "Name of an existing feature"
+                    },
+                    "allow": {
+                      "description": "Overlap volume that is intended, mm³ (snap-fit clips, press fits, a switch latching into its plate); default 0",
+                      "type": "number",
+                      "minimum": 0
                     },
                     "note": {
                       "type": "string"
@@ -4327,6 +5356,2283 @@
       }
     },
     {
+      "name": "set_material",
+      "group": "appearance",
+      "kind": "mutate",
+      "description": "Create or change a PBR material (display only: geometry, exports and checks do not change), then give it to bodies with assign_material. Start from a preset (aluminum, brushed_steel, chrome, glass, rubber, wood, screen, ...) and override fields. color is the base color (albedo); metalness 0 plastic .. 1 metal; roughness 0 mirror .. 1 matte; emissive makes it glow (screens, LEDs); clearcoat adds a lacquer layer. maps add surface detail from tileable procedural patterns or images: albedo (color variation), normal (fake small bumps, scratches, grain), roughness, metallic, ao (darkens crevices), displacement (moves the displayed surface; real relief that must print belongs in geometry). uv says how maps wrap around the body: box (any shape), planar or cylindrical along an axis, scale = tile size in mm.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Material name, e.g. \"case_alu\""
+          },
+          "preset": {
+            "description": "Start from these values; the other fields override them",
+            "type": "string",
+            "enum": [
+              "aluminum",
+              "aluminum_dark",
+              "brushed_steel",
+              "chrome",
+              "gold",
+              "brass",
+              "copper",
+              "cast_iron",
+              "painted_metal",
+              "plastic_matte",
+              "plastic_glossy",
+              "rubber",
+              "glass",
+              "screen",
+              "wood",
+              "leather",
+              "knurled_steel"
+            ]
+          },
+          "color": {
+            "description": "Base color (albedo)",
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$"
+          },
+          "metalness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "roughness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "opacity": {
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "emissive": {
+            "description": "Glow, as a fraction of the color",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "clearcoat": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "uv": {
+            "description": "How texture maps are laid onto the surface (UV mapping)",
+            "type": "object",
+            "properties": {
+              "projection": {
+                "type": "string",
+                "enum": [
+                  "box",
+                  "planar",
+                  "cylindrical"
+                ]
+              },
+              "axis": {
+                "description": "planar: the direction it projects along; cylindrical: the cylinder axis (default Z)",
+                "type": "string",
+                "enum": [
+                  "X",
+                  "Y",
+                  "Z"
+                ]
+              },
+              "scale": {
+                "description": "Tile size in mm (default 10)",
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "rotation": {
+                "description": "Degrees",
+                "type": "number"
+              },
+              "offset": {
+                "description": "[u, v] in mm",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "projection"
+            ]
+          },
+          "maps": {
+            "type": "object",
+            "properties": {
+              "albedo": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "description": "Procedural, tileable: noise (cast, sand), brushed (metal grain along u), scratches, wood (rings along u), leather, checker, grid, dots, knurl",
+                    "type": "string",
+                    "enum": [
+                      "noise",
+                      "brushed",
+                      "scratches",
+                      "wood",
+                      "leather",
+                      "checker",
+                      "grid",
+                      "dots",
+                      "knurl"
+                    ]
+                  },
+                  "image": {
+                    "description": "Image URL (https or data:) instead of a pattern; for normal maps it must be a tangent-space normal map",
+                    "type": "string"
+                  },
+                  "scale": {
+                    "description": "Tile size in mm (default: uv.scale)",
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "strength": {
+                    "description": "How strong: 0..1 for most maps (default 0.5); displacement: relief in mm (default 0.2)",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "color2": {
+                    "description": "albedo only: the second color the pattern mixes in (default a darker color)",
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "normal": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "description": "Procedural, tileable: noise (cast, sand), brushed (metal grain along u), scratches, wood (rings along u), leather, checker, grid, dots, knurl",
+                    "type": "string",
+                    "enum": [
+                      "noise",
+                      "brushed",
+                      "scratches",
+                      "wood",
+                      "leather",
+                      "checker",
+                      "grid",
+                      "dots",
+                      "knurl"
+                    ]
+                  },
+                  "image": {
+                    "description": "Image URL (https or data:) instead of a pattern; for normal maps it must be a tangent-space normal map",
+                    "type": "string"
+                  },
+                  "scale": {
+                    "description": "Tile size in mm (default: uv.scale)",
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "strength": {
+                    "description": "How strong: 0..1 for most maps (default 0.5); displacement: relief in mm (default 0.2)",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "color2": {
+                    "description": "albedo only: the second color the pattern mixes in (default a darker color)",
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "roughness": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "description": "Procedural, tileable: noise (cast, sand), brushed (metal grain along u), scratches, wood (rings along u), leather, checker, grid, dots, knurl",
+                    "type": "string",
+                    "enum": [
+                      "noise",
+                      "brushed",
+                      "scratches",
+                      "wood",
+                      "leather",
+                      "checker",
+                      "grid",
+                      "dots",
+                      "knurl"
+                    ]
+                  },
+                  "image": {
+                    "description": "Image URL (https or data:) instead of a pattern; for normal maps it must be a tangent-space normal map",
+                    "type": "string"
+                  },
+                  "scale": {
+                    "description": "Tile size in mm (default: uv.scale)",
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "strength": {
+                    "description": "How strong: 0..1 for most maps (default 0.5); displacement: relief in mm (default 0.2)",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "color2": {
+                    "description": "albedo only: the second color the pattern mixes in (default a darker color)",
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "metallic": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "description": "Procedural, tileable: noise (cast, sand), brushed (metal grain along u), scratches, wood (rings along u), leather, checker, grid, dots, knurl",
+                    "type": "string",
+                    "enum": [
+                      "noise",
+                      "brushed",
+                      "scratches",
+                      "wood",
+                      "leather",
+                      "checker",
+                      "grid",
+                      "dots",
+                      "knurl"
+                    ]
+                  },
+                  "image": {
+                    "description": "Image URL (https or data:) instead of a pattern; for normal maps it must be a tangent-space normal map",
+                    "type": "string"
+                  },
+                  "scale": {
+                    "description": "Tile size in mm (default: uv.scale)",
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "strength": {
+                    "description": "How strong: 0..1 for most maps (default 0.5); displacement: relief in mm (default 0.2)",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "color2": {
+                    "description": "albedo only: the second color the pattern mixes in (default a darker color)",
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "ao": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "description": "Procedural, tileable: noise (cast, sand), brushed (metal grain along u), scratches, wood (rings along u), leather, checker, grid, dots, knurl",
+                    "type": "string",
+                    "enum": [
+                      "noise",
+                      "brushed",
+                      "scratches",
+                      "wood",
+                      "leather",
+                      "checker",
+                      "grid",
+                      "dots",
+                      "knurl"
+                    ]
+                  },
+                  "image": {
+                    "description": "Image URL (https or data:) instead of a pattern; for normal maps it must be a tangent-space normal map",
+                    "type": "string"
+                  },
+                  "scale": {
+                    "description": "Tile size in mm (default: uv.scale)",
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "strength": {
+                    "description": "How strong: 0..1 for most maps (default 0.5); displacement: relief in mm (default 0.2)",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "color2": {
+                    "description": "albedo only: the second color the pattern mixes in (default a darker color)",
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "displacement": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "description": "Procedural, tileable: noise (cast, sand), brushed (metal grain along u), scratches, wood (rings along u), leather, checker, grid, dots, knurl",
+                    "type": "string",
+                    "enum": [
+                      "noise",
+                      "brushed",
+                      "scratches",
+                      "wood",
+                      "leather",
+                      "checker",
+                      "grid",
+                      "dots",
+                      "knurl"
+                    ]
+                  },
+                  "image": {
+                    "description": "Image URL (https or data:) instead of a pattern; for normal maps it must be a tangent-space normal map",
+                    "type": "string"
+                  },
+                  "scale": {
+                    "description": "Tile size in mm (default: uv.scale)",
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "strength": {
+                    "description": "How strong: 0..1 for most maps (default 0.5); displacement: relief in mm (default 0.2)",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "color2": {
+                    "description": "albedo only: the second color the pattern mixes in (default a darker color)",
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              }
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "examples": [
+        {
+          "name": "case_alu",
+          "preset": "aluminum",
+          "color": "#c7c9cc"
+        },
+        {
+          "name": "oak",
+          "preset": "wood",
+          "uv": {
+            "projection": "planar",
+            "axis": "Z",
+            "scale": 60,
+            "rotation": 90
+          }
+        },
+        {
+          "name": "grip",
+          "color": "#202020",
+          "roughness": 0.9,
+          "uv": {
+            "projection": "cylindrical",
+            "axis": "Z",
+            "scale": 2
+          },
+          "maps": {
+            "normal": {
+              "pattern": "knurl",
+              "strength": 0.9
+            },
+            "displacement": {
+              "pattern": "knurl",
+              "strength": 0.15
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "assign_material",
+      "group": "appearance",
+      "kind": "mutate",
+      "description": "Give bodies a material from set_material (null removes it, back to the plain color). The material wins over the body color. Verify with render.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Name of an existing feature"
+            },
+            "description": "Bodies"
+          },
+          "material": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Material name, or null"
+          }
+        },
+        "required": [
+          "names",
+          "material"
+        ]
+      },
+      "examples": [
+        {
+          "names": [
+            "base",
+            "lid"
+          ],
+          "material": "case_alu"
+        }
+      ]
+    },
+    {
+      "name": "delete_materials",
+      "group": "appearance",
+      "kind": "mutate",
+      "description": "Delete materials; bodies that used them go back to their plain color.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        },
+        "required": [
+          "names"
+        ]
+      }
+    },
+    {
+      "name": "add_decal",
+      "group": "appearance",
+      "kind": "mutate",
+      "description": "Print text or an image onto a body, projected along -normal at a point: labels, key legends, logos, serial plates, dials. Display only (a texture, like a sticker or pad print); for raised or engraved letters that must be in the part use the text feature. Place it with at on the surface and normal pointing out of it; it wraps over curved faces within depth. Check with render.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Decal name, e.g. \"logo\", \"key_label_a\""
+          },
+          "target": {
+            "type": "string",
+            "description": "The body it is printed on (a visible body)"
+          },
+          "at": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Point on (or just above) the surface, at the center of the decal"
+          },
+          "normal": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Direction the printed side faces, out of the surface, e.g. [0, 0, 1] on a top face"
+          },
+          "up": {
+            "description": "Which way the top of the text points (default +Z; +Y when normal is ±Z)",
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "size": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[w, h] in mm on the surface"
+          },
+          "depth": {
+            "description": "Thickness of the projection box in mm (default 2): what it may wrap onto",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "rotation": {
+            "description": "Degrees about the normal",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "text": {
+            "description": "Text to print (several lines with \\n)",
+            "type": "string"
+          },
+          "image": {
+            "description": "Image URL (https or data:), e.g. a logo PNG or SVG",
+            "type": "string"
+          },
+          "color": {
+            "description": "Text color (default black), or a tint for images",
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$"
+          },
+          "background": {
+            "description": "Fill behind the text (default transparent)",
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$"
+          },
+          "font_size": {
+            "description": "Text cap height in mm (default: fits the decal)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "font": {
+            "description": "CSS font family (default the system UI font)",
+            "type": "string"
+          },
+          "weight": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 900
+          },
+          "align": {
+            "type": "string",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ]
+          },
+          "valign": {
+            "type": "string",
+            "enum": [
+              "top",
+              "middle",
+              "bottom"
+            ]
+          },
+          "roughness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "metalness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "emissive": {
+            "description": "Glow, e.g. backlit key legends",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "opacity": {
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "replace": {
+            "description": "Replace the decal with this name (default false: fail if it exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "target",
+          "at",
+          "normal",
+          "size"
+        ]
+      },
+      "examples": [
+        {
+          "name": "brand",
+          "target": "lid",
+          "at": [
+            0,
+            120,
+            10
+          ],
+          "normal": [
+            0,
+            -0.34,
+            0.94
+          ],
+          "size": [
+            40,
+            12
+          ],
+          "text": "ACME",
+          "color": "#ffffff",
+          "weight": 600
+        },
+        {
+          "name": "key_a",
+          "target": "keys",
+          "at": [
+            -80,
+            10,
+            7.7
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ],
+          "size": [
+            16,
+            16
+          ],
+          "text": "A",
+          "font_size": 3,
+          "color": "#ffffff"
+        }
+      ]
+    },
+    {
+      "name": "add_decals",
+      "group": "appearance",
+      "kind": "mutate",
+      "description": "Add many decals at once (e.g. every key legend of a keyboard): the same fields as add_decal per item, plus shared defaults that each item may override.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "defaults": {
+            "description": "Fields shared by every decal (target, normal, size, color, font, ...)",
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "The body it is printed on (a visible body)"
+              },
+              "at": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3,
+                "description": "Point on (or just above) the surface, at the center of the decal"
+              },
+              "normal": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3,
+                "description": "Direction the printed side faces, out of the surface, e.g. [0, 0, 1] on a top face"
+              },
+              "up": {
+                "description": "Which way the top of the text points (default +Z; +Y when normal is ±Z)",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "size": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "[w, h] in mm on the surface"
+              },
+              "depth": {
+                "description": "Thickness of the projection box in mm (default 2): what it may wrap onto",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "rotation": {
+                "description": "Degrees about the normal",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "text": {
+                "description": "Text to print (several lines with \\n)",
+                "type": "string"
+              },
+              "image": {
+                "description": "Image URL (https or data:), e.g. a logo PNG or SVG",
+                "type": "string"
+              },
+              "color": {
+                "description": "Text color (default black), or a tint for images",
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$"
+              },
+              "background": {
+                "description": "Fill behind the text (default transparent)",
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$"
+              },
+              "font_size": {
+                "description": "Text cap height in mm (default: fits the decal)",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              "font": {
+                "description": "CSS font family (default the system UI font)",
+                "type": "string"
+              },
+              "weight": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 900
+              },
+              "align": {
+                "type": "string",
+                "enum": [
+                  "left",
+                  "center",
+                  "right"
+                ]
+              },
+              "valign": {
+                "type": "string",
+                "enum": [
+                  "top",
+                  "middle",
+                  "bottom"
+                ]
+              },
+              "roughness": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "metalness": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "emissive": {
+                "description": "Glow, e.g. backlit key legends",
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "opacity": {
+                "type": "number",
+                "minimum": 0.05,
+                "maximum": 1
+              }
+            }
+          },
+          "decals": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                },
+                "target": {
+                  "type": "string",
+                  "description": "The body it is printed on (a visible body)"
+                },
+                "at": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "description": "Point on (or just above) the surface, at the center of the decal"
+                },
+                "normal": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "description": "Direction the printed side faces, out of the surface, e.g. [0, 0, 1] on a top face"
+                },
+                "up": {
+                  "description": "Which way the top of the text points (default +Z; +Y when normal is ±Z)",
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "size": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[w, h] in mm on the surface"
+                },
+                "depth": {
+                  "description": "Thickness of the projection box in mm (default 2): what it may wrap onto",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                "rotation": {
+                  "description": "Degrees about the normal",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                "text": {
+                  "description": "Text to print (several lines with \\n)",
+                  "type": "string"
+                },
+                "image": {
+                  "description": "Image URL (https or data:), e.g. a logo PNG or SVG",
+                  "type": "string"
+                },
+                "color": {
+                  "description": "Text color (default black), or a tint for images",
+                  "type": "string",
+                  "pattern": "^#[0-9a-fA-F]{6}$"
+                },
+                "background": {
+                  "description": "Fill behind the text (default transparent)",
+                  "type": "string",
+                  "pattern": "^#[0-9a-fA-F]{6}$"
+                },
+                "font_size": {
+                  "description": "Text cap height in mm (default: fits the decal)",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                "font": {
+                  "description": "CSS font family (default the system UI font)",
+                  "type": "string"
+                },
+                "weight": {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 900
+                },
+                "align": {
+                  "type": "string",
+                  "enum": [
+                    "left",
+                    "center",
+                    "right"
+                  ]
+                },
+                "valign": {
+                  "type": "string",
+                  "enum": [
+                    "top",
+                    "middle",
+                    "bottom"
+                  ]
+                },
+                "roughness": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "metalness": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "emissive": {
+                  "description": "Glow, e.g. backlit key legends",
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "opacity": {
+                  "type": "number",
+                  "minimum": 0.05,
+                  "maximum": 1
+                },
+                "replace": {
+                  "description": "Replace the decal with this name (default false: fail if it exists)",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          "replace": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "decals"
+        ]
+      }
+    },
+    {
+      "name": "delete_decals",
+      "group": "appearance",
+      "kind": "mutate",
+      "description": "Delete decals by name, or every decal on a target.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          },
+          "target": {
+            "type": "string",
+            "description": "Name of an existing feature"
+          }
+        }
+      }
+    },
+    {
+      "name": "set_explode",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Define the exploded view (display only, like materials): steps move bodies apart by offset [x, y, z] mm (expressions allowed) so the assembly can be seen part by part: the lid up, the board above the base, keycaps above their switches. Board parts move with \"board\" unless listed themselves; \"part_*\" matches every part. The viewport Explode slider and render with explode: 1 show it; the model, checks and exports never move. Replaces the earlier definition; steps: [] removes it.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "steps": {
+            "maxItems": 64,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": "Bodies, or a prefix ending in * (e.g. \"part_*\", \"cap*\")"
+                },
+                "offset": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "description": "[x, y, z]"
+                },
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "names",
+                "offset"
+              ]
+            }
+          }
+        },
+        "required": [
+          "steps"
+        ]
+      },
+      "examples": [
+        {
+          "steps": [
+            {
+              "names": [
+                "lid"
+              ],
+              "offset": [
+                0,
+                0,
+                30
+              ]
+            },
+            {
+              "names": [
+                "board",
+                "part_*"
+              ],
+              "offset": [
+                0,
+                0,
+                15
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_motion",
+      "group": "motion",
+      "kind": "mutate",
+      "description": "Say how the model moves when the user presses Play (display only; the document stays as it is). drive: the parameter Play advances and its speed per second (a gear train drives itself from its first gear's rotation parameter, so drive is only needed to change speed or mode). joints: bodies that are not gears turn or slide with the parameter (rotate about axis through origin, rate degrees per unit; slide along axis, rate mm per unit; or position: an expression of the parameter for nonlinear motion; follow copies another body, e.g. a crank handle on the worm; cam: a follower riding a cam feature). Gears, planets (they also orbit), geneva wheels, cams and belt pulleys move by themselves. physics: loose bodies (balls, blocks, a load on a rack) that fall under gravity and collide with everything; driven bodies push them. Give only the parts you change; null clears one. Check with get_motion and simulate.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "drive": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "param": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                    "description": "Parameter to advance"
+                  },
+                  "speed": {
+                    "type": "number",
+                    "description": "Units per second (degrees/s for a crank)"
+                  },
+                  "mode": {
+                    "description": "forever counts up; loop and bounce stay within range",
+                    "type": "string",
+                    "enum": [
+                      "forever",
+                      "loop",
+                      "bounce"
+                    ]
+                  },
+                  "range": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                },
+                "required": [
+                  "param",
+                  "speed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "joints": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "body": {
+                      "type": "string",
+                      "description": "Name of an existing feature"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "rotate",
+                        "slide",
+                        "follow",
+                        "cam"
+                      ]
+                    },
+                    "axis": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        {
+                          "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        {
+                          "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "description": "[x, y, z]"
+                    },
+                    "origin": {
+                      "description": "A point on the rotation axis",
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        {
+                          "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        {
+                          "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 3,
+                      "maxItems": 3
+                    },
+                    "rate": {
+                      "description": "Degrees (rotate) or mm (slide) per unit of the parameter; default 1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "position": {
+                      "description": "Instead of rate: the angle (rotate) or travel (slide) from where it is built, as an expression of the drive parameter, e.g. \"10*sin(crank)\" for a rocker; evaluated minus its value at the start",
+                      "type": "string"
+                    },
+                    "follow": {
+                      "description": "follow: the body whose motion to copy",
+                      "type": "string"
+                    },
+                    "cam": {
+                      "description": "cam: the cam feature this body follows (it slides along the follower direction by the lift)",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "body",
+                    "kind"
+                  ]
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "physics": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "bodies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "description": "Name of an existing feature"
+                        },
+                        "density": {
+                          "description": "g/cm³ (PLA 1.25, steel 7.8, wood 0.6)",
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        "friction": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 2
+                        },
+                        "restitution": {
+                          "description": "Bounciness 0..1",
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1
+                        },
+                        "velocity": {
+                          "description": "Start velocity mm/s",
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ],
+                          "items": false,
+                          "minItems": 3,
+                          "maxItems": 3
+                        },
+                        "spin": {
+                          "description": "Start spin degrees/s about x, y, z",
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ],
+                          "items": false,
+                          "minItems": 3,
+                          "maxItems": 3
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ]
+                    }
+                  },
+                  "gravity": {
+                    "description": "mm/s² (default 9810, down −Z)",
+                    "type": "number"
+                  },
+                  "floor": {
+                    "description": "A floor under the lowest point (default true)",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "bodies"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "examples": [
+        {
+          "drive": {
+            "param": "crank",
+            "speed": 360
+          }
+        },
+        {
+          "joints": [
+            {
+              "body": "handle",
+              "kind": "follow",
+              "follow": "worm"
+            }
+          ]
+        },
+        {
+          "physics": {
+            "bodies": [
+              {
+                "name": "ball",
+                "density": 7.8,
+                "restitution": 0.4
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_motion",
+      "group": "query",
+      "kind": "query",
+      "description": "Read what Play will move: the driven parameter and speed, every moving body with its axis, origin and rate (gears included), the loose physics bodies, and problems.",
+      "schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "simulate",
+      "group": "query",
+      "kind": "query",
+      "description": "Run the motion for some seconds without showing it: the driven parameter advances at its speed, driven bodies move, loose bodies fall and collide. Returns where each loose body ends up (center, how far it moved, whether it came to rest, which bodies it touches) at the sample times, and escaped when a loose body ended up inside a still solid (it passed through a wall). Use it to check that a ball rolls off a ramp, a load rides a rack, or a part settles where it should; touching tells what pushed it.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "description": "Default 3",
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 30
+          },
+          "samples": {
+            "description": "How many snapshots (default 4)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          }
+        }
+      }
+    },
+    {
+      "name": "cam",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Add a disc cam: a plate whose radius is base_r + lift(t) (+ the roller radius for a roller follower), t = cam angle 0..360 in degrees. Write lift as an expression in t, e.g. a cycloidal-ish rise \"8*(1 - cos(t))/2\" or dwell-rise-dwell with min/max. Drive it with rotation: \"<param>\". A follower body moves with it through a joint { body, kind: \"cam\", cam: \"<this cam>\" } in set_motion; it slides along follower_dir (from get_mechanisms, which also gives the follower_point to model the follower at, the stroke and the max pressure angle; keep that under 30°).",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "base_r": {
+            "description": "Base circle radius: the follower distance at zero lift",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "lift": {
+            "type": "string",
+            "description": "Lift in mm as an expression of t (cam angle in degrees) and parameters; periodic over 360"
+          },
+          "width": {
+            "description": "Thickness along the axis",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "roller": {
+            "description": "Roller follower radius (default 0: knife edge / flat tip)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "bore": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "center": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "[x, y, z]"
+          },
+          "axis": {
+            "description": "Default Z",
+            "type": "string",
+            "enum": [
+              "X",
+              "Y",
+              "Z",
+              "-X",
+              "-Y",
+              "-Z"
+            ]
+          },
+          "rotation": {
+            "description": "Turn of the cam, degrees; drive with a parameter",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "follower_at": {
+            "description": "Where the follower sits, degrees in the cam plane (default 90: on +Y for a Z cam)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "base_r",
+          "lift",
+          "width"
+        ]
+      },
+      "examples": [
+        {
+          "name": "cam",
+          "base_r": 15,
+          "lift": "6*(1 - cos(t))/2",
+          "width": 6,
+          "bore": 5,
+          "roller": 3,
+          "rotation": "crank"
+        }
+      ]
+    },
+    {
+      "name": "geneva",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Add an external geneva drive: part \"drive\" (a crank with a pin and a locking disc) and then part \"wheel\" (drive: \"<drive name>\"), which is built from the drive's fields and placed at distance toward its angle. Each drive turn indexes the wheel by 360/slots and locks it in between. Drive it with angle: \"<param>\" (degrees from the line of centers; 180 = pin away, wheel locked). Play and sweep_motion turn the wheel with the exact geneva law; get_mechanisms lists the sizes.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "part": {
+            "type": "string",
+            "enum": [
+              "drive",
+              "wheel"
+            ]
+          },
+          "drive": {
+            "description": "wheel: the drive feature",
+            "type": "string"
+          },
+          "slots": {
+            "description": "drive: number of slots (3..18; 4 or 6 typical)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "distance": {
+            "description": "drive: center distance between drive and wheel",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "pin_d": {
+            "description": "drive: pin diameter",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "width": {
+            "description": "drive: wheel thickness (the drive is 1.5× with its crank plate)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "center": {
+            "description": "drive: drive center",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "axis": {
+            "type": "string",
+            "enum": [
+              "X",
+              "Y",
+              "Z",
+              "-X",
+              "-Y",
+              "-Z"
+            ]
+          },
+          "toward": {
+            "description": "drive: direction to the wheel, degrees in the drive plane (default 0)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "angle": {
+            "description": "drive: drive angle; drive it with a parameter",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "clearance": {
+            "description": "drive: running clearance (default 0.2)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "bore": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "part"
+        ]
+      },
+      "examples": [
+        {
+          "name": "gen_drive",
+          "part": "drive",
+          "slots": 4,
+          "distance": 40,
+          "pin_d": 4,
+          "width": 5,
+          "bore": 5,
+          "angle": "crank"
+        },
+        {
+          "name": "gen_wheel",
+          "part": "wheel",
+          "drive": "gen_drive",
+          "bore": 5
+        }
+      ]
+    },
+    {
+      "name": "belt",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Add a belt or chain loop around pulleys in a plane (plane coordinates as in sketch, offset = the plane's mid-belt position). Each pulley: at (center), d (pitch diameter) or teeth with the belt pitch (d = pitch / sin(180°/teeth), GT2 pitch 2, #25 chain 6.35). The belt runs around the outside of every pulley. Pulleys with body: \"<feature>\" turn with it: when one of them turns (a gear, a joint), the others follow at the diameter ratio, same direction. get_mechanisms gives the length and, with pitch, the number of links (make it whole).",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "XY",
+              "XZ",
+              "YZ"
+            ],
+            "description": "Sketch plane: XY extrudes along +Z, XZ along +Y, YZ along +X"
+          },
+          "offset": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "pulleys": {
+            "minItems": 2,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[x, y]"
+                },
+                "d": {
+                  "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                "teeth": {
+                  "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                "body": {
+                  "description": "The pulley body, which turns with the belt",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "at"
+              ]
+            }
+          },
+          "thickness": {
+            "description": "Belt thickness (centered on the pitch line)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "width": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "pitch": {
+            "description": "Tooth or chain pitch, mm",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "plane",
+          "pulleys",
+          "thickness",
+          "width"
+        ]
+      },
+      "examples": [
+        {
+          "name": "belt",
+          "plane": "XY",
+          "offset": 5,
+          "pulleys": [
+            {
+              "at": [
+                0,
+                0
+              ],
+              "teeth": 20,
+              "body": "motor_pulley"
+            },
+            {
+              "at": [
+                80,
+                0
+              ],
+              "teeth": 40,
+              "body": "big_pulley"
+            }
+          ],
+          "thickness": 1.4,
+          "width": 6,
+          "pitch": 2
+        }
+      ]
+    },
+    {
+      "name": "get_mechanisms",
+      "group": "query",
+      "kind": "query",
+      "description": "Solved cams (stroke, max pressure angle, follower direction and contact point), geneva drives (crank and wheel radii, index per turn, where the wheel is) and belts (length, links, wrap angles and speed ratios), with warnings.",
+      "schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "planetary",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Planetary gear set helper. Give the reduction ratio (ring fixed, sun input, carrier output: ratio = 1 + ring/sun) and module; it picks tooth counts that assemble (ring = sun + 2·planet, (sun + ring) divisible by the planet count, planets clear each other) and places the sun (driven by rotation), the planets meshing at equal angles, the internal ring, and a carrier plate. The carrier turns at 1/ratio and the planets orbit with it when you press Play (the carrier angle is a parameter \"<name>_carrier_angle\" = rotation/ratio). Pass sun/planet/ring/planets to force counts; pass dry_run: true to only list candidate sets.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Prefix: <name>_sun, <name>_planet1.., <name>_ring, <name>_carrier"
+          },
+          "ratio": {
+            "description": "Wanted reduction (3..12 is typical for one stage)",
+            "type": "number",
+            "exclusiveMinimum": 2
+          },
+          "module": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "width": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "sun": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "planet": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "ring": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "planets": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 8
+          },
+          "min_teeth": {
+            "description": "Smallest gear (default 17: no undercut at 20°)",
+            "type": "integer",
+            "minimum": 6,
+            "maximum": 9007199254740991
+          },
+          "max_ring": {
+            "description": "Largest ring (default 120)",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "center": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "[x, y, z]"
+          },
+          "axis": {
+            "type": "string",
+            "enum": [
+              "X",
+              "Y",
+              "Z",
+              "-X",
+              "-Y",
+              "-Z"
+            ]
+          },
+          "rotation": {
+            "description": "Sun rotation; drive it with a parameter, e.g. \"crank\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "bore": {
+            "description": "Sun and planet bore",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "rim": {
+            "description": "Ring outside diameter",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "carrier": {
+            "description": "Add the carrier plate (default true)",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "description": "Only return the candidate sets",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "module",
+          "width"
+        ]
+      },
+      "examples": [
+        {
+          "name": "stage1",
+          "ratio": 5,
+          "module": 1,
+          "width": 8,
+          "rotation": "crank"
+        }
+      ]
+    },
+    {
+      "name": "sweep_motion",
+      "group": "query",
+      "kind": "query",
+      "description": "Interference check through the motion (like Onshape/Fusion interference during a motion study): steps the driven parameter from..to (default the current value + 360), poses every moving body (gears, joints, cams, geneva, belts) and checks each pair with at least one moving: a fast mesh test finds touching pairs, the first contact of a pair is confirmed with an exact solid intersection. Returns for each colliding pair the first and last parameter value it overlaps, the overlap volume at first contact and the deepest penetration (mm) with where it happens. Skip intended contacts (a belt on its pulleys, a shaft in its bearing) with ignore; narrow with bodies on big models.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "number"
+          },
+          "to": {
+            "type": "number"
+          },
+          "steps": {
+            "description": "Default 72 (5° over a turn)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 720
+          },
+          "bodies": {
+            "description": "Only these bodies (default all)",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Name of an existing feature"
+            }
+          },
+          "ignore": {
+            "description": "Pairs allowed to touch",
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string",
+                  "description": "Name of an existing feature"
+                },
+                {
+                  "type": "string",
+                  "description": "Name of an existing feature"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "min_volume": {
+            "description": "Overlap below this (mm³) is not reported (default 0.001)",
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        }
+      }
+    },
+    {
       "name": "set_board",
       "group": "pcb",
       "kind": "mutate",
@@ -4496,13 +7802,27 @@
       "name": "add_component",
       "group": "pcb",
       "kind": "mutate",
-      "description": "Place a real part from LCSC on the board by its LCSC number (from find_parts). ref is chosen automatically (U1, R3, ...) unless given. at is the part center in board coordinates [x, y] (expressions allowed), rotation in degrees CCW, side top or bottom. value is the BOM comment (\"10k\", \"100nF\").",
+      "description": "Place a part on the board: a real LCSC part by its number (from find_parts: footprint, pin names, 3D model, price), or a generic footprint by name with footprint_name when there is no LCSC entry or the exact part does not matter yet (\"0603\", \"0805\", \"soic8\", \"sot23\", \"sot223\", \"qfn16_p0.5mm\", \"tssop20\", \"pinrow4\", \"pinrow6_p2mm\", \"dip8\", \"jst_ph_4\", \"to220\", \"sod123\", ...; pins numbered 1, 2, ... and named with pin_names). Give one of lcsc or footprint_name; lcsc can still be given with a footprint_name for the BOM. ref is chosen automatically (U1, R3, ...) unless given. at is the part center in board coordinates [x, y] (expressions allowed), rotation in degrees CCW, side top or bottom. value is the BOM comment (\"10k\", \"100nF\").",
       "schema": {
         "type": "object",
         "properties": {
           "lcsc": {
-            "type": "string",
-            "description": "LCSC part number, e.g. \"C6186\""
+            "description": "LCSC part number, e.g. \"C6186\"",
+            "type": "string"
+          },
+          "footprint_name": {
+            "description": "A generic footprint by name instead of the LCSC library, e.g. \"0603\", \"soic8\", \"pinrow4\"",
+            "type": "string"
+          },
+          "pin_names": {
+            "description": "footprint_name: names for pin numbers, e.g. {\"1\": \"VCC\", \"2\": \"GND\"}",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "ref": {
             "type": "string",
@@ -4562,10 +7882,94 @@
               "number",
               "string"
             ]
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri",
+                "description": "https URL of a STEP/STL file (zip: add #file); same hosts as the import command"
+              },
+              "rotate": {
+                "description": "Degrees about X, Y, Z in footprint space (applied first)",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "translate": {
+                "description": "[x, y, z] in footprint space; z up from the board face the part sits on",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "scale": {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "description": "A real 3D model for the part body (replaces the courtyard block part_<ref>): e.g. kiswitch MX switch or hot-swap STEP, a dev board STEP. Placed in footprint coordinates, then follows the part (side, rotation, position). Check it with render and measure part_<ref>."
+          },
+          "dnp": {
+            "description": "Do not populate: left out of the BOM and CPL (bare solder pads, test points, parts fitted by hand). Default true for pad/smtpad/testpoint footprints",
+            "type": "boolean"
           }
         },
         "required": [
-          "lcsc",
           "at"
         ]
       },
@@ -4589,14 +7993,47 @@
           "rotation": 270,
           "edge": true,
           "note": "USB-C power"
+        },
+        {
+          "footprint_name": "pinrow4",
+          "ref": "J2",
+          "at": [
+            10,
+            0
+          ],
+          "pin_names": {
+            "1": "VCC",
+            "2": "SDA",
+            "3": "SCL",
+            "4": "GND"
+          },
+          "note": "I2C header"
         }
       ]
+    },
+    {
+      "name": "refresh_parts",
+      "group": "pcb",
+      "kind": "mutate",
+      "description": "Fetch the footprint, pin names and schematic symbol of placed LCSC parts again from the library (after a parser fix, or when a part showed wrong). Position, rotation, side, nets, value, notes and 3D model stay. Pads keep their numbers, so connections hold; a pad that no longer exists is reported.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "refs": {
+            "description": "Default: every LCSC part",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
     },
     {
       "name": "move_component",
       "group": "pcb",
       "kind": "mutate",
-      "description": "Move, rotate or flip parts. Fields left out keep their value. Moving a part leaves its tracks; unroute and route again after big moves.",
+      "description": "Move, rotate or flip parts. Fields left out keep their value. Tracks stay where they were, so after a part changes place, rotation or side they no longer reach its pads and can short under the new ones: pass unroute: true to remove the copper of its nets, then autoroute (and stitch_vias if the board has pours).",
       "schema": {
         "type": "object",
         "properties": {
@@ -4661,17 +8098,179 @@
                     "number",
                     "string"
                   ]
+                },
+                "model": {
+                  "description": "Set a real 3D model (or null to go back to the block / EasyEDA model)",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "format": "uri",
+                          "description": "https URL of a STEP/STL file (zip: add #file); same hosts as the import command"
+                        },
+                        "rotate": {
+                          "description": "Degrees about X, Y, Z in footprint space (applied first)",
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            {
+                              "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            {
+                              "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            }
+                          ],
+                          "items": false,
+                          "minItems": 3,
+                          "maxItems": 3
+                        },
+                        "translate": {
+                          "description": "[x, y, z] in footprint space; z up from the board face the part sits on",
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            {
+                              "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            {
+                              "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            }
+                          ],
+                          "items": false,
+                          "minItems": 3,
+                          "maxItems": 3
+                        },
+                        "scale": {
+                          "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "url"
+                      ],
+                      "description": "A real 3D model for the part body (replaces the courtyard block part_<ref>): e.g. kiswitch MX switch or hot-swap STEP, a dev board STEP. Placed in footprint coordinates, then follows the part (side, rotation, position). Check it with render and measure part_<ref>."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "dnp": {
+                  "description": "Do not populate (left out of the BOM and CPL)",
+                  "type": "boolean"
                 }
               },
               "required": [
                 "ref"
               ]
             }
+          },
+          "unroute": {
+            "description": "Remove the tracks and vias of the nets of parts that changed place (default false)",
+            "type": "boolean"
           }
         },
         "required": [
           "moves"
         ]
+      }
+    },
+    {
+      "name": "auto_place",
+      "group": "pcb",
+      "kind": "mutate",
+      "description": "Place parts automatically where their connections are shortest: parts go one by one (most connected first) to the free spot inside the board with no courtyard overlap that minimises their ratsnest, trying 0/90/180/270° (rotations to restrict), then improvement passes move and swap them. Edge connectors (edge: true) and parts in keep stay; with refs only those are placed. Connect nets first, put connectors and mounting holes where they must be, then auto_place, then autoroute. The result is ordinary positions: move_component to adjust. It also says the total ratsnest length before and after.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "refs": {
+            "description": "Only these parts (default all except edge connectors)",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "keep": {
+            "description": "Parts that must not move",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "gap": {
+            "description": "Courtyard to courtyard, mm (default 0.5)",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10
+          },
+          "margin": {
+            "description": "From the board edge, mm (default 1)",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "rotations": {
+            "description": "Allowed rotations (default all four)",
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "const": 0
+                },
+                {
+                  "type": "number",
+                  "const": 90
+                },
+                {
+                  "type": "number",
+                  "const": 180
+                },
+                {
+                  "type": "number",
+                  "const": 270
+                }
+              ]
+            }
+          },
+          "unroute": {
+            "description": "Remove the tracks and vias of moved parts (default true; they no longer fit)",
+            "type": "boolean"
+          }
+        }
       }
     },
     {
@@ -5025,6 +8624,27 @@
       }
     },
     {
+      "name": "stitch_vias",
+      "group": "pcb",
+      "kind": "mutate",
+      "description": "Stitch a net's copper pours together with vias: on a grid (pitch, default 5 mm) wherever the net's fill is on two or more layers, keeping clearance to other nets, pads, holes and existing vias. Use after add_zone on F.Cu and B.Cu (usually GND), so the two pours become one ground and pads that only one layer reaches join the net. Replaces earlier stitching vias of the net. Check with get_board (routing) and run_drc.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "net": {
+            "description": "Default GND",
+            "type": "string"
+          },
+          "pitch": {
+            "description": "Grid spacing, mm (default 5)",
+            "type": "number",
+            "minimum": 1,
+            "maximum": 30
+          }
+        }
+      }
+    },
+    {
       "name": "unroute",
       "group": "pcb",
       "kind": "mutate",
@@ -5138,6 +8758,28 @@
       ]
     },
     {
+      "name": "remove_mounting_holes",
+      "group": "pcb",
+      "kind": "mutate",
+      "description": "Remove mounting holes by number (1-based, in the order get_board lists the board holes; part holes like hot-swap pins belong to their part), or all of them.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "numbers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "all": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
       "name": "remove_zones",
       "group": "pcb",
       "kind": "mutate",
@@ -5220,20 +8862,118 @@
       "name": "autoroute",
       "group": "pcb",
       "kind": "mutate",
-      "description": "Route the board with Freerouting (on the server): every net with 2+ pins, keeping existing tracks. Takes seconds to a few minutes. Place parts and set net classes first; then run_drc. If nets stay unrouted, give parts more room or allow 4 layers.",
+      "description": "Route the board with Ket's autorouter (runs in the browser): every net with 2+ pins. Tracks are 0/45/90° only, leave pads along their long side, keep each net class's width and clearance (power nets wide; they neck down only to reach fine-pitch pads) and use few vias; crowded nets are rerouted until they fit. Nets poured on every layer are left to the pour. Without nets/region it keeps existing copper and adds to it; with nets (or region) it reroutes just those: their old tracks and vias are replaced, everything else stays as an obstacle. Use it for \"redo this part of the board\": e.g. the user points at an area, pass region. Takes seconds. Then run_drc. If it fails or nets stay unrouted, give parts more room, move connectors to the edge or use 4 layers.",
       "schema": {
         "type": "object",
         "properties": {
-          "passes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
+          "nets": {
+            "description": "Reroute only these nets",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "region": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              },
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "A box [[x0, y0], [x1, y1]] on the board, mm: the nets with copper or pads in it"
           },
           "timeout": {
             "description": "Seconds, default 180",
             "type": "integer",
             "minimum": 10,
             "maximum": 600
+          }
+        }
+      }
+    },
+    {
+      "name": "tidy_tracks",
+      "group": "pcb",
+      "kind": "mutate",
+      "description": "Clean up existing tracks without rerouting: straighten them (drop wiggles, stair steps and tiny back-and-forth segments, pulling each track tight while it keeps clearance to other copper and the board edge) and widen them to their net class width where it fits. Optionally set a new width first (e.g. \"make GND thicker\": nets [\"GND\"], width 0.6, or set_net_class). Limit it with nets or region; default all tracks. Connections stay as they are; run_drc after.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "nets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "region": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              },
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "A box [[x0, y0], [x1, y1]] on the board, mm: the nets with copper or pads in it"
+          },
+          "width": {
+            "description": "New width for these nets, mm: they move to a net class of that width; where it does not fit the track is as wide as fits",
+            "type": "number",
+            "exclusiveMinimum": 0
           }
         }
       }
@@ -5392,6 +9132,59 @@
         "required": [
           "moves"
         ]
+      }
+    },
+    {
+      "name": "manufacturing_quote",
+      "group": "pcb",
+      "kind": "query",
+      "description": "Check a board for manufacturer handoff: current DRC, unrouted nets, CAD checks, board dimensions, parts without real 3D models, and the official quote/API links for JLCPCB or PCBWay. Local preflight only: does not upload files, fetch a price, create an order or pay. Use export_manufacturing for the ZIP.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "manufacturer": {
+            "default": "jlcpcb",
+            "type": "string",
+            "enum": [
+              "jlcpcb",
+              "pcbway"
+            ]
+          },
+          "quantity": {
+            "default": 5,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        }
+      }
+    },
+    {
+      "name": "export_manufacturing",
+      "group": "pcb",
+      "kind": "query",
+      "description": "Download a prototype manufacturer handoff ZIP: Gerbers, drill, JLCPCB-style BOM/CPL, a machine-readable preflight/specification and ordering instructions. JLCPCB or PCBWay. Blocks on DRC, unrouted nets, failed geometry or failed checks; no force bypass. Does not upload/order/pay. Actual component fit and assembly rotations still need human review.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "manufacturer": {
+            "default": "jlcpcb",
+            "type": "string",
+            "enum": [
+              "jlcpcb",
+              "pcbway"
+            ]
+          },
+          "quantity": {
+            "default": 5,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "filename": {
+            "type": "string"
+          }
+        }
       }
     },
     {
@@ -5810,6 +9603,16 @@
       ]
     },
     {
+      "name": "get_gears",
+      "group": "query",
+      "kind": "query",
+      "description": "List the gears as solved: kind, teeth, module, pitch/tip/root diameters, center, axis, rotation (racks: travel), helix or lead angle, which gear each meshes with or shares a shaft with, the turns per turn of the first gear (sign = direction) and warnings (undercut, hands, self-locking worms). Use it to check a train before rendering.",
+      "schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
       "name": "run_checks",
       "group": "query",
       "kind": "query",
@@ -5851,6 +9654,20 @@
             "minimum": 128,
             "maximum": 1024
           },
+          "edges": {
+            "description": "Draw B-rep edge lines (default true; false also switches to realistic shading)",
+            "type": "boolean"
+          },
+          "shading": {
+            "description": "normal: CAD colors and edges (default); realistic: materials, decals and reflections as the product looks; wireframe: edges only; xray: see-through bodies to check what is inside",
+            "type": "string",
+            "enum": [
+              "normal",
+              "realistic",
+              "wireframe",
+              "xray"
+            ]
+          },
           "highlight": {
             "type": "array",
             "items": {
@@ -5886,6 +9703,12 @@
               "axis",
               "at"
             ]
+          },
+          "explode": {
+            "description": "Draw the exploded view (set_explode) at this fraction: 1 fully apart, 0 assembled (default)",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
           }
         }
       }
@@ -5926,6 +9749,43 @@
         },
         "required": [
           "format"
+        ]
+      }
+    },
+    {
+      "name": "export_project",
+      "group": "query",
+      "kind": "query",
+      "description": "Save an editable .ket project (versioned JSON with prepared operations): parameters, sketches, CAD, PCB, materials, checks and routing. Open it in another empty project with import_project or the Import Ket button. Does not include users, credentials or server IDs. Remote models/textures remain URL references and require network access. Unlike STL/STEP it preserves the editable design.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "import_project",
+      "group": "project",
+      "kind": "mutate",
+      "description": "Open the contents of a .ket project file in this project. Atomic, undoable and deterministic; never downloads or routes during replay. Refuses to replace a nonempty design unless replace: true. File is JSON format ket-project version 1; use export_project to create it. External assets are fetched by the normal build pipeline.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string",
+            "maxLength": 26214400,
+            "description": "The entire JSON text of a .ket project file"
+          },
+          "replace": {
+            "description": "Explicitly replace the current design (default false)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data"
         ]
       }
     }

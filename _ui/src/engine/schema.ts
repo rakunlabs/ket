@@ -66,6 +66,7 @@ export const profile = z
     }),
     z.object({ kind: z.literal('polygon'), points: z.array(vec2).min(3).describe('Closed outline, in order') }),
   ])
+  .and(z.object({ inset: expr.optional().describe('Offset the outline inwards by mm (negative grows it), corners stay sharp: the inside of a wall is the same outline with inset: "wall"; a lip "wall - lip_t"') }))
   .describe('2D outline in the sketch plane')
 
 export const checkDef = z
@@ -84,7 +85,14 @@ export const checkDef = z
       min: expr.describe('Minimum clearance in mm'),
       note: z.string().optional(),
     }),
-    z.object({ name: ident, kind: z.literal('no_overlap'), a: featureRef, b: featureRef, note: z.string().optional() }),
+    z.object({
+      name: ident,
+      kind: z.literal('no_overlap'),
+      a: featureRef,
+      b: featureRef,
+      allow: z.number().min(0).optional().describe('Overlap volume that is intended, mm³ (snap-fit clips, press fits, a switch latching into its plate); default 0'),
+      note: z.string().optional(),
+    }),
     z.object({
       name: ident,
       kind: z.literal('inside'),

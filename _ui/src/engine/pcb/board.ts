@@ -3,10 +3,10 @@
 // coordinates and tagged with their nets. DRC, ratsnest, the autorouter
 // export, Gerber and the 3D board all start from a ResolvedBoard.
 
-import type { Doc, NetClass, Pcb } from '../doc'
+import type { Doc, NetClass, Pcb, PartModel } from '../doc'
 import { num } from '../expr'
 import type { SolvedSketch } from '../sketch'
-import { type Placed, type Poly, type WorldPad, bboxOf, courtyard, polyArea, worldPads } from './geometry'
+import { type Placed, type Poly, type WorldPad, bboxOf, courtyard, polyArea, rot, worldPads } from './geometry'
 
 export const DEFAULT_CLASS: NetClass = { name: 'default', track: 0.25, clearance: 0.2, via_drill: 0.3, via_diameter: 0.6 }
 
@@ -17,11 +17,12 @@ export interface ResolvedBoard {
   thickness: number
   z: number
   layers: 2 | 4
-  components: (Placed & { lcsc: string; value?: string; mpn?: string; package?: string; basic?: boolean; edge?: boolean; height: number; courtyard: Poly })[]
+  components: (Placed & { lcsc: string; value?: string; mpn?: string; package?: string; basic?: boolean; edge?: boolean; height: number; courtyard: Poly; model?: PartModel; dnp?: boolean })[]
   pads: WorldPad[]
   classes: Map<string, NetClass>
   netClass: Map<string, NetClass>
-  holes: { at: { x: number; y: number }; d: number }[]
+  /** Board holes and footprint holes (ref set: drilled for that part). */
+  holes: { at: { x: number; y: number }; d: number; ref?: string }[]
   errors: string[]
 }
 
@@ -158,7 +159,7 @@ export function resolveBoard(doc: Doc, params: Map<string, number>, sketch: (nam
       footprint: c.footprint,
     }
     const height = v(c.height, `${c.ref}.height`, c.footprint.height ?? 1.5)
-    components.push({ ...placed, lcsc: c.lcsc, value: c.value, mpn: c.mpn, package: c.package, basic: c.basic, edge: c.edge, height, courtyard: courtyard(placed) })
+    components.push({ ...placed, lcsc: c.lcsc, value: c.value, mpn: c.mpn, package: c.package, basic: c.basic, edge: c.edge, height, courtyard: courtyard(placed), ...(c.model ? { model: c.model } : {}), ...(c.dnp ? { dnp: true } : {}) })
     for (const p of worldPads(placed, pcb.layers)) {
       p.net = pinNet.get(`${p.ref}.${p.pin}`)
       pads.push(p)
@@ -175,7 +176,17 @@ export function resolveBoard(doc: Doc, params: Map<string, number>, sketch: (nam
     pads,
     classes,
     netClass,
-    holes: pcb.holes.map((h, i) => ({ at: { x: v(h.at[0], `hole ${i + 1} x`), y: v(h.at[1], `hole ${i + 1} y`) }, d: v(h.d, `hole ${i + 1} d`) })),
+    holes: [
+      ...pcb.holes.map((h, i) => ({ at: { x: v(h.at[0], `hole ${i + 1} x`), y: v(h.at[1], `hole ${i + 1} y`) }, d: v(h.d, `hole ${i + 1} d`) })),
+      // Non-plated holes of footprints (switch pins, locating pegs): drilled
+      // like mounting holes, so the board, DRC, router and pours see them.
+      ...components.flatMap((c) =>
+        (c.footprint.holes ?? []).map((h) => {
+          const q = rot({ x: c.side === 'bottom' ? -h.at.x : h.at.x, y: h.at.y }, c.rotation)
+          return { at: { x: c.at.x + q.x, y: c.at.y + q.y }, d: h.d, ref: c.ref }
+        }),
+      ),
+    ],
     errors,
   }
 }

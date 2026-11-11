@@ -45,6 +45,8 @@ export async function boardModels(b: ResolvedBoard): Promise<PlacedModel[]> {
   const out: PlacedModel[] = []
   await Promise.all(
     b.components.map(async (c) => {
+      // The kernel shows the part's own STEP/STL model as part_<ref>.
+      if (c.model) return
       const mesh = await meshFor(c.footprint)
       if (!mesh) return
       out.push({ ref: c.ref, mesh, at: c.at, rotation: c.rotation, side: c.side, z: c.side === 'top' ? b.z + b.thickness : b.z })

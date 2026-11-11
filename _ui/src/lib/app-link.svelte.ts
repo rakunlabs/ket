@@ -5,9 +5,10 @@ import { base } from './api'
 import { tabs } from './tabs.svelte'
 
 type Frame =
-  | { t: 'hello'; client: string }
+  | { t: 'hello'; client: string; build?: string }
   | { t: 'open'; project: string; name?: string; activate?: boolean }
   | { t: 'close'; project: string }
+  | { t: 'reload' }
   | { t: 'pong' }
 
 class AppLink {
@@ -15,6 +16,8 @@ class AppLink {
   private ws: WebSocket | undefined
   private ping: ReturnType<typeof setInterval> | undefined
   private started = false
+  /** The UI build this page loaded, learnt from the first hello. */
+  private build: string | undefined
 
   start() {
     if (this.started) return
@@ -49,6 +52,15 @@ class AppLink {
 
   private onFrame(f: Frame) {
     switch (f.t) {
+      case 'hello':
+        // A server restarted with a new UI: load it, so every tab runs the
+        // commands the server offers.
+        if (f.build && this.build && f.build !== this.build) location.reload()
+        this.build ??= f.build
+        break
+      case 'reload':
+        location.reload()
+        break
       case 'open':
         tabs.open(f.project, f.name, f.activate !== false)
         break

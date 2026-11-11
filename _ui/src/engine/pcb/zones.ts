@@ -115,3 +115,46 @@ export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
 
 export { allCopper }
 export type { Zone }
+
+/**
+ * Stitching vias for a net's pours: points on a grid where the net's fill is
+ * on two or more layers, each with clearance to every other net's copper (the
+ * fill already keeps it, so the via must lie inside the fill shrunk by its
+ * radius plus the zone clearance), holes, pads and existing vias.
+ */
+export function stitchPoints(pcb: Pcb, b: ResolvedBoard, fills: ZoneFill[], net: string, opts: { pitch: number; diameter: number; drill: number; clearance: number; holeToHole?: number }): [number, number][] {
+  const layers = [...new Set(fills.filter((f) => f.net === net).map((f) => f.layer))]
+  if (layers.length < 2) return []
+  // Fill shrunk by the via radius (plus a hair): a via there stays inside the copper.
+  const inner = layers.map((l) => {
+    const rings = fills.filter((f) => f.net === net && f.layer === l).flatMap((f) => f.regions.flat())
+    return polygons(offset(unionRegions(rings), -(opts.diameter / 2 + 0.05)))
+  })
+  const xs = b.outline.map((p) => p.x)
+  const ys = b.outline.map((p) => p.y)
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
+  const r = opts.diameter / 2
+  const keep = r + opts.clearance
+  const busy: { x: number; y: number; r: number }[] = [
+    ...b.holes.map((h) => ({ x: h.at.x, y: h.at.y, r: Math.max(h.d / 2 + keep, h.d / 2 + opts.drill / 2 + (opts.holeToHole ?? 0.5) + 0.01) })),
+    ...pcb.vias.map((v) => ({ x: v.at[0], y: v.at[1], r: v.diameter / 2 + (v.net === net ? opts.pitch * 0.4 : keep) })),
+  ]
+  const nearPad = (x: number, y: number) =>
+    b.pads.some((p) => {
+      const pxs = p.outline.map((q) => q.x)
+      const pys = p.outline.map((q) => q.y)
+      return x > Math.min(...pxs) - keep && x < Math.max(...pxs) + keep && y > Math.min(...pys) - keep && y < Math.max(...pys) + keep
+    }) || b.pads.some((p) => p.drill && Math.hypot(p.center.x - x, p.center.y - y) < p.drill / 2 + opts.drill / 2 + (opts.holeToHole ?? 0.5) + 0.01)
+  const out: [number, number][] = []
+  const g = opts.pitch
+  for (let y = Math.ceil(y0 / g) * g; y <= y1; y += g)
+    for (let x = Math.ceil(x0 / g) * g; x <= x1; x += g) {
+      const p = { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 }
+      if (!inner.every((regs) => regs.some((reg) => inRegion(p, reg)))) continue
+      if (busy.some((c) => Math.hypot(c.x - p.x, c.y - p.y) < c.r)) continue
+      if (nearPad(p.x, p.y)) continue
+      out.push([p.x, p.y])
+      busy.push({ x: p.x, y: p.y, r: g * 0.4 })
+    }
+  return out
+}

@@ -1,10 +1,9 @@
 package server
 
 import (
-	"io"
+	"bytes"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/rakunlabs/ada"
 )
@@ -50,6 +49,22 @@ func (s *Server) offers(c *ada.Context) error {
 	return c.SendJSON(s.Parts.Offers(c.Request.Context(), in.Parts))
 }
 
+// getAsset serves a downloaded STEP/STL model: ?url=https://...[#file-in-zip].
+func (s *Server) getAsset(c *ada.Context) error {
+	u := c.Request.URL.Query().Get("url")
+	if u == "" {
+		return ada.NewHTTPError(http.StatusBadRequest, "url is required")
+	}
+	data, err := s.Parts.Asset(c.Request.Context(), u)
+	if err != nil {
+		return ada.WrapHTTPError(http.StatusBadGateway, err)
+	}
+	c.SetHeader("Content-Type", "application/octet-stream")
+	c.SetHeader("Cache-Control", "private, max-age=604800")
+
+	return c.SendBlob(bytes.NewReader(data))
+}
+
 func (s *Server) getModel(c *ada.Context) error {
 	obj, err := s.Parts.Model(c.Request.Context(), c.Request.PathValue("uuid"))
 	if err != nil {
@@ -59,22 +74,4 @@ func (s *Server) getModel(c *ada.Context) error {
 	c.SetHeader("Cache-Control", "private, max-age=604800, immutable")
 
 	return c.SendString(obj)
-}
-
-// route runs Freerouting on the posted DSN and answers the SES text.
-func (s *Server) route(c *ada.Context) error {
-	dsn, err := io.ReadAll(io.LimitReader(c.Request.Body, 32<<20))
-	if err != nil {
-		return ada.WrapHTTPError(http.StatusBadRequest, err)
-	}
-	passes, _ := strconv.Atoi(c.Request.URL.Query().Get("passes"))
-	secs, _ := strconv.Atoi(c.Request.URL.Query().Get("timeout"))
-
-	ses, err := s.Router.Route(c.Request.Context(), dsn, passes, time.Duration(secs)*time.Second)
-	if err != nil {
-		return ada.WrapHTTPError(http.StatusUnprocessableEntity, err)
-	}
-	c.SetHeader("Content-Type", "text/plain; charset=utf-8")
-
-	return c.SendBlob(bytesReader(ses))
 }

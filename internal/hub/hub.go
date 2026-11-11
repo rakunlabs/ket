@@ -53,6 +53,22 @@ type Hub struct {
 	clients map[string][]*Client
 
 	nextID atomic.Uint64
+
+	// Build identifies the UI this server serves (a hash of its index.html,
+	// which names every content-hashed asset); windows that loaded another
+	// build reload themselves. Empty: no check.
+	Build string
+	// BuildFn, when set, reads the build each time (the UI is served from disk).
+	BuildFn func() string
+}
+
+// CurrentBuild is the UI build windows should run.
+func (h *Hub) CurrentBuild() string {
+	if h.BuildFn != nil {
+		return h.BuildFn()
+	}
+
+	return h.Build
 }
 
 type project struct {

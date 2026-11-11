@@ -76,6 +76,18 @@ func TestAppClients(t *testing.T) {
 		}
 	}
 
+	if n, err := h.ReloadWindows(ctx, "u1"); err != nil || n != 2 {
+		t.Fatalf("reload: n = %d, err = %v", n, err)
+	}
+	for _, c := range []*fakeConn{a, b} {
+		if f := c.last(); f["t"] != "reload" {
+			t.Fatalf("reload frame = %v", f)
+		}
+	}
+	if _, err := h.ReloadWindows(ctx, "u2"); !errors.Is(err, ErrNoApp) {
+		t.Fatalf("reload without a window: err = %v, want ErrNoApp", err)
+	}
+
 	h.Disconnect(ca)
 	h.Disconnect(ca)
 	if n := h.Clients("u1"); n != 1 {

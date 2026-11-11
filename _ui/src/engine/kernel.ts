@@ -5,12 +5,34 @@
 // inputs changed. replicad operations consume their inputs, so the cache
 // keeps a master copy of each shape and every use works on a clone.
 
+import RAPIER from '@dimforge/rapier3d-compat'
 import * as R from 'replicad'
 import type { AnyShape, Edge, EdgeFinder, Face, FaceFinder, Shape3D } from 'replicad'
 
-import { type Check, type Doc, type Expr, type Feature, type Model3D, type Plane, type Profile, type Selector, type Sketch, type Vec3E, bodies, inputsOf, sketchesOf } from './doc'
-import { num, resolveParameters } from './expr'
+import { type Check, type Decal, type Doc, type Expr, type Feature, type Material, type Model3D, type Plane, type Profile, type Selector, type Sketch, type Track, type Vec3E, type Via, bodies, inputsOf, sketchesOf } from './doc'
+import { namesIn, num, resolveParameters } from './expr'
+import { explodeOffset } from './explode'
+import { fontMetrics } from './fonts'
+import { type GearState, GearError, describeGear, gearLocalShape, gearOptions, gearStates, localKey, placeGear } from './gears'
+import { type MotionPlan, motionPlan } from './motion'
+import { type Mechanisms, mechanismReport, mechanismShape, mechanismStates } from './mechanisms'
+import { createWorld, drivenPose, initPhysics, rotate } from './physics'
+
+function meshCenter(m: { vertices: Float32Array }): [number, number, number] {
+  let x = 0
+  let y = 0
+  let z = 0
+  const n = m.vertices.length / 3
+  for (let i = 0; i < n; i++) {
+    x += m.vertices[i * 3]
+    y += m.vertices[i * 3 + 1]
+    z += m.vertices[i * 3 + 2]
+  }
+  return [x / n, y / n, z / n]
+}
+import { autorouteBoard } from './pcb/autoroute'
 import { type ResolvedBoard, resolveBoard } from './pcb/board'
+import type { AutorouteOptions, AutorouteResult } from './registry'
 import { drc, ratsnest } from './pcb/drc'
 import { parseOBJ, placeModel } from './pcb/model3d'
 import { type ZoneFill, fillZones } from './pcb/zones'
@@ -29,6 +51,8 @@ export interface FeatureStatus {
   bbox?: BBox
   volume?: number
   solids?: number
+  /** Build time when slow (≥ 300 ms). */
+  ms?: number
   faces?: number
   edges?: number
 }
@@ -52,6 +76,10 @@ export interface BuildResult {
   features: FeatureStatus[]
   /** Names of the visible result bodies. */
   bodies: string[]
+  /** Problems with materials or decals (display only, never fail the build). */
+  appearance?: string[]
+  /** Where the last build spent its time, ms (worker): imports, build, mesh, board. */
+  timing?: Record<string, number>
 }
 
 export interface MeshData {
@@ -69,6 +97,20 @@ export interface MeshData {
   faceGroups: Uint32Array
   /** 0..1, from the feature; 1 when unset. */
   opacity?: number
+  /** The feature's material (display only). */
+  material?: Material
+  /** Decals projected onto this body, with numbers resolved. */
+  decals?: ResolvedDecal[]
+  /** Exploded-view offset (display only). */
+  explode?: V3
+}
+
+export interface ResolvedDecal extends Omit<Decal, 'at' | 'size' | 'depth' | 'rotation' | 'font_size'> {
+  at: V3
+  size: [number, number]
+  depth: number
+  rotation: number
+  font_size?: number
 }
 
 export interface SketchLines {
@@ -88,6 +130,8 @@ export interface CheckResult {
   /** What was measured, e.g. "distance 0.40 mm < 1.00 mm". */
   detail: string
   note?: string
+  /** Time it took when slow (≥ 200 ms). */
+  ms?: number
 }
 
 export interface FaceInfo {
@@ -109,7 +153,47 @@ export interface EdgeInfo {
 const round = (v: number, d = 3) => Math.round(v * 10 ** d) / 10 ** d
 const r3 = (v: V3): V3 => [round(v[0]), round(v[1]), round(v[2])]
 
+/** Number of distinct faces or edges, without building wrapper objects for each. */
+function countTopo(s: AnyShape, kind: 'face' | 'edge'): number {
+  let n = 0
+  for (const e of R.iterTopo(s.wrapped, kind)) {
+    n++
+    ;(e as { delete?: () => void }).delete?.()
+  }
+  return n
+}
+
+/** Boxes of big shapes, by the TopoDS_Shape they wrap (cleared when shapes are rebuilt). */
+const bigBoxes = new WeakMap<object, BBox>()
+
+/** Faces met by a topology walk, stopping after limit (no dedupe, no wrappers: fast). */
+function faceCount(s: AnyShape, limit = Infinity): number {
+  const oc = R.getOC()
+  let n = 0
+  const ex = new oc.TopExp_Explorer(s.wrapped, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE)
+  for (; ex.More() && n <= limit; ex.Next()) n++
+  ex.delete()
+  return n
+}
+
 function bboxOf(s: AnyShape): BBox {
+  const hit = bigBoxes.get(s.wrapped)
+  if (hit) return hit
+  // The exact box (AddOptimal) walks every surface: seconds for a vendor
+  // STEP model. The box from its triangulation is as good for checks.
+  const oc = R.getOC()
+  if (faceCount(s, 200) > 200) {
+    const box = new oc.Bnd_Box()
+    oc.BRepBndLib.Add(s.wrapped, box, true)
+    const lo = box.CornerMin()
+    const hi = box.CornerMax()
+    const out: BBox = [r3([lo.X(), lo.Y(), lo.Z()]), r3([hi.X(), hi.Y(), hi.Z()])]
+    lo.delete()
+    hi.delete()
+    box.delete()
+    bigBoxes.set(s.wrapped, out)
+    return out
+  }
   const [a, b] = s.boundingBox.bounds as [V3, V3]
   return [r3(a), r3(b)]
 }
@@ -301,16 +385,102 @@ function vec(v: Vec3E | undefined, params: Map<string, number>, what: string, fa
 
 function place(s: Shape3D, f: { translate?: Vec3E; rotate?: Vec3E }, params: Map<string, number>, what: string): Shape3D {
   const [rx, ry, rz] = vec(f.rotate, params, `${what}.rotate`)
+  const [tx, ty, tz] = vec(f.translate, params, `${what}.translate`)
+  if (!rx && !ry && !rz && !tx && !ty && !tz) return s
+  // Big shapes (vendor STEP models with hundreds of faces): move them by
+  // location, one transform and no copy of the geometry, instead of a copy
+  // per rotate and translate.
+  if (faceCount(s, 200) > 200) return moveByLocation(s, [rx, ry, rz], [tx, ty, tz])
   if (rx) s = s.rotate(rx, [0, 0, 0], [1, 0, 0])
   if (ry) s = s.rotate(ry, [0, 0, 0], [0, 1, 0])
   if (rz) s = s.rotate(rz, [0, 0, 0], [0, 0, 1])
-  const [tx, ty, tz] = vec(f.translate, params, `${what}.translate`)
   if (tx || ty || tz) s = s.translate(tx, ty, tz)
   return s
 }
 
+/** Rotates (X, then Y, then Z, degrees, about the origin) and translates a shape by changing its location only. */
+function moveByLocation(s: Shape3D, r: V3, t: V3): Shape3D {
+  const oc = R.getOC()
+  const total = new oc.gp_Trsf()
+  const step = (fn: (tr: InstanceType<typeof oc.gp_Trsf>) => void) => {
+    const tr = new oc.gp_Trsf()
+    fn(tr)
+    // total = tr ∘ total (apply tr after what came before)
+    total.PreMultiply(tr)
+    tr.delete()
+  }
+  const axes: V3[] = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ]
+  for (let i = 0; i < 3; i++) {
+    if (!r[i]) continue
+    step((tr) => {
+      const o = new oc.gp_Pnt(0, 0, 0)
+      const d = new oc.gp_Dir(axes[i][0], axes[i][1], axes[i][2])
+      const ax = new oc.gp_Ax1(o, d)
+      tr.SetRotation(ax, (r[i] * Math.PI) / 180)
+      ax.delete()
+      d.delete()
+      o.delete()
+    })
+  }
+  if (t[0] || t[1] || t[2])
+    step((tr) => {
+      const v = new oc.gp_Vec(t[0], t[1], t[2])
+      tr.SetTranslation(v)
+      v.delete()
+    })
+  const loc = new oc.TopLoc_Location(total)
+  const moved = R.cast(s.wrapped.Moved(loc, false)) as Shape3D
+  loc.delete()
+  total.delete()
+  s.delete()
+  return moved
+}
+
+/** A 2D outline from a profile (rect, circle, slot, polygon). */
+function resolveDecal(d: Decal, params: Map<string, number>): ResolvedDecal {
+  const w = `decal ${d.name}`
+  const at = vec(d.at, params, `${w}.at`)
+  const size: [number, number] = [num(d.size[0], params, `${w}.size[0]`), num(d.size[1], params, `${w}.size[1]`)]
+  if (size[0] <= 0 || size[1] <= 0) throw new Error(`size must be > 0 (got ${size[0]} × ${size[1]})`)
+  if (!d.text && !d.image) throw new Error('needs text or image')
+  const len = Math.hypot(...d.normal)
+  if (len < 1e-9) throw new Error('normal must not be [0, 0, 0]')
+  const { at: _a, size: _s, depth, rotation, font_size, ...rest } = d
+  return {
+    ...rest,
+    at,
+    size,
+    depth: num(depth, params, `${w}.depth`, 2),
+    rotation: num(rotation, params, `${w}.rotation`, 0),
+    ...(font_size !== undefined ? { font_size: num(font_size, params, `${w}.font_size`) } : {}),
+  }
+}
+
 /** A 2D outline from a profile (rect, circle, slot, polygon). */
 function profileDrawing(p: NonNullable<Extract<Feature, { type: 'extrude' }>['profile']>, params: Map<string, number>, what: string): R.Drawing {
+  const d = baseProfileDrawing(p, params, what)
+  const off = num((p as { inset?: Expr }).inset, params, `${what}.profile.inset`, 0)
+  if (!off) return d
+  // inset > 0 shrinks the outline (walls, lips, clearances from one outline); < 0 grows it. Sharp corners stay sharp.
+  try {
+    // The offset sign follows the outline's winding: take the one that shrinks for inset > 0.
+    const a = d.offset(-off, { lineJoinType: 'miter' })
+    const b = d.offset(off, { lineJoinType: 'miter' })
+    const size = (x: R.Drawing) => {
+      const [[x0, y0], [x1, y1]] = x.boundingBox.bounds
+      return (x1 - x0) * (y1 - y0)
+    }
+    return off > 0 === size(a) < size(b) ? a : b
+  } catch (e) {
+    throw new Error(`${what}: cannot inset the profile by ${off} mm (${kernelMessage(e)}); a narrow part of the outline may vanish, use a smaller inset`)
+  }
+}
+
+function baseProfileDrawing(p: NonNullable<Extract<Feature, { type: 'extrude' }>['profile']>, params: Map<string, number>, what: string): R.Drawing {
   const c2 = (c: [unknown, unknown] | undefined, w: string): [number, number] =>
     c ? [num(c[0] as never, params, `${w}[0]`), num(c[1] as never, params, `${w}[1]`)] : [0, 0]
 
@@ -485,6 +655,30 @@ export class Kernel {
   private meshCache = new Map<string, MeshData>()
   private params = new Map<string, number>()
   private doc: Doc | undefined
+  /** STEP/STL files by URL, read before a build (import features). */
+  private imported = new Map<string, Shape3D | Error>()
+
+  /** URLs of import features that are not loaded yet. */
+  missingImports(doc: Doc): string[] {
+    const urls = [...doc.features.flatMap((f) => (f.type === 'import' ? [f.url] : [])), ...(doc.pcb?.components ?? []).flatMap((c) => (c.model ? [c.model.url] : []))]
+    return [...new Set(urls.filter((u) => !this.imported.has(u)))]
+  }
+
+  /** Reads a downloaded STEP or STL file for import features with this URL. */
+  async loadImport(url: string, data: ArrayBuffer | Error): Promise<void> {
+    if (data instanceof Error) {
+      this.imported.set(url, data)
+      return
+    }
+    try {
+      const head = new TextDecoder().decode(new Uint8Array(data, 0, Math.min(512, data.byteLength)))
+      const blob = new Blob([data])
+      const s = head.includes('ISO-10303-21') ? await R.importSTEP(blob) : await R.importSTL(blob)
+      this.imported.set(url, s as Shape3D)
+    } catch (e) {
+      this.imported.set(url, new Error(`could not read ${url}: ${kernelMessage(e)}`))
+    }
+  }
 
   private solved = new Map<string, { key: string; sketch: SolvedSketch; error?: string }>()
 
@@ -561,6 +755,8 @@ export class Kernel {
 
     result.sketches = this.sketchStatus(doc)
     for (const name of [...this.solved.keys()]) if (!doc.sketches.some((s) => s.name === name)) this.solved.delete(name)
+    this.gears = doc.features.some((f) => f.type === 'gear') ? gearStates(doc, this.params) : new Map()
+    this.mechanisms = mechanismStates(doc, this.params)
 
     const keys = new Map<string, string>()
     const seen = new Set<string>()
@@ -593,7 +789,12 @@ export class Kernel {
       let key: string
       try {
         const sk = sketchesOf(f).map((n) => doc.sketches.find((x) => x.name === n))
-        key = JSON.stringify([f, this.usedParams(f), sk]) + '|' + inputs.map((i) => keys.get(i)).join('|')
+        // A gear's place depends on the gears it follows: key on its solved state.
+        const gs = f.type === 'gear' ? this.gears.get(f.name) : undefined
+        const gk = gs instanceof GearError ? gs.message : gs ? [gs.center, gs.frame, gs.rotation, gs.travel, gs.helix, gs.rp] : undefined
+        // A geneva wheel is built from its drive's fields.
+        const mk = f.type === 'geneva' && f.part === 'wheel' ? doc.features.find((x) => x.name === f.drive) : undefined
+        key = JSON.stringify([f, this.usedParams(f), sk, gk, mk]) + '|' + inputs.map((i) => keys.get(i)).join('|')
       } catch (e) {
         key = String(Math.random())
       }
@@ -609,10 +810,14 @@ export class Kernel {
       this.drop(f.name)
       let shape: Shape3D | undefined
       let status: FeatureStatus
+      const t0 = Date.now()
       try {
         const warnings: string[] = []
         shape = this.make(f, warnings)
         status = this.describe(f, shape, warnings)
+        const ms = Date.now() - t0
+        // Slow features are worth knowing about (fillets on big bodies, imports).
+        if (ms >= 300) status.ms = ms
       } catch (e) {
         status = { name: f.name, type: f.type, ok: false, error: `${f.name} (${f.type}): ${kernelMessage(e)}${this.hint(f, e)}` }
       }
@@ -637,6 +842,8 @@ export class Kernel {
       .filter((n) => this.cache.has(n))
 
     this.buildBoard(doc, result)
+    const appearance = this.appearanceStatus(doc)
+    if (appearance.length) result.appearance = appearance
 
     return result
   }
@@ -653,7 +860,15 @@ export class Kernel {
     }
     const b = resolveBoard(doc, this.params, (n) => this.sketch(n))
     this.board = b
-    const key = JSON.stringify([b.outline, b.cutouts, b.thickness, b.z, b.holes, b.components.map((c) => [c.ref, c.at, c.rotation, c.side, c.courtyard, c.height])])
+    const key = JSON.stringify([
+      b.outline,
+      b.cutouts,
+      b.thickness,
+      b.z,
+      b.holes,
+      b.components.map((c) => [c.ref, c.at, c.rotation, c.side, c.courtyard, c.height, c.model, c.model && this.imported.get(c.model.url) instanceof Error]),
+      [...new Set(b.components.flatMap((c) => (c.model ? [c.model.url] : [])))].map((u) => this.imported.has(u)),
+    ])
     if (key !== this.boardKey) {
       this.boardKey = key
       for (const n of [...this.cache.keys()]) if (n === BOARD || n.startsWith(PART_PREFIX)) this.drop(n)
@@ -669,11 +884,22 @@ export class Kernel {
           result.features.push({ name: BOARD, type: 'extrude', ok: false, error: `board: ${kernelMessage(e)}` })
         }
         for (const c of b.components) {
+          const name = PART_PREFIX + c.ref
+          if (c.model) {
+            try {
+              const solid = this.partModel(c, b)
+              this.cache.set(name, { key, shape: solid, status: this.describe({ name, type: 'import' } as Feature, solid, []) })
+              continue
+            } catch (e) {
+              result.ok = false
+              result.features.push({ name, type: 'import', ok: false, error: `${c.ref} model: ${kernelMessage(e)}; the part shows as its courtyard block` })
+            }
+          }
           try {
             const top = c.side === 'top'
             const z0 = top ? b.z + b.thickness : b.z - c.height
             const solid = (polyDrawing(c.courtyard).sketchOnPlane('XY', z0) as R.Sketch).extrude(c.height) as Shape3D
-            this.cache.set(PART_PREFIX + c.ref, { key, shape: solid, status: this.describe({ name: PART_PREFIX + c.ref, type: 'extrude' } as Feature, solid, []) })
+            this.cache.set(name, { key, shape: solid, status: this.describe({ name, type: 'extrude' } as Feature, solid, []) })
           } catch {
             // A degenerate courtyard only costs the 3D block.
           }
@@ -687,6 +913,26 @@ export class Kernel {
         result.bodies.push(n)
       }
     }
+  }
+
+  /**
+   * A part's real model on the board: placed in footprint space (rotate,
+   * translate, z up from the face the part sits on), then mirrored for the
+   * bottom side, turned by the part rotation and moved to the part.
+   */
+  private partModel(c: ResolvedBoard['components'][number], b: ResolvedBoard): Shape3D {
+    const m = c.model!
+    const s = this.imported.get(m.url)
+    if (!s) throw new Error(`${m.url} is not loaded yet`)
+    if (s instanceof Error) throw s
+    let shape = s.clone() as Shape3D
+    const k = num(m.scale, this.params, `${c.ref}.model.scale`, 1)
+    if (k !== 1) shape = shape.scale(k, [0, 0, 0]) as Shape3D
+    shape = place(shape, m, this.params, `${c.ref}.model`)
+    if (c.side === 'bottom') shape = shape.mirror('XY', [0, 0, 0]).mirror('YZ', [0, 0, 0]) as Shape3D
+    if (c.rotation) shape = shape.rotate(c.rotation, [0, 0, 0], [0, 0, 1])
+    const z = c.side === 'bottom' ? b.z : b.z + b.thickness
+    return shape.translate(c.at.x, c.at.y, z)
   }
 
   private zoneCache: { key: string; fills: ZoneFill[] } | undefined
@@ -712,9 +958,286 @@ export class Kernel {
     }
   }
 
-  /** Parameter values a feature uses (cheap approximation: all of them). */
-  private usedParams(_f: Feature): Record<string, number> {
-    return Object.fromEntries(this.params)
+  /** Cache primitives against their actual resolved dimensions; keep the
+   * conservative full key for features with indirect dependencies. */
+  private usedParams(f: Feature): Record<string, number> {
+    if (f.type !== 'box' && f.type !== 'cylinder' && f.type !== 'sphere') return Object.fromEntries(this.params)
+    const expressions: unknown[] = [f.translate, f.rotate]
+    if (f.type === 'box') expressions.push(f.size)
+    else if (f.type === 'cylinder') expressions.push(f.r, f.h)
+    else expressions.push(f.r)
+    const names = new Set<string>()
+    const collect = (value: unknown): void => {
+      if (Array.isArray(value)) value.forEach(collect)
+      else if (typeof value === 'string') for (const name of namesIn(value)) names.add(name)
+    }
+    expressions.forEach(collect)
+    return Object.fromEntries([...names].sort().map((name) => [name, this.params.get(name)])) as Record<string, number>
+  }
+
+  /** Gear placements of the last build. */
+  gears = new Map<string, GearState | GearError>()
+  /** Gear solids in their own frame, by shape key: turning a train only re-places them. */
+  private gearLocal = new Map<string, Shape3D>()
+
+  /** Gear facts of the last build, for get_gears. */
+  gearReport(): Record<string, unknown>[] {
+    return [...this.gears].map(([name, g]) => (g instanceof GearError ? { name, error: g.message } : describeGear(g)))
+  }
+
+  /** Cams, geneva drives and belts of the last build. */
+  mechanisms: Mechanisms = { cams: new Map(), genevas: new Map(), belts: new Map() }
+
+  mechanismReport(): Record<string, unknown>[] {
+    return mechanismReport(this.mechanisms)
+  }
+
+  /** Routes the board of the last build with the built-in autorouter. */
+  async autoroute(doc: Doc, opts: AutorouteOptions): Promise<AutorouteResult> {
+    const st = this.boardState(doc)
+    if (!st || !doc.pcb) throw new Error('the project has no board yet; start with set_board')
+    if (st.board.errors.length) throw new Error(`fix the board first: ${st.board.errors.join('; ')}`)
+    const board = st.board
+    const only = opts.nets ? new Set(opts.nets) : undefined
+    // Rerouting some nets: their old copper goes, everything else stays as an obstacle.
+    const pcb = only ? { ...doc.pcb, tracks: doc.pcb.tracks.filter((t) => !only.has(t.net)), vias: doc.pcb.vias.filter((v) => !only.has(v.net)) } : doc.pcb
+    const rules = new Set(['clearance', 'short', 'hole_to_hole', 'copper_to_edge', 'track_width', 'via'])
+    const before = new Set(drc(pcb, board, fillZones(pcb, board)).map((v) => v.message))
+    // Only problems the new copper brings in, and only copper rules (silk, placement are not the router's).
+    const check = (r: { tracks: Track[]; vias: Via[] }) => {
+      const next = { ...pcb, tracks: [...pcb.tracks, ...r.tracks], vias: [...pcb.vias, ...r.vias] }
+      return drc(next, board, fillZones(next, board)).filter((v) => !before.has(v.message) && rules.has(v.rule))
+    }
+    return autorouteBoard(pcb, board, { skip: new Set(opts.skip ?? []), only, timeout: opts.timeout, check })
+  }
+
+  motion(doc: Doc): MotionPlan {
+    return motionPlan(doc, this.params)
+  }
+
+  /** Headless physics: loose bodies' centers over time. */
+  async simulate(doc: Doc, seconds: number, samples: number): Promise<Record<string, unknown>> {
+    const plan = this.motion(doc)
+    if (!plan.physics.length && !plan.moves.length) return { note: 'nothing moves: add physics bodies or joints with set_motion (gear trains move from their first gear rotation parameter)', problems: plan.problems }
+    await initPhysics()
+    const meshes = this.meshes({ bodies: bodies(doc).map((f) => f.name).filter((n) => this.cache.has(n)) } as BuildResult)
+    const world = createWorld(meshes, plan)
+    const centers = new Map(meshes.map((m) => [m.name, meshCenter(m)]))
+    const r1 = (v: number) => Math.round(v * 10) / 10
+    const shots: Record<string, unknown>[] = []
+    const dt = 1 / 60
+    const total = Math.round(seconds / dt)
+    const every = Math.max(1, Math.round(total / samples))
+    let last = new Map<string, [number, number, number]>()
+    const escaped: string[] = []
+    try {
+      for (let i = 1; i <= total; i++) {
+        const t = i * dt
+        world.step(dt, plan.base + (plan.param ? plan.speed * t : 0))
+        if (i % every === 0 || i === total) {
+          const poses = world.poses()
+          const touching = world.contacts()
+          const shot: Record<string, unknown> = { t: r1(t), ...(plan.param ? { [plan.param]: r1(plan.base + plan.speed * t) } : {}) }
+          for (const p of plan.physics) {
+            const pose = poses.get(p.name)
+            const c0 = centers.get(p.name)!
+            if (!pose) continue
+            const rc = rotate(pose.q, c0)
+            const c: [number, number, number] = [rc[0] + pose.t[0], rc[1] + pose.t[1], rc[2] + pose.t[2]]
+            const prev = last.get(p.name)
+            const still = prev ? Math.hypot(c[0] - prev[0], c[1] - prev[1], c[2] - prev[2]) < 0.2 : false
+            shot[p.name] = { center: c.map(r1), moved: r1(Math.hypot(c[0] - c0[0], c[1] - c0[1], c[2] - c0[2])), resting: still || undefined, touching: touching.get(p.name)?.length ? touching.get(p.name) : undefined }
+            // Watchdog: a loose body inside a solid passed through it.
+            const inside = this.insideOf(c, p.name)
+            if (inside) {
+              escaped.push(`${p.name} is inside "${inside}" at t=${r1(t)} s: it passed through a wall; make the wall thicker or the body slower`)
+            }
+            last.set(p.name, c)
+          }
+          shots.push(shot)
+          last = new Map(last)
+        }
+      }
+    } finally {
+      world.dispose()
+    }
+    return { param: plan.param, speed: plan.speed, moving: plan.moves.map((m) => m.body), loose: plan.physics.map((p) => p.name), samples: shots, escaped: escaped.length ? [...new Set(escaped)].slice(0, 5) : undefined, problems: plan.problems.length ? plan.problems : undefined }
+  }
+
+  /**
+   * Interference sweep: steps the driven parameter over a range, poses every
+   * moving body and finds pairs of bodies that overlap. Exact: the pose's
+   * solids are intersected with OpenCascade for every pair whose bounds
+   * meet, so it takes a while; steps × moving pairs boolean operations.
+   */
+  async sweep(doc: Doc, opts: { from?: number; to?: number; steps?: number; bodies?: string[]; ignore?: [string, string][]; min_volume?: number }): Promise<Record<string, unknown>> {
+    const plan = this.motion(doc)
+    if (!plan.param) return { error: 'nothing drives the model: make a gear or mechanism rotation an expression of a parameter, or set motion drive' }
+    if (!plan.moves.length) return { error: 'nothing moves with ' + plan.param, problems: plan.problems }
+    const from = opts.from ?? plan.base
+    const to = opts.to ?? plan.base + 360
+    const steps = Math.max(1, Math.min(720, opts.steps ?? 72))
+    const minVol = opts.min_volume ?? 0.001
+    await initPhysics()
+    const moves = new Map(plan.moves.map((m) => [m.body, m]))
+    const all = bodies(doc)
+      .map((f) => f.name)
+      .filter((n) => this.cache.has(n))
+    const chosen = opts.bodies?.length ? all.filter((n) => opts.bodies!.includes(n)) : all
+    const unknown = (opts.bodies ?? []).filter((n) => !all.includes(n))
+    if (unknown.length) return { error: `not visible bodies: ${unknown.join(', ')}; bodies are ${all.join(', ')}` }
+    const skip = new Set((opts.ignore ?? []).flatMap(([a, b]) => [`${a}|${b}`, `${b}|${a}`]))
+    // A belt rides on its pulleys: that contact is the point.
+    for (const f of doc.features) if (f.type === 'belt') for (const p of f.pulleys) if (p.body) skip.add(`${f.name}|${p.body}`).add(`${p.body}|${f.name}`)
+    const pairs: [string, string][] = []
+    for (let i = 0; i < chosen.length; i++)
+      for (let j = i + 1; j < chosen.length; j++) {
+        const a = chosen[i]
+        const b = chosen[j]
+        if ((moves.has(a) || moves.has(b)) && !skip.has(`${a}|${b}`)) pairs.push([a, b])
+      }
+    const posed = (name: string, d: number): Shape3D => {
+      const s = this.shape(name)
+      const mv = moves.get(name)
+      if (!mv) return s
+      const p = drivenPose(mv, d)
+      const { axis, angle } = quatAxisAngle(p.q)
+      let out = s
+      if (angle) out = out.rotate(angle, [0, 0, 0], axis)
+      if (p.t[0] || p.t[1] || p.t[2]) out = out.translate(p.t[0], p.t[1], p.t[2])
+      return out
+    }
+    const hits = new Map<string, { first: number; last: number; volume: number; depth: number; at: number; count: number }>()
+    const started = performance.now()
+    let done = 0
+    let stopped = false
+    // Broad phase on the display meshes with Rapier (milliseconds per pair):
+    // only pairs whose meshes touch go to the exact OpenCascade intersection
+    // (about a second for two gears). The meshes sit within their tolerance
+    // inside curved surfaces, so overlaps under ~0.05 mm can slip through.
+    const meshes = new Map(this.meshes({ bodies: chosen } as BuildResult).map((m) => [m.name, m]))
+    const world = new RAPIER.World({ x: 0, y: 0, z: 0 })
+    const colliders = new Map<string, RAPIER.Collider>()
+    for (const [name, m] of meshes) {
+      const d = RAPIER.ColliderDesc.trimesh(m.vertices, m.triangles, RAPIER.TriMeshFlags.MERGE_DUPLICATE_VERTICES | RAPIER.TriMeshFlags.DELETE_DEGENERATE_TRIANGLES)
+      colliders.set(name, world.createCollider(d))
+    }
+    // Penetration depth of two meshes (> 0 overlap), undefined when apart.
+    const depth = (a: string, b: string): number | undefined => {
+      const ca = colliders.get(a)
+      const cb = colliders.get(b)
+      if (!ca || !cb) return 0
+      try {
+        const c = ca.contactCollider(cb, 0.01)
+        return c && c.distance < 0.01 ? -c.distance : undefined
+      } catch {
+        return 0
+      }
+    }
+    try {
+      for (let i = 0; i <= steps && !stopped; i++) {
+        const v = from + ((to - from) * i) / steps
+        const d = v - plan.base
+        for (const [name, c] of colliders) {
+          const mv = moves.get(name)
+          if (!mv) continue
+          const p = drivenPose(mv, d)
+          c.setTranslation({ x: p.t[0], y: p.t[1], z: p.t[2] })
+          c.setRotation({ x: p.q[0], y: p.q[1], z: p.q[2], w: p.q[3] })
+        }
+        const cache = new Map<string, Shape3D>()
+        const get = (n: string) => {
+          let s = cache.get(n)
+          if (!s) cache.set(n, (s = posed(n, d)))
+          return s
+        }
+        for (const [a, b] of pairs) {
+          const pen = depth(a, b)
+          if (pen === undefined) continue
+          const key = `${a}|${b}`
+          const h = hits.get(key)
+          // A pair already confirmed: follow it on the meshes (fast).
+          if (h) {
+            if (pen > 0.02) {
+              h.last = v
+              h.count++
+              if (pen > h.depth) {
+                h.depth = pen
+                h.at = v
+              }
+            }
+            continue
+          }
+          // First contact: confirm with the exact solids.
+          const A = get(a)
+          const B = get(b)
+          const [la, ha] = bboxOf(A)
+          const [lb, hb] = bboxOf(B)
+          if (la.some((x, k) => x > hb[k] || lb[k] > ha[k])) continue
+          const vol = overlapVolume(A, B)
+          if (vol > minVol) hits.set(key, { first: v, last: v, volume: vol, depth: Math.max(0, pen), at: v, count: 1 })
+        }
+        for (const s of cache.values()) s.delete()
+        done = i
+        if (performance.now() - started > 40_000) stopped = true
+      }
+    } finally {
+      world.free()
+    }
+    const r = (x: number) => Math.round(x * 1000) / 1000
+    const collisions = [...hits].map(([k, h]) => {
+      const [a, b] = k.split('|')
+      return { a, b, first: r(h.first), last: r(h.last), steps: h.count, volume_at_first: r(h.volume), worst_depth: r(h.depth), worst_at: r(h.at) }
+    })
+    collisions.sort((x, y) => x.first - y.first)
+    return {
+      param: plan.param,
+      from: r(from),
+      to: r(to),
+      steps: done,
+      step: r((to - from) / steps),
+      pairs: pairs.length,
+      clear: collisions.length === 0,
+      collisions,
+      ...(stopped ? { note: `stopped after ${done} of ${steps} steps (time limit); sweep a smaller range, fewer steps or fewer bodies` } : {}),
+      ...(plan.problems.length ? { problems: plan.problems } : {}),
+    }
+  }
+
+  /** The still solid a point lies inside, if any (driven bodies move, so they are not checked). */
+  private insideOf(p: [number, number, number], self: string): string | undefined {
+    const plan = this.doc ? this.motion(this.doc) : undefined
+    const moving = new Set([...(plan?.moves.map((m) => m.body) ?? []), ...(plan?.physics.map((x) => x.name) ?? [])])
+    for (const f of this.doc ? bodies(this.doc) : []) {
+      if (f.name === self || moving.has(f.name) || !this.cache.has(f.name)) continue
+      const s = this.cache.get(f.name)!
+      const [lo, hi] = bboxOf(s.shape)
+      if (p.some((v, i) => v < lo[i] || v > hi[i])) continue
+      const r = this.between(p, f.name) as { distance?: number }
+      if (r.distance === 0) return f.name
+    }
+    return undefined
+  }
+
+  private gearShape(f: Extract<Feature, { type: 'gear' }>, warnings: string[]): Shape3D {
+    const g = this.gears.get(f.name)
+    if (!g) throw new Error('gear was not solved')
+    if (g instanceof GearError) throw g
+    warnings.push(...g.warnings)
+    const o = gearOptions(f, this.params)
+    const key = localKey(g, o)
+    let local = this.gearLocal.get(key)
+    if (!local) {
+      local = gearLocalShape(g, o, f.name)
+      this.gearLocal.set(key, local)
+      // Keep the cache small: a few shapes per gear is plenty.
+      if (this.gearLocal.size > 64) {
+        const first = this.gearLocal.keys().next().value!
+        this.gearLocal.get(first)?.delete()
+        this.gearLocal.delete(first)
+      }
+    }
+    return placeGear(local.clone() as Shape3D, g)
   }
 
   /** A fresh copy of a built feature; the caller owns it. */
@@ -767,6 +1290,41 @@ export class Kernel {
         const flip = plane === 'XZ' ? -1 : 1
         const sk = onPlane(drawing, plane, f.symmetric ? offset - dist / 2 : offset)
         const solid = sk.extrude(dist * flip) as Shape3D
+        return place(solid, f, p, f.name)
+      }
+      case 'gear':
+        return this.gearShape(f, warnings)
+      case 'cam':
+      case 'geneva':
+      case 'belt':
+        return mechanismShape(f, this.mechanisms, this.params, warnings)
+      case 'text': {
+        const font = f.font ?? 'regular'
+        const metrics = fontMetrics(font)
+        if (!metrics) throw new Error(`font "${font}" is not loaded in this kernel`)
+        if (!f.text.trim()) throw new Error('text is empty')
+        const size = n(f.size, 'size')
+        const depth = n(f.depth, 'depth')
+        if (size <= 0) throw new Error('size (cap height in mm) must be > 0')
+        if (!depth) throw new Error('depth must not be 0; negative goes into the plane, e.g. to engrave')
+        let d: R.Drawing
+        try {
+          d = R.drawText(f.text, { fontSize: size / metrics.capHeight, fontFamily: font })
+        } catch (e) {
+          throw new Error(`cannot draw "${f.text}" with font ${font}: ${kernelMessage(e)}; use plain letters, digits and punctuation`)
+        }
+        const [[x0], [x1]] = d.boundingBox.bounds
+        const anchor = f.anchor ?? 'center'
+        const dx = anchor === 'left' ? -x0 : anchor === 'right' ? -x1 : -(x0 + x1) / 2
+        // Cap height is centred on at: the baseline sits size/2 below it.
+        d = d.translate(dx, -size / 2)
+        const ang = n(f.angle, 'angle', 0)
+        if (ang) d = d.rotate(ang, [0, 0])
+        const [ax, ay] = f.at ? [n(f.at[0], 'at[0]'), n(f.at[1], 'at[1]')] : [0, 0]
+        if (ax || ay) d = d.translate(ax, ay)
+        const plane = f.plane
+        const flip = plane === 'XZ' ? -1 : 1
+        const solid = onPlane(d, plane, n(f.offset, 'offset', 0)).extrude(depth * flip) as Shape3D
         return place(solid, f, p, f.name)
       }
       case 'revolve': {
@@ -823,19 +1381,73 @@ export class Kernel {
         let s = this.shape(f.target)
         if (!f.tools.length) throw new Error('tools must name at least one feature')
         const before = volumeOf(s)
-        for (const t of f.tools) {
-          const tool = this.shape(t)
-          if (f.op === 'union') {
-            const touching = safeDistance(s, tool) <= 1e-6
-            if (!touching) warnings.push(`"${t}" does not touch "${f.target}": the union holds separate solids`)
-            s = s.fuse(tool)
-          } else if (f.op === 'cut') {
-            const v0 = volumeOf(s)
-            s = s.cut(tool)
-            if (Math.abs(volumeOf(s) - v0) < 1e-6) warnings.push(`cutting "${t}" removed no material: it does not overlap "${f.target}"`)
-          } else {
-            s = s.intersect(tool) as Shape3D
+        const apart: string[] = []
+        if (f.op === 'intersect') {
+          for (const t of f.tools) s = s.intersect(this.shape(t)) as Shape3D
+        } else {
+          // Tools that are clear of each other go into one OpenCascade
+          // operation as a compound: one pass over the target instead of one
+          // per tool (5-6x faster on a case with many bosses and cut-outs).
+          // Tools that may overlap each other stay in separate passes, since
+          // a boolean needs arguments that do not interfere.
+          const targetBox = bboxOf(s)
+          const solids0 = s.solids?.length ?? 1
+          const tools = f.tools.map((name) => {
+            const shape = this.shape(name)
+            return { name, shape, box: bboxOf(shape) }
+          })
+          const clear = (a: BBox, b: BBox) => a[0].some((lo, k) => lo > b[1][k] + 0.01 || b[0][k] > a[1][k] + 0.01)
+          const groups: (typeof tools)[] = []
+          for (const t of tools) {
+            const g = groups.find((g) => g.every((o) => clear(o.box, t.box)))
+            if (g) g.push(t)
+            else groups.push([t])
           }
+          for (const g of groups) {
+            const tool = g.length === 1 ? g[0].shape : (R.makeCompound(g.map((t) => t.shape)) as Shape3D)
+            s = f.op === 'union' ? s.fuse(tool) : s.cut(tool)
+          }
+          if (f.op === 'cut') {
+            // A tool that is clear of the target (outside it, or loose in its cavity) cut nothing.
+            const all = Math.abs(volumeOf(s) - before) < 1e-6
+            const base = all ? undefined : this.shape(f.target)
+            for (const t of f.tools) {
+              let missed = all
+              if (base) {
+                const tool = this.shape(t)
+                missed = clear(bboxOf(tool), targetBox) || safeDistance(base, tool) > 1e-6
+                tool.delete()
+              }
+              if (missed) warnings.push(`cutting "${t}" removed no material: it does not overlap "${f.target}"`)
+            }
+            base?.delete()
+          } else if (!f.separate && (s.solids?.length ?? 1) > solids0) {
+            // Only a union that really fell apart pays for the distance
+            // checks: a tool is apart when no chain of touching tools leads
+            // from it to the target.
+            const parts = [f.target, ...f.tools].map((name) => {
+              const shape = this.shape(name)
+              return { name, shape, box: bboxOf(shape) }
+            })
+            const joined = new Set([f.target])
+            const queue = [parts[0]]
+            while (queue.length) {
+              const a = queue.pop()!
+              for (const b of parts) {
+                if (joined.has(b.name) || clear(a.box, b.box) || safeDistance(a.shape, b.shape) > 1e-6) continue
+                joined.add(b.name)
+                queue.push(b)
+              }
+            }
+            for (const t of parts) {
+              if (!joined.has(t.name)) apart.push(t.name)
+              t.shape.delete()
+            }
+          }
+        }
+        if (apart.length) {
+          const list = apart.length > 5 ? `${apart.slice(0, 5).map((t) => `"${t}"`).join(', ')} and ${apart.length - 5} more` : apart.map((t) => `"${t}"`).join(', ')
+          warnings.push(`${list} do${apart.length === 1 ? 'es' : ''} not touch the rest: the union holds separate solids (pass separate: true if that is intended, e.g. keys or wheels)`)
         }
         if (f.op === 'intersect' && volumeOf(s) < 1e-9) warnings.push('the intersection is empty')
         if (f.op === 'union' && before > 0 && Math.abs(volumeOf(s) - before) < 1e-6) warnings.push('the union added no material')
@@ -864,8 +1476,35 @@ export class Kernel {
       }
       case 'transform':
         return place(this.shape(f.target), f, p, f.name)
+      case 'import': {
+        const s = this.imported.get(f.url)
+        if (!s) throw new Error(`${f.url} is not loaded yet; it is downloaded before the build (check the URL and the server log)`)
+        if (s instanceof Error) throw s
+        let shape = s.clone() as Shape3D
+        const k = n(f.scale, 'scale', 1)
+        if (k <= 0) throw new Error('scale must be > 0')
+        if (k !== 1) shape = shape.scale(k, [0, 0, 0]) as Shape3D
+        return place(shape, f, p, f.name)
+      }
       case 'pattern': {
         const base = this.shape(f.target)
+        if (f.kind === 'polar') {
+          const count = Math.round(n(f.count, 'count'))
+          if (count < 1 || count > 500) throw new Error('count must be between 1 and 500')
+          const total = n(f.angle, 'angle', 360)
+          if (total <= 0 || total > 360) throw new Error('angle must be in (0, 360]')
+          const center = vec(f.center, p, `${f.name}.center`)
+          const dir = AXES[f.axis ?? 'Z']
+          const step = total >= 360 ? 360 / count : count > 1 ? total / (count - 1) : 0
+          let out: Shape3D | undefined
+          for (let i = 0; i < count; i++) {
+            let copy = base.clone() as Shape3D
+            if (i) copy = copy.rotate(step * i, center, dir)
+            out = out ? out.fuse(copy) : copy
+          }
+          base.delete()
+          return out!
+        }
         const offsets: V3[] = []
         if (f.kind === 'linear') {
           const count = Math.round(n(f.count, 'count'))
@@ -887,6 +1526,18 @@ export class Kernel {
         }
         base.delete()
         return out!
+      }
+      case 'mirror': {
+        const s = this.shape(f.target)
+        const off = n(f.offset, 'offset', 0)
+        const normal: V3 = f.plane === 'XY' ? [0, 0, 1] : f.plane === 'XZ' ? [0, 1, 0] : [1, 0, 0]
+        const origin: V3 = [normal[0] * off, normal[1] * off, normal[2] * off]
+        const image = (s.clone() as Shape3D).mirror(normal, origin)
+        if (f.keep === false) {
+          s.delete()
+          return image
+        }
+        return s.fuse(image)
       }
     }
   }
@@ -912,12 +1563,17 @@ export class Kernel {
       st.bbox = bboxOf(s)
       st.volume = round(volumeOf(s), 3)
       st.solids = s.solids?.length ?? 1
-      st.faces = s.faces.length
-      st.edges = s.edges.length
+      const quick = faceCount(s, 200)
+      // Counting distinct faces and edges of a vendor model takes seconds; walk them only for normal bodies.
+      if (quick > 200) st.faces = faceCount(s)
+      else {
+        st.faces = countTopo(s, 'face')
+        st.edges = countTopo(s, 'edge')
+      }
     } catch {
       // A shape without a bounding box is still valid (empty intersect).
     }
-    if ((st.solids ?? 1) > 1 && f.type !== 'pattern') warnings.push(`the result has ${st.solids} separate solids`)
+    if ((st.solids ?? 1) > 1 && f.type !== 'pattern' && f.type !== 'mirror' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
     if (st.volume !== undefined && st.volume <= 0) warnings.push('the result has no volume')
     if (warnings.length) st.warnings = warnings
     return st
@@ -985,8 +1641,14 @@ export class Kernel {
       live.add(key)
       let m = this.meshCache.get(key)
       if (!m) {
-        const mesh = c.shape.mesh({ tolerance, angularTolerance: 0.2 })
-        const edges = c.shape.meshEdges({ tolerance, angularTolerance: 0.2 })
+        // Vendor models (imports, part models) carry tiny fillets and text:
+        // a looser tolerance keeps them light (a few thousand triangles, not
+        // hundreds of thousands) and still looks right at viewing scale.
+        const vendor = c.status.type === 'import'
+        const tol = vendor ? Math.max(tolerance, 0.03 * Math.cbrt(Math.max(c.status.volume ?? 1, 1))) : tolerance
+        const ang = vendor ? 0.5 : 0.2
+        const mesh = c.shape.mesh({ tolerance: tol, angularTolerance: ang })
+        const edges = vendor ? { lines: [] as number[], edgeGroups: [] as { start: number; count: number }[] } : c.shape.meshEdges({ tolerance, angularTolerance: 0.2 })
         const egroups = new Uint32Array(edges.edgeGroups.length * 2)
         edges.edgeGroups.forEach((g, i) => {
           egroups[i * 2] = g.start
@@ -1010,11 +1672,48 @@ export class Kernel {
         this.meshCache.set(key, m)
       }
       const f = this.doc?.features.find((x) => x.name === name)
-      const color = f?.color ?? (name === BOARD ? '#2f6f3e' : name.startsWith(PART_PREFIX) ? '#30343b' : undefined)
-      out.push({ ...m, name, color, opacity: f?.opacity })
+      const color = f?.color ?? (name === BOARD ? '#1f5a35' : name.startsWith(PART_PREFIX) ? '#30343b' : undefined)
+      const material = f?.material ? this.doc?.materials?.find((x) => x.name === f.material) : undefined
+      const decals = this.resolvedDecals(name)
+      const explode = this.doc ? explodeOffset(this.doc, this.params, name) : undefined
+      out.push({ ...m, name, color, opacity: f?.opacity, ...(material ? { material } : {}), ...(decals.length ? { decals } : {}), ...(explode ? { explode } : {}) })
     }
     for (const k of [...this.meshCache.keys()]) if (!live.has(k)) this.meshCache.delete(k)
     return out
+  }
+
+  /** Decals on a body with their expressions resolved; bad ones are skipped (build reports them). */
+  private resolvedDecals(target: string): ResolvedDecal[] {
+    const out: ResolvedDecal[] = []
+    for (const d of this.doc?.decals ?? []) {
+      if (d.target !== target) continue
+      try {
+        out.push(resolveDecal(d, this.params))
+      } catch {
+        // reported by appearanceStatus
+      }
+    }
+    return out
+  }
+
+  /** Problems with materials and decals, for the build result and the model. */
+  appearanceStatus(doc: Doc): string[] {
+    const problems: string[] = []
+    const names = new Set(doc.features.map((f) => f.name))
+    const bodySet = new Set(bodies(doc).map((f) => f.name))
+    for (const f of doc.features) {
+      if (f.material && !doc.materials?.some((m) => m.name === f.material)) problems.push(`feature "${f.name}" uses material "${f.material}", which does not exist`)
+    }
+    for (const d of doc.decals ?? []) {
+      if (!names.has(d.target)) problems.push(`decal "${d.name}": target "${d.target}" does not exist`)
+      else if (!bodySet.has(d.target)) problems.push(`decal "${d.name}": "${d.target}" is not a visible body (it is used by a later feature); put the decal on the final body`)
+      try {
+        resolveDecal(d, this.params)
+      } catch (e) {
+        problems.push(`decal "${d.name}": ${(e as Error).message}`)
+      }
+    }
+    return problems
   }
 
   faces(name: string, sel?: Selector): FaceInfo[] {
@@ -1108,7 +1807,12 @@ export class Kernel {
     const sb = shape(b)
     try {
       const out: Record<string, unknown> = { a, b, distance: round(Math.max(0, safeDistance(sa, sb) - (isPt(a) || isPt(b) ? 1e-4 : 0)), 4) }
-      if (!isPt(a) && !isPt(b)) out.overlap_volume = round(overlapVolume(sa, sb), 4)
+      if (!isPt(a) && !isPt(b)) {
+        const ov = overlapRegions(sa, sb)
+        out.overlap_volume = round(ov.volume, 4)
+        // Where they clash: one box per separate piece of the overlap (largest first).
+        if (ov.volume > 1e-6) out.overlap = ov.regions.slice(0, 8)
+      }
       if (out.distance === 0 && (isPt(a) || isPt(b))) out.note = 'the point is on or inside the feature'
       return out
     } finally {
@@ -1117,9 +1821,56 @@ export class Kernel {
     }
   }
 
+  /** Results of pairwise body checks by the bodies' build keys: unchanged pairs are not intersected again. */
+  private pairCache = new Map<string, number>()
+
+  /** Cached pairwise measure (overlap volume or distance); boxes that are apart skip OpenCascade. */
+  private pair(kind: 'overlap' | 'distance', a: string, b: string, compute: () => number, min = 0): number {
+    const ca = this.cache.get(a)
+    const cb = this.cache.get(b)
+    if (!ca || !cb) return compute()
+    // Board bodies share one build key: the names make the pair unique.
+    const key = `${kind}|${a}|${ca.key}|${b}|${cb.key}|${min}`
+    const hit = this.pairCache.get(key)
+    if (hit !== undefined) return hit
+    let v: number | undefined
+    const ba = ca.status.bbox
+    const bb = cb.status.bbox
+    if (ba && bb) {
+      // Gap between the boxes: > 0 means they cannot touch.
+      let gap = 0
+      for (let i = 0; i < 3; i++) gap = Math.max(gap, ba[0][i] - bb[1][i], bb[0][i] - ba[1][i])
+      if (kind === 'overlap' && gap > 1e-3) v = 0
+      // A distance check only needs the exact value when the boxes are closer than the limit.
+      if (kind === 'distance' && gap > min + 1e-3) v = gap
+    }
+    if (v === undefined) v = compute()
+    if (this.pairCache.size > 4000) this.pairCache.clear()
+    this.pairCache.set(key, v)
+    return v
+  }
+
+  private boxApart(a: string, b: string, min: number): boolean {
+    const ba = this.cache.get(a)?.status.bbox
+    const bb = this.cache.get(b)?.status.bbox
+    if (!ba || !bb) return false
+    let gap = 0
+    for (let i = 0; i < 3; i++) gap = Math.max(gap, ba[0][i] - bb[1][i], bb[0][i] - ba[1][i])
+    return gap > min + 1e-3
+  }
+
   checks(doc: Doc): CheckResult[] {
+    return doc.checks.map((c) => {
+      const t = Date.now()
+      const r = this.check(c)
+      const ms = Date.now() - t
+      return ms >= 200 ? { ...r, ms } : r
+    })
+  }
+
+  private check(c: Check): CheckResult {
     const p = this.params
-    return doc.checks.map((c): CheckResult => {
+    {
       const base = { name: c.name, kind: c.kind, note: c.note }
       try {
         switch (c.kind) {
@@ -1129,18 +1880,33 @@ export class Kernel {
           }
           case 'min_distance': {
             const min = num(c.min, p, `check ${c.name}.min`)
-            const [sa, sb] = [this.shape(c.a), this.shape(c.b)]
-            const d = safeDistance(sa, sb)
-            sa.delete()
-            sb.delete()
-            return { ...base, ok: d >= min - 1e-6, detail: `distance ${c.a}↔${c.b} = ${d.toFixed(3)} mm (min ${min})` }
+            const d = this.pair(
+              'distance',
+              c.a,
+              c.b,
+              () => {
+                const [sa, sb] = [this.shape(c.a), this.shape(c.b)]
+                const v = safeDistance(sa, sb)
+                sa.delete()
+                sb.delete()
+                return v
+              },
+              min,
+            )
+            const exact = !this.boxApart(c.a, c.b, min)
+            return { ...base, ok: d >= min - 1e-6, detail: `distance ${c.a}↔${c.b} ${exact ? '=' : '≥'} ${d.toFixed(3)} mm (min ${min})` }
           }
           case 'no_overlap': {
-            const [sa, sb] = [this.shape(c.a), this.shape(c.b)]
-            const v = overlapVolume(sa, sb)
-            sa.delete()
-            sb.delete()
-            return { ...base, ok: v < 1e-6, detail: v < 1e-6 ? `${c.a} and ${c.b} do not overlap` : `${c.a} and ${c.b} overlap by ${v.toFixed(3)} mm³` }
+            const v = this.pair('overlap', c.a, c.b, () => {
+              const [sa, sb] = [this.shape(c.a), this.shape(c.b)]
+              const o = overlapVolume(sa, sb)
+              sa.delete()
+              sb.delete()
+              return o
+            })
+            const allow = c.allow ?? 0
+            if (v < 1e-6) return { ...base, ok: true, detail: `${c.a} and ${c.b} do not overlap` }
+            return { ...base, ok: v <= allow + 1e-6, detail: `${c.a} and ${c.b} overlap by ${v.toFixed(3)} mm³${allow ? ` (allowed ${allow})` : ''}` }
           }
           case 'inside': {
             // inner must lie fully within outer (a body that stands for the
@@ -1180,7 +1946,7 @@ export class Kernel {
         return { ...base, ok: false, detail: `cannot evaluate: ${kernelMessage(e)}` }
       }
       return { ...base, ok: false, detail: 'unknown check kind' }
-    })
+    }
   }
 
   /**
@@ -1267,6 +2033,29 @@ function safeDistance(a: Shape3D, b: Shape3D): number {
   }
 }
 
+/** The overlap of two solids: its volume and each separate piece's box and volume. */
+function overlapRegions(a: Shape3D, b: Shape3D): { volume: number; regions: { box: [V3, V3]; volume: number }[] } {
+  try {
+    const i = (a.clone() as Shape3D).intersect(b.clone() as Shape3D) as Shape3D
+    const volume = volumeOf(i)
+    const regions: { box: [V3, V3]; volume: number }[] = []
+    if (volume > 1e-6) {
+      const solids = (i as unknown as { solids?: Shape3D[] }).solids ?? [i]
+      for (const s of solids as Shape3D[]) {
+        const v = volumeOf(s)
+        if (v < 1e-6) continue
+        const [lo, hi] = bboxOf(s)
+        regions.push({ box: [r3(lo), r3(hi)], volume: round(v, 4) })
+      }
+      regions.sort((x, y) => y.volume - x.volume)
+    }
+    i.delete()
+    return { volume, regions }
+  } catch {
+    return { volume: 0, regions: [] }
+  }
+}
+
 function overlapVolume(a: Shape3D, b: Shape3D): number {
   try {
     const i = (a.clone() as Shape3D).intersect(b.clone() as Shape3D) as Shape3D
@@ -1276,4 +2065,12 @@ function overlapVolume(a: Shape3D, b: Shape3D): number {
   } catch {
     return 0
   }
+}
+
+/** Axis and angle (degrees) of a unit quaternion x, y, z, w. */
+function quatAxisAngle(q: [number, number, number, number]): { axis: V3; angle: number } {
+  const w = Math.max(-1, Math.min(1, q[3]))
+  const s = Math.sqrt(1 - w * w)
+  if (s < 1e-12) return { axis: [0, 0, 1], angle: 0 }
+  return { axis: [q[0] / s, q[1] / s, q[2] / s], angle: (2 * Math.acos(w) * 180) / Math.PI }
 }

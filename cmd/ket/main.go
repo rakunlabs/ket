@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/rakunlabs/into"
 	"github.com/rakunlabs/logi"
@@ -58,6 +60,15 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load ui; %w", err)
 	}
+	if cfg.Server.UIDir != "" {
+		ui = os.DirFS(cfg.Server.UIDir)
+		slog.Info("serving the UI from disk", "dir", cfg.Server.UIDir)
+	}
+	h.Build = server.UIBuild(ui)
+	// From disk, the build changes under a running server.
+	if cfg.Server.UIDir != "" {
+		h.BuildFn = func() string { return server.UIBuild(ui) }
+	}
 
 	if err := server.Start(ctx, cfg, server.Deps{
 		Store:    st,
@@ -66,7 +77,6 @@ func run(ctx context.Context) error {
 		Agent:    ag,
 		Catalog:  cat,
 		Parts:    parts.New(st),
-		Router:   parts.NewRouter("", ""),
 		Settings: set,
 		UI:       ui,
 	}); err != nil {
@@ -80,7 +90,7 @@ func run(ctx context.Context) error {
 // the first admin settings. They are read once, when the database has no
 // settings yet; afterwards the admin page is the only place to change them.
 func legacySettings(cfg *config.Config) settings.Settings {
-	seed := settings.Settings{MaxSteps: cfg.AI.MaxSteps, Java: cfg.PCB.Java, FreeroutingJar: cfg.PCB.FreeroutingJar}
+	seed := settings.Settings{MaxSteps: cfg.AI.MaxSteps}
 	for _, p := range cfg.AI.Providers {
 		seed.Providers = append(seed.Providers, settings.Provider{
 			Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey, Model: p.Model, Vision: p.Vision, Temperature: p.Temperature,

@@ -6,6 +6,7 @@ import { z } from 'zod'
 
 import { type Doc, bodies, inputsOf } from './doc'
 import type { BuildResult } from './kernel'
+import { explodeOffset } from './explode'
 import { define } from './registry'
 import { featureRef, selector } from './schema'
 
@@ -48,6 +49,11 @@ export function summarize(doc: Doc, build: BuildResult, detail: 'summary' | 'ful
       return out
     }),
     bodies: build.bodies,
+    materials: doc.materials?.length
+      ? doc.materials.map((m) => ({ name: m.name, used_by: doc.features.filter((f) => f.material === m.name).map((f) => f.name), ...(detail === 'full' ? m : {}) }))
+      : undefined,
+    decals: doc.decals?.length ? (detail === 'full' ? doc.decals : `${doc.decals.length} on ${[...new Set(doc.decals.map((d) => d.target))].join(', ')}`) : undefined,
+    appearance_problems: build.appearance,
   }
 }
 
@@ -134,6 +140,19 @@ define({
 })
 
 define({
+  name: 'get_gears',
+  group: 'query',
+  kind: 'query',
+  description:
+    'List the gears as solved: kind, teeth, module, pitch/tip/root diameters, center, axis, rotation (racks: travel), helix or lead angle, which gear each meshes with or shares a shaft with, the turns per turn of the first gear (sign = direction) and warnings (undercut, hands, self-locking worms). Use it to check a train before rendering.',
+  args: z.object({}),
+  async run(ctx) {
+    const gears = await ctx.kernel.gears()
+    return { count: gears.length, gears }
+  },
+})
+
+define({
   name: 'run_checks',
   group: 'query',
   kind: 'query',
@@ -146,12 +165,20 @@ define({
     const failedFeatures = build.features.filter((f) => !f.ok).map((f) => ({ name: f.name, error: f.error }))
     const warnings = build.features.filter((f) => f.warnings?.length).map((f) => ({ name: f.name, warnings: f.warnings }))
     const failedChecks = checks.filter((c) => !c.ok)
+    const slow = build.features
+      .filter((f) => f.ms)
+      .sort((x, y) => y.ms! - x.ms!)
+      .slice(0, 5)
+      .map((f) => `${f.name} ${(f.ms! / 1000).toFixed(1)} s`)
     return {
       ok: build.ok && failedChecks.length === 0,
+      slow_features: slow.length ? slow : undefined,
+      timing_ms: build.timing,
       summary: `${build.features.length - failedFeatures.length}/${build.features.length} features built, ${checks.length - failedChecks.length}/${checks.length} checks pass`,
       parameter_error: build.parameterError,
       failed_features: failedFeatures.length ? failedFeatures : undefined,
       warnings: warnings.length ? warnings : undefined,
+      appearance_problems: build.appearance,
       checks,
       hint: checks.length === 0 ? 'No checks yet: add the requirements with set_checks so changes can be verified.' : undefined,
     }
@@ -169,27 +196,45 @@ define({
   args: z.object({
     views: z.array(z.enum(VIEWS)).min(1).max(6).optional(),
     size: z.number().int().min(128).max(1024).optional().describe('Pixels per side (default 512)'),
+    edges: z.boolean().optional().describe('Draw B-rep edge lines (default true; false also switches to realistic shading)'),
+    shading: z
+      .enum(['normal', 'realistic', 'wireframe', 'xray'])
+      .optional()
+      .describe('normal: CAD colors and edges (default); realistic: materials, decals and reflections as the product looks; wireframe: edges only; xray: see-through bodies to check what is inside'),
     highlight: z.array(featureRef).optional(),
     hide: z.array(featureRef).optional(),
     section: z
       .object({ axis: z.enum(['X', 'Y', 'Z']), at: z.number().describe('Coordinate of the cut plane in mm') })
       .optional()
       .describe('Remove everything on the positive side of the plane'),
+    explode: z.number().min(0).max(1).optional().describe('Draw the exploded view (set_explode) at this fraction: 1 fully apart, 0 assembled (default)'),
   }),
   async run(ctx, a) {
     if (!ctx.render) throw new Error('render is only available in the browser')
     const build = await ctx.kernel.build()
+    let offsets: Record<string, [number, number, number]> | undefined
+    if (a.explode) {
+      if (!ctx.doc.explode?.steps.length) throw new Error('no exploded view yet; define one with set_explode')
+      offsets = {}
+      const params = new Map(Object.entries(build.parameters))
+      for (const name of build.bodies) {
+        const e = explodeOffset(ctx.doc, params, name)
+        if (e) offsets[name] = [e[0] * a.explode, e[1] * a.explode, e[2] * a.explode]
+      }
+    }
     const out = await ctx.render({
       views: a.views ?? ['iso', 'top'],
       size: a.size ?? 512,
       highlight: a.highlight,
       hide: a.hide,
       section: a.section,
-      edges: true,
+      edges: a.edges ?? true,
+      shading: a.shading,
+      offsets,
     })
     const [lo, hi] = overallBox(build)
     return {
-      text: `Rendered ${out.views.join(', ')}. Bodies: ${build.bodies.join(', ') || '(none)'}. Overall box ${fmt(lo)} → ${fmt(hi)} mm. Axes: X red, Y green, Z blue; grid 10 mm.`,
+      text: `Rendered ${out.views.join(', ')}. Bodies: ${build.bodies.join(', ') || '(none)'}. Overall box ${fmt(lo)} → ${fmt(hi)} mm. Axes: X red, Y green, Z blue; grid 10 mm.${a.edges === false || a.shading ? '' : ' Pass shading: "realistic" to see materials and decals as they look.'}${build.appearance?.length ? ` Appearance problems: ${build.appearance.join('; ')}` : ''}`,
       images: out.images,
     }
   },
@@ -234,6 +279,8 @@ define({
       await Promise.all(
         (ctx.doc.pcb?.components ?? []).map(async (c) => {
           if (!names.includes(`part_${c.ref}`)) return
+          // A part with its own STEP/STL model is already the real body.
+          if (c.model) return
           if (!c.footprint.model) return void missing.push(c.ref)
           try {
             models[c.ref] = await ctx.services!.getModel!(c.footprint.model.uuid)

@@ -44,7 +44,15 @@
   }
 
   function symbolAt(x: number, y: number): SchSymbol | undefined {
-    return sch?.symbols.find((s) => s.def.rects.some(([rx, ry, rw, rh]) => x >= s.x + rx && x <= s.x + rx + rw && y >= s.y + ry && y <= s.y + ry + rh))
+    return sch?.symbols.find(
+      (s) =>
+        s.def.rects.some(([rx, ry, rw, rh]) => x >= s.x + rx && x <= s.x + rx + rw && y >= s.y + ry && y <= s.y + ry + rh) ||
+        (s.def.lines ?? []).some((l) => {
+          const xs = l.filter((_, i) => i % 2 === 0)
+          const ys = l.filter((_, i) => i % 2 === 1)
+          return x >= s.x + Math.min(...xs) - 2 && x <= s.x + Math.max(...xs) + 2 && y >= s.y + Math.min(...ys) - 2 && y <= s.y + Math.max(...ys) + 2
+        }),
+    )
   }
 
   async function act(cmd: string, args: unknown) {

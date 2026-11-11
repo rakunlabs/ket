@@ -59,6 +59,7 @@ function bounds(def: SymbolDef) {
   const xs: number[] = []
   const ys: number[] = []
   for (const [x, y, w, h] of def.rects) xs.push(x, x + w), ys.push(y, y + h)
+  for (const l of def.lines ?? []) for (let i = 0; i + 1 < l.length; i += 2) xs.push(l[i]), ys.push(l[i + 1])
   for (const [x, y, r] of def.circles) xs.push(x - r, x + r), ys.push(y - r, y + r)
   for (const p of def.pins) xs.push(p.x), ys.push(p.y)
   return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) }
@@ -180,9 +181,11 @@ export function schematic(pcb: Pcb): Schematic {
   for (const c of comps) {
     const def = c.footprint.symbol ?? fallbackSymbol(c)
     const b = bounds(def)
-    // Room for net labels on both sides.
+    // Room for net labels on every side that has pins.
+    const vUp = def.pins.some((p) => p.dir === 90) ? 30 : 0
+    const vDown = def.pins.some((p) => p.dir === 270) ? 30 : 0
     const w = b.maxX - b.minX + 120
-    const h = b.maxY - b.minY + 50
+    const h = b.maxY - b.minY + 50 + vUp + vDown
     let x: number
     let y: number
     if (c.sch) {
@@ -194,7 +197,7 @@ export function schematic(pcb: Pcb): Schematic {
         rowH = 0
       }
       x = snap(cx + 60 - b.minX)
-      y = snap(cy + 30 - b.minY)
+      y = snap(cy + 30 + vUp - b.minY)
       cx += w
       rowH = Math.max(rowH, h)
     }

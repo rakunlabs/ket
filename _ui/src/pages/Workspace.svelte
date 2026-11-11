@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bot, ChevronLeft, Download, Focus, Redo2, Undo2 } from '@lucide/svelte'
+  import { Bot, ChevronLeft, Download, Focus, Redo2, Undo2, Upload } from '@lucide/svelte'
   import { onDestroy, onMount } from 'svelte'
 
   import Chat from '../components/Chat.svelte'
@@ -116,6 +116,36 @@
     }
   }
 
+  let projectInput: HTMLInputElement
+  let fileBusy = $state(false)
+  let fileMessage = $state('')
+  let fileError = $state(false)
+  let manufacturer = $state<'jlcpcb' | 'pcbway'>('jlcpcb')
+  let quantity = $state(5)
+  const quoteUrl = $derived(manufacturer === 'jlcpcb' ? 'https://jlcpcb.com/quote' : 'https://www.pcbway.com/orderonline.aspx')
+  async function fileAction(action: () => Promise<unknown>, message: string) {
+    fileBusy = true
+    fileMessage = ''
+    fileError = false
+    try {
+      await action()
+      fileMessage = message
+    } catch (e) {
+      fileError = true
+      fileMessage = (e as Error).message
+    } finally { fileBusy = false }
+  }
+  async function openProjectFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    await fileAction(async () => {
+      if (file.size > 25 * 1024 * 1024) throw new Error('This .ket file is larger than 25 MiB.')
+      await session.run('import_project', { data: await file.text() })
+    }, 'Project imported. Remote models may need network access on first open.')
+  }
+
   const failed = $derived(session.build?.features.filter((f) => !f.ok).length ?? 0)
   let now = $state(Date.now())
   $effect(() => {
@@ -132,7 +162,7 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="flex h-full flex-col">
-  <header class="flex h-12 shrink-0 items-center gap-2 border-b border-line-strong bg-sidebar px-2">
+  <header class="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b border-line-strong bg-sidebar px-2 py-1">
     <a class="btn btn-ghost px-1.5 text-ink" href="#/" title="All projects" aria-label="All projects"><ChevronLeft size={16} /></a>
     <Logo size={20} />
     <span class="min-w-0 truncate font-semibold">{project?.name ?? '…'}</span>
@@ -148,7 +178,7 @@
       </span>
     {/if}
 
-    <div class="ml-auto flex items-center gap-1">
+    <div class="ml-auto flex flex-wrap items-center justify-end gap-1">
       <button class="btn btn-ghost px-1.5" title="Undo (Ctrl+Z)" disabled={session.head === 0} onclick={() => session.undo()}>
         <Undo2 size={15} />
       </button>
@@ -162,6 +192,32 @@
         {/each}
       </div>
       <button class="btn btn-ghost px-1.5" title="Fit view (F)" onclick={() => (mode === 'pcb' ? boardView?.frame() : mode === 'sch' ? schView?.frame() : viewport?.frame())}><Focus size={15} /></button>
+      <details class="relative">
+        <summary class="btn cursor-pointer">Project file</summary>
+        <div class="pop absolute right-0 top-full z-30 mt-1 w-72 space-y-2 bg-surface p-3">
+          <p class="text-xs text-ink-2">Editable .ket file, including CAD, PCB and routing. Remote assets remain URL references.</p>
+          <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => fileAction(() => session.run('export_project', { filename: `${project?.name ?? 'project'}.ket` }), 'Project file downloaded.')}><Download size={14} /> Save Ket project</button>
+          {#if access.canEdit}
+            <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => projectInput.click()}><Upload size={14} /> Import Ket into empty project</button>
+          {/if}
+        </div>
+      </details>
+      {#if session.doc.pcb}
+        <details class="relative">
+          <summary class="btn cursor-pointer">Manufacture</summary>
+          <div class="pop absolute right-0 top-full z-30 mt-1 w-80 space-y-3 bg-surface p-3">
+            <p class="text-xs text-ink-2">Download a checked prototype package. Upload, quote confirmation and payment stay with you.</p>
+            <label class="flex items-center justify-between gap-2 text-xs">Manufacturer
+              <select class="input" bind:value={manufacturer}><option value="jlcpcb">JLCPCB</option><option value="pcbway">PCBWay</option></select>
+            </label>
+            <label class="flex items-center justify-between gap-2 text-xs">Quantity
+              <input class="input w-24" type="number" min="1" max="100000" step="1" bind:value={quantity} />
+            </label>
+            <button class="btn w-full" disabled={fileBusy || session.building || !Number.isInteger(quantity) || quantity < 1 || quantity > 100000} onclick={() => fileAction(() => session.run('export_manufacturing', { manufacturer, quantity, filename: `${project?.name ?? 'board'}-${manufacturer}-prototype.zip` }), 'Prototype package downloaded. Review its ORDERING.md and manufacturing.json before ordering.')}><Download size={14} /> {fileBusy ? 'Preparing package…' : 'Download checked package'}</button>
+            <a class="text-xs underline" href={quoteUrl} target="_blank" rel="noopener noreferrer">Open manufacturer quote page (new tab)</a>
+          </div>
+        </details>
+      {/if}
       {#if session.doc.pcb}<button class="btn" onclick={() => exportFab()}><Download size={14} /> Gerber</button>{/if}
       <button class="btn" onclick={() => exportAs('step')}><Download size={14} /> STEP</button>
       <button class="btn" onclick={() => exportAs('stl')}><Download size={14} /> STL</button>
@@ -177,6 +233,10 @@
   </header>
 
   <ProposalBar {session} />
+  <input bind:this={projectInput} class="hidden" type="file" accept=".ket,application/json" onchange={openProjectFile} aria-label="Import Ket project file" />
+  {#if fileMessage}
+    <div class={['note mx-2 my-1 text-xs', fileError && 'danger']} role={fileError ? 'alert' : 'status'}>{fileMessage}</div>
+  {/if}
 
   {#if loadError}
     <div class="note danger m-6">{loadError}</div>

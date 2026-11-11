@@ -29,7 +29,7 @@ The enclosure and the board are one model with shared parameters, and every capa
 ## Capabilities and Constraints
 
 - CAD: parameters and expressions, constrained sketches, extrude/revolve/loft/sweep, booleans, fillet/chamfer/shell, patterns, checks, measuring, STEP/STL export.
-- PCB: board outline from sketches, LCSC parts with real footprints, symbols and 3D models, nets, copper pours, Freerouting autoroute, DRC, BOM price and stock, fabrication zip.
+- PCB: board outline from sketches, LCSC parts with real footprints, symbols and 3D models, nets, copper pours, in-browser autoroute, DRC, BOM price and stock, fabrication zip.
 - Schematic drawn from the netlist with stored wires.
 - Accounts always on (ada Auth Kit): first account is admin; roles admin/editor/viewer; per-project sharing; MCP over OAuth or personal tokens.
 - Proposals: agent changes on a branch, reviewed and accepted or rejected.
