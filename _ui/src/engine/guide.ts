@@ -158,6 +158,9 @@ it changes, so every dimension can be an expression over parameters.
    (no parts). autoroute, pours and auto_place respect them; run_drc
    reports what is inside. set_board teardrops: true adds teardrops at
    pads and vias (derived copper: Gerber, DRC and pours include it).
+11. A second opinion: export_kicad writes a .kicad_pcb (KiCad 8/9) to run
+   KiCad's DRC on or to continue there; read its notes for what is not
+   carried over (net classes, teardrops, own 3D models).
 
 ## Editing print models (STL, 3MF)
 - Files come from Import model in Ket, or from upload_asset: call it with

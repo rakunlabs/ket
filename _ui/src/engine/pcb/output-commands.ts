@@ -9,6 +9,7 @@ import { requireHealthyHistory } from '../operations'
 import { boardStyle } from './artwork'
 import { boardDrills } from './drills'
 import { fabFiles } from './fab'
+import { writeKicadPcb } from './kicad'
 import { schematic } from './schematic'
 import { clone, comp, pcbOf } from './shared'
 
@@ -157,6 +158,30 @@ define({
     const name = a.filename ?? 'board-fab.zip'
     await ctx.download(name, blob)
     return { ok: true, file: name, files: Object.keys(files), bytes: blob.size }
+  },
+})
+
+define({
+  name: 'export_kicad',
+  group: 'pcb',
+  kind: 'query',
+  description:
+    'Download the board as a KiCad 8 board file (.kicad_pcb, opens in KiCad 8 and 9): outline and cut-outs, footprints (pads, silkscreen, courtyard, pin names, LCSC numbers), nets, tracks, vias, pours (as zones; press B in KiCad to fill), keep-outs (rule areas), mounting holes and silkscreen artwork. Returns what KiCad will not get exactly (notes): net classes live in the .kicad_pro, teardrops are made in KiCad, own 3D models are not referenced. Use it to check the board with KiCad\'s DRC or to continue there; Ket stays the source.',
+  args: z.object({ filename: z.string().optional() }),
+  async run(ctx, a) {
+    requireHealthyHistory(ctx)
+    const st = await ctx.kernel.board()
+    if (!st || !ctx.doc.pcb) throw new Error('the project has no board yet; start with set_board')
+    const r = writeKicadPcb(ctx.doc, st.board)
+    const out: Record<string, unknown> = { ok: true, format: 'KiCad 8 .kicad_pcb', counts: r.counts, notes: r.notes }
+    if (ctx.download) {
+      const file = a.filename ?? 'board.kicad_pcb'
+      const blob = new Blob([r.text], { type: 'application/x-kicad-pcb' })
+      await ctx.download(file, blob)
+      out.file = file
+      out.bytes = blob.size
+    }
+    return out
   },
 })
 

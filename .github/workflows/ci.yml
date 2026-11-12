@@ -52,6 +52,32 @@ jobs:
       - run: go vet ./...
       - run: go test -race -count=1 ./...
 
+  kicad:
+    # export_kicad, checked by KiCad itself: the file loads and KiCad's DRC
+    # finds no errors and nothing unconnected.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: _ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: _ui
+      - run: pnpm exec tsx scripts/kicad-fixtures.ts kicad-out
+        working-directory: _ui
+      - name: KiCad DRC
+        run: |
+          chmod -R 777 _ui/kicad-out
+          docker run --rm -v "$PWD/_ui/kicad-out:/w" -w /w --entrypoint kicad-cli kicad/kicad:9.0 pcb drc --severity-all --format json -o /w/drc.json /w/example.kicad_pcb
+      - run: pnpm exec tsx scripts/kicad-check.ts kicad-out/drc.json
+        working-directory: _ui
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20
