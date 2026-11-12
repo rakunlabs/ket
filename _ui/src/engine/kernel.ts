@@ -2384,16 +2384,18 @@ export class Kernel {
             si.delete()
             so.delete()
             const within = this.overlapOf(c.inner, c.outer).volume
+            // Mesh volumes carry float rounding: allow a tiny fraction of the inner volume.
+            const tol = Math.max(1e-6, vi * 1e-6)
             const outside = Math.max(0, vi - within)
             const gaps = [0, 1, 2].flatMap((i) => [ilo[i] - olo[i], ohi[i] - ihi[i]])
             const minGap = Math.min(...gaps)
-            const ok = minGap >= margin - 1e-6 && outside < 1e-6
+            const ok = minGap >= margin - 1e-6 && outside < tol
             const axis = ['-X', '+X', '-Y', '+Y', '-Z', '+Z'][gaps.indexOf(minGap)]
             return {
               ...base,
               ok,
               detail:
-                (outside >= 1e-6 ? `${outside.toFixed(3)} mm³ of ${c.inner} is outside ${c.outer}; ` : '') +
+                (outside >= tol ? `${outside.toFixed(3)} mm³ of ${c.inner} is outside ${c.outer}; ` : '') +
                 `smallest gap ${minGap.toFixed(3)} mm on ${axis} (margin ${margin})`,
             }
           }
