@@ -43,6 +43,22 @@ func (s *Store) RenewTurn(ctx context.Context, conversationID, owner string, ttl
 	return stop, false, nil
 }
 
+// TurnStop reports whether a stop was asked for owner's turn, without
+// renewing the lease. lost is true when the lease is no longer owner's.
+func (s *Store) TurnStop(ctx context.Context, conversationID, owner string) (stop, lost bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT stop_requested FROM conversations WHERE id = $1 AND running_by = $2`,
+		conversationID, owner).Scan(&stop)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, true, nil
+		}
+		return false, false, fmt.Errorf("turn stop; %w", err)
+	}
+
+	return stop, false, nil
+}
+
 // ReleaseTurn ends owner's lease.
 func (s *Store) ReleaseTurn(ctx context.Context, conversationID, owner string) error {
 	_, err := s.db.ExecContext(ctx,

@@ -148,11 +148,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Agent.Run(ctx, conv, in.Provider, in.Text, in.Propose, emit); err != nil {
-		msg := err.Error()
-		if errors.Is(err, agent.ErrBusy) {
-			msg = err.Error()
-		}
-		emit(agent.Event{Type: "error", Message: msg})
+		emit(agent.Event{Type: "error", Message: err.Error()})
 	}
 }
 

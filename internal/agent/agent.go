@@ -149,30 +149,54 @@ type Event struct {
 }
 
 // leaseTTL is how long a turn's lease lasts without renewal, so a server
-// that dies frees its conversations soon.
+// that dies frees its conversations soon. It is renewed every third of it.
 const leaseTTL = 30 * time.Second
 
 // stopPoll is how often a running turn looks for a stop asked on another server.
 const stopPoll = time.Second
 
+// keepLease holds the turn's lease while it runs: a read every stopPoll for a
+// stop asked elsewhere, a write every leaseTTL/3 to renew. It cancels the
+// turn on a stop, when the lease was lost, and when the database could not
+// be reached for so long that the lease may have lapsed (another server
+// could then start the same conversation).
 func (a *Agent) keepLease(ctx context.Context, cancel context.CancelFunc, conversationID string) {
 	tick := time.NewTicker(stopPoll)
 	defer tick.Stop()
+	renewed := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			// Renewing is the poll: one small UPDATE a second per running turn.
-			stop, lost, err := a.store.RenewTurn(ctx, conversationID, a.id, leaseTTL)
-			if err != nil {
-				slog.Warn("renew assistant turn", "conversation", conversationID, "error", err)
-				continue
-			}
-			if stop || lost {
+		}
+		var stop, lost bool
+		var err error
+		renew := time.Since(renewed) >= leaseTTL/3
+		// A query must not outlive the lease it is keeping.
+		qctx, done := context.WithTimeout(ctx, leaseTTL/3)
+		asked := time.Now()
+		if renew {
+			stop, lost, err = a.store.RenewTurn(qctx, conversationID, a.id, leaseTTL)
+		} else {
+			stop, lost, err = a.store.TurnStop(qctx, conversationID, a.id)
+		}
+		done()
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			slog.Warn("keep assistant turn", "conversation", conversationID, "error", err)
+			if time.Since(renewed) > leaseTTL-leaseTTL/6 {
+				slog.Error("assistant turn stopped: its lease could not be renewed", "conversation", conversationID)
 				cancel()
 				return
 			}
+		case stop || lost:
+			cancel()
+			return
+		case renew:
+			renewed = asked
 		}
 	}
 }
@@ -186,7 +210,9 @@ func (a *Agent) Stop(conversationID string) bool {
 		cancel()
 		return true
 	}
-	asked, err := a.store.RequestStop(context.Background(), conversationID)
+	ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
+	defer done()
+	asked, err := a.store.RequestStop(ctx, conversationID)
 	if err != nil {
 		slog.Warn("request assistant stop", "conversation", conversationID, "error", err)
 	}
@@ -228,7 +254,13 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 	if !ok {
 		return ErrBusy
 	}
-	defer func() { _ = a.store.ReleaseTurn(context.WithoutCancel(ctx), conv.ID, a.id) }()
+	defer func() {
+		rctx, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer done()
+		if err := a.store.ReleaseTurn(rctx, conv.ID, a.id); err != nil {
+			slog.Warn("release assistant turn", "conversation", conv.ID, "error", err)
+		}
+	}()
 	go a.keepLease(ctx, cancel, conv.ID)
 
 	project, err := a.store.GetProject(ctx, conv.ProjectID)
