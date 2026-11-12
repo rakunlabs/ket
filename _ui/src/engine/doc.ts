@@ -553,7 +553,42 @@ export interface Decal {
 // bottom face sits at z = placement.z, so an enclosure can be designed
 // around it with the same parameters.
 
-export type CopperLayer = 'F.Cu' | 'B.Cu' | 'In1.Cu' | 'In2.Cu'
+export type CopperLayer = 'F.Cu' | 'B.Cu' | 'In1.Cu' | 'In2.Cu' | 'In3.Cu' | 'In4.Cu'
+
+/** Copper layer counts a board can have. */
+export type LayerCount = 2 | 4 | 6
+
+/** Every copper layer name, for schemas. */
+export const COPPER_LAYERS = ['F.Cu', 'In1.Cu', 'In2.Cu', 'In3.Cu', 'In4.Cu', 'B.Cu'] as const
+
+/** The copper layers a via joins: its span (top to bottom), or every layer. */
+export function viaLayers(v: { span?: [CopperLayer, CopperLayer] }, layers: LayerCount): CopperLayer[] {
+  const all = copperLayersOf(layers)
+  if (!v.span) return all
+  const [i, j] = v.span.map((l) => all.indexOf(l)).sort((a, b) => a - b)
+  return i < 0 || j < 0 ? all : all.slice(i, j + 1)
+}
+
+/** The copper layers of a board, top to bottom. */
+export function copperLayersOf(layers: LayerCount): CopperLayer[] {
+  return layers === 6 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'In3.Cu', 'In4.Cu', 'B.Cu'] : layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu']
+}
+
+/**
+ * The physical build-up of a board: copper and dielectric thicknesses and the
+ * dielectric constant, top to bottom. Used for impedance and for the
+ * manufacturing report; layer count still comes from Pcb.layers.
+ */
+export interface Stackup {
+  /** Preset it came from (e.g. "jlcpcb-4l-7628"), for the report. */
+  preset?: string
+  /** Copper thickness per layer, µm (35 = 1 oz), top to bottom. */
+  copper: number[]
+  /** Dielectric between each pair of copper layers, top to bottom: thickness mm and εr. */
+  dielectric: { thickness: number; er: number; kind?: 'core' | 'prepreg' }[]
+  /** Solder mask thickness µm and εr (outer layers). */
+  mask?: { thickness: number; er: number }
+}
 
 export interface P {
   x: number
@@ -684,6 +719,8 @@ export interface Via {
   at: [number, number]
   drill: number
   diameter: number
+  /** Copper layers it joins, top first (default all: a through via). Blind: from an outer layer; buried: inner only. */
+  span?: [CopperLayer, CopperLayer]
   /** Placed by stitch_vias (replaced when it runs again). */
   stitch?: boolean
 }
@@ -736,8 +773,10 @@ export interface Pcb {
   /** Board outline: a closed XY sketch (inner circles become holes) or a rect. */
   outline: { sketch: string } | { rect: { w: Expr; h: Expr; r?: Expr; center?: Vec2E } }
   thickness: Expr
-  layers: 2 | 4
+  layers: LayerCount
   rules: 'jlcpcb'
+  /** Physical layer build-up (set_stackup); thickness follows it when set. */
+  stackup?: Stackup
   placement?: { z?: Expr }
   components: Component[]
   nets: Net[]

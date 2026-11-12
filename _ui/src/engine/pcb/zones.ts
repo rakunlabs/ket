@@ -7,10 +7,13 @@
 // solder well; same-net tracks and vias join solidly. Islands that touch
 // no copper of the net are dropped (they would float).
 
-import type { Pcb, Zone } from '../doc'
+import { type LayerCount, type Pcb, type Zone, copperLayersOf, viaLayers } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS } from './board'
 import { teardrops } from './teardrops'
+
+/** Unplated hole to copper, mm (JLCPCB). */
+const HOLE_TO_COPPER = 0.255
 import { type Ring, area, circle, difference, inRegion, intersect, offset, overlaps, polygons, stroke, union, unionRegions } from './poly'
 
 export interface ZoneFill {
@@ -24,7 +27,7 @@ export interface ZoneFill {
   dropped: number
 }
 
-const allCopper = (layers: number) => (layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu'])
+const allCopper = (layers: number) => copperLayersOf(layers as LayerCount)
 
 export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
   const zones = (pcb.zones ?? []).map((z, i) => ({ z, i })).sort((a, c) => (a.z.priority ?? 0) - (c.z.priority ?? 0))
@@ -61,10 +64,13 @@ export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
     }
     for (const v of pcb.vias) {
       const c = { x: v.at[0], y: v.at[1] }
+      // A blind or buried via is not on the layers outside its span (not even drilled there).
+      if (!viaLayers(v, b.layers).includes(z.layer)) continue
       if (v.net === z.net) same.push(circle(c, v.diameter / 2))
       else avoid.push(circle(c, v.diameter / 2 + clearance))
     }
-    for (const h of b.holes) avoid.push(circle(h.at, h.d / 2 + clearance))
+    // Copper keeps the fab's hole-to-copper distance from unplated holes (JLCPCB 0.25 mm), more than the net clearance.
+    for (const h of b.holes) avoid.push(circle(h.at, h.d / 2 + Math.max(clearance, HOLE_TO_COPPER), 32))
     for (const c of b.cutouts) avoid.push(...offset([c], edge))
     for (const k of b.keepouts) if (k.forbid.has('pours') && k.layers.includes(z.layer)) avoid.push(k.polygon)
     for (const p of b.pads) if (p.drill && (p.net !== z.net || p.drillPlated === false)) avoid.push(...stroke(p.drillSlot ?? [p.center], p.drill + clearance * 2))

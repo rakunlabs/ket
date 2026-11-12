@@ -74,8 +74,10 @@ jobs:
       - name: KiCad DRC
         run: |
           chmod -R 777 _ui/kicad-out
-          docker run --rm -v "$PWD/_ui/kicad-out:/w" -w /w --entrypoint kicad-cli kicad/kicad:9.0 pcb drc --severity-all --format json -o /w/drc.json /w/example.kicad_pcb
-      - run: pnpm exec tsx scripts/kicad-check.ts kicad-out/drc.json
+          for b in example six-layer; do
+            docker run --rm -v "$PWD/_ui/kicad-out:/w" -w /w --entrypoint kicad-cli kicad/kicad:9.0 pcb drc --severity-all --format json -o /w/$b.drc.json /w/$b.kicad_pcb
+          done
+      - run: pnpm exec tsx scripts/kicad-check.ts kicad-out/example.drc.json kicad-out/six-layer.drc.json
         working-directory: _ui
 
   e2e:

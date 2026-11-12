@@ -2,7 +2,7 @@
 
 import { z } from 'zod'
 
-import type { Component, Footprint, Pcb } from '../doc'
+import { type Component, type Footprint, type Pcb, copperLayersOf } from '../doc'
 import { define } from '../registry'
 import { expr, vec2, vec3 } from '../schema'
 import { emptyPcb } from './board'
@@ -62,7 +62,7 @@ define({
   group: 'pcb',
   kind: 'mutate',
   description:
-    'Create or change the PCB: outline (a rect, or an XY sketch whose inner loops become cut-outs), thickness, copper layers (2 or 4) and z (height of the board\'s bottom face, so an enclosure can be modelled around it). The board appears in the 3D model as body "board" and each part as "part_<REF>" (a block of its courtyard and height): use them in checks and booleans (e.g. inside part_J1 the case cavity, or a cut where J1 meets the wall).',
+    'Create or change the PCB: outline (a rect, or an XY sketch whose inner loops become cut-outs), thickness, copper layers (2, 4 or 6; set_stackup for the build-up) and z (height of the board\'s bottom face, so an enclosure can be modelled around it). The board appears in the 3D model as body "board" and each part as "part_<REF>" (a block of its courtyard and height): use them in checks and booleans (e.g. inside part_J1 the case cavity, or a cut where J1 meets the wall).',
   args: z.object({
     outline: z
       .union([
@@ -71,7 +71,7 @@ define({
       ])
       .optional(),
     thickness: expr.optional().describe('Default 1.6'),
-    layers: z.union([z.literal(2), z.literal(4)]).optional(),
+    layers: z.union([z.literal(2), z.literal(4), z.literal(6)]).optional().describe('Copper layers: 2, 4 or 6'),
     z: expr.optional().describe('Height of the bottom face, default 0'),
     teardrops: z
       .union([z.literal(false), z.literal(true), z.object({ length: z.number().min(0.3).max(3).optional(), width: z.number().min(0.3).max(1).optional() })])
@@ -90,7 +90,15 @@ define({
       pcb.outline = a.outline as Pcb['outline']
     }
     if (a.thickness !== undefined) pcb.thickness = a.thickness
-    if (a.layers) pcb.layers = a.layers
+    if (a.layers && a.layers !== pcb.layers) {
+      const keep = copperLayersOf(a.layers)
+      const lost = [...new Set([...pcb.tracks.map((x) => x.layer), ...(pcb.zones ?? []).map((x) => x.layer)].filter((l) => !keep.includes(l)))]
+      if (lost.length) throw new Error(`copper is on ${lost.join(', ')}, which a ${a.layers}-layer board does not have; move or remove it first (unroute, remove_zones)`)
+      pcb.layers = a.layers
+      // A stackup is for a layer count; a new count needs a new one.
+      if (pcb.stackup && pcb.stackup.copper.length !== a.layers) delete pcb.stackup
+      for (const v of pcb.vias) if (v.span && v.span.some((l) => !keep.includes(l))) delete v.span
+    }
     if (a.z !== undefined) pcb.placement = { ...pcb.placement, z: a.z }
     if (a.teardrops === false) delete pcb.teardrops
     else if (a.teardrops) pcb.teardrops = a.teardrops === true ? {} : a.teardrops

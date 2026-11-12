@@ -158,7 +158,12 @@ it changes, so every dimension can be an expression over parameters.
    (no parts). autoroute, pours and auto_place respect them; run_drc
    reports what is inside. set_board teardrops: true adds teardrops at
    pads and vias (derived copper: Gerber, DRC and pours include it).
-11. A second opinion: export_kicad writes a .kicad_pcb (KiCad 8/9) to run
+11. Fast signals (USB, Ethernet, RF): set_stackup with a preset, then
+   impedance for the width (target 50 Ω single, 90 Ω USB pair with gap).
+   4 or 6 layers give a solid ground plane under them. Blind/buried vias
+   (add_via span) only when a through via will not do: most fabs charge
+   extra or do not make them.
+12. A second opinion: export_kicad writes a .kicad_pcb (KiCad 8/9) to run
    KiCad's DRC on or to continue there; read its notes for what is not
    carried over (net classes, teardrops, own 3D models).
 

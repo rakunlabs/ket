@@ -1,5 +1,5 @@
 // One source of drilling geometry for DRC, previews, CAD and fabrication.
-import type { P, Pcb } from '../doc'
+import { type P, type Pcb, copperLayersOf, viaLayers } from '../doc'
 import type { ResolvedBoard } from './board'
 
 export interface BoardDrill {
@@ -10,13 +10,21 @@ export interface BoardDrill {
   /** Tool-center travel; equal ends describe a round drilled hole. */
   from: P
   to: P
+  /** Layer numbers (1 = top) it is drilled between, for blind/buried vias; omitted = through. */
+  span?: [number, number]
 }
 
 export function boardDrills(pcb: Pcb, board: ResolvedBoard): BoardDrill[] {
   return [
     ...board.holes.map((h, i) => ({ id: h.ref ? `${h.ref}.hole${i + 1}` : `hole ${i + 1}`, at: h.at, d: h.d, plated: false, from: h.at, to: h.at })),
     ...board.pads.filter((p) => p.drill).map((p) => ({ id: `${p.ref}.${p.pin}`, at: p.center, d: p.drill!, plated: p.drillPlated !== false, from: p.drillSlot?.[0] ?? p.center, to: p.drillSlot?.[1] ?? p.center })),
-    ...pcb.vias.map((v, i) => { const at = { x: v.at[0], y: v.at[1] }; return { id: `via ${i + 1}`, at, d: v.drill, plated: true, from: at, to: at } }),
+    ...pcb.vias.map((v, i) => {
+      const at = { x: v.at[0], y: v.at[1] }
+      const all = copperLayersOf(board.layers)
+      const layers = viaLayers(v, board.layers)
+      const span: [number, number] | undefined = layers.length < all.length ? [all.indexOf(layers[0]) + 1, all.indexOf(layers[layers.length - 1]) + 1] : undefined
+      return { id: `via ${i + 1}`, at, d: v.drill, plated: true, from: at, to: at, ...(span ? { span } : {}) }
+    }),
   ]
 }
 

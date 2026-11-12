@@ -122,7 +122,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, w: number, h: number, p
   ctx.globalAlpha = 1
 
   // Far layer first, faded.
-  for (const layer of [far, 'In1.Cu', 'In2.Cu', near]) {
+  for (const layer of [far, 'In1.Cu', 'In2.Cu', 'In3.Cu', 'In4.Cu', near]) {
     ctx.globalAlpha = layer === near ? 1 : 0.55
     for (const t of pcb.tracks) {
       if (t.layer !== layer) continue

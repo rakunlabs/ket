@@ -172,7 +172,7 @@ define({
     requireHealthyHistory(ctx)
     const st = await ctx.kernel.board()
     if (!st || !ctx.doc.pcb) throw new Error('the project has no board yet; start with set_board')
-    const r = writeKicadPcb(ctx.doc, st.board)
+    const r = writeKicadPcb(ctx.doc, st.board, st.zones)
     const out: Record<string, unknown> = { ok: true, format: 'KiCad 8 .kicad_pcb', counts: r.counts, notes: r.notes }
     if (ctx.download) {
       const file = a.filename ?? 'board.kicad_pcb'

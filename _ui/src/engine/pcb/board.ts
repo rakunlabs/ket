@@ -3,7 +3,7 @@
 // coordinates and tagged with their nets. DRC, ratsnest, the autorouter
 // export, Gerber and the 3D board all start from a ResolvedBoard.
 
-import type { Doc, NetClass, Pcb, PartModel } from '../doc'
+import { type Doc, type LayerCount, type NetClass, type Pcb, type PartModel, copperLayersOf } from '../doc'
 import { num } from '../expr'
 import { resolveArtwork, type ResolvedArtwork } from './artwork'
 import type { SolvedSketch } from '../sketch'
@@ -17,7 +17,7 @@ export interface ResolvedBoard {
   cutouts: Poly[]
   thickness: number
   z: number
-  layers: 2 | 4
+  layers: LayerCount
   components: (Placed & { lcsc: string; value?: string; mpn?: string; package?: string; basic?: boolean; edge?: boolean; height: number; courtyard: Poly; model?: PartModel; dnp?: boolean })[]
   pads: WorldPad[]
   classes: Map<string, NetClass>
@@ -31,8 +31,8 @@ export interface ResolvedBoard {
 }
 
 /** Copper layers of a board, top to bottom. */
-export function copperLayers(layers: 2 | 4): string[] {
-  return layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu']
+export function copperLayers(layers: LayerCount): string[] {
+  return copperLayersOf(layers)
 }
 
 export function emptyPcb(): Pcb {

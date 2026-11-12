@@ -4,11 +4,15 @@
 // expected (footprints are embedded in the board) and ignored.
 import { readFileSync } from 'node:fs'
 
-const report = JSON.parse(readFileSync(process.argv[2], 'utf8')) as {
-  violations: { type: string; severity: string; description: string; items: { description: string }[] }[]
-  unconnected_items: unknown[]
+let failed = false
+for (const file of process.argv.slice(2)) {
+  const report = JSON.parse(readFileSync(file, 'utf8')) as {
+    violations: { type: string; severity: string; description: string; items: { description: string }[] }[]
+    unconnected_items: unknown[]
+  }
+  const real = report.violations.filter((v) => v.type !== 'lib_footprint_issues' && v.type !== 'lib_footprint_mismatch')
+  for (const v of real) console.log(`${file}: ${v.severity} ${v.type}: ${v.description} (${v.items.map((i) => i.description).join(', ')})`)
+  console.log(`${file}: ${real.length} violation(s), ${report.unconnected_items.length} unconnected item(s)`)
+  if (real.some((v) => v.severity === 'error') || report.unconnected_items.length) failed = true
 }
-const real = report.violations.filter((v) => v.type !== 'lib_footprint_issues' && v.type !== 'lib_footprint_mismatch')
-for (const v of real) console.log(`${v.severity} ${v.type}: ${v.description} (${v.items.map((i) => i.description).join(', ')})`)
-console.log(`${real.length} violation(s), ${report.unconnected_items.length} unconnected item(s)`)
-if (real.some((v) => v.severity === 'error') || report.unconnected_items.length) process.exit(1)
+if (failed) process.exit(1)

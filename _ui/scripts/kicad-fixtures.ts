@@ -35,6 +35,32 @@ k.build(doc)
 doc = await run(doc, k, 'autoroute', { timeout: 60 })
 doc = await run(doc, k, 'add_zone', { net: 'GND', layer: 'B.Cu' })
 k.build(doc)
-const r = writeKicadPcb(doc, k.boardState(doc)!.board)
+const st1 = k.boardState(doc)!
+const r = writeKicadPcb(doc, st1.board, st1.zones)
 writeFileSync(resolve(out, 'example.kicad_pcb'), r.text)
 console.log(`wrote ${resolve(out, 'example.kicad_pcb')}`, r.counts)
+
+// 6 layers with a stackup, a blind and a buried via, an inner pour.
+const k6 = new Kernel()
+const run6 = (d: Doc, cmd: string, args: unknown) => run(d, k6, cmd, args)
+let six = emptyDoc()
+six = await run6(six, 'set_board', { outline: { rect: { w: 30, h: 20 } }, layers: 6 })
+six = await run6(six, 'set_stackup', { preset: 'jlcpcb-6l-3313' })
+six = await run6(six, 'add_component', { footprint_name: 'pinrow2', ref: 'J1', at: [-8, 0], rotation: 90 })
+six = await run6(six, 'add_component', { footprint_name: 'pinrow2', ref: 'J2', at: [8, 0], rotation: 90 })
+six = await run6(six, 'connect', { nets: [{ name: 'A', pins: ['J1.1', 'J2.1'] }, { name: 'GND', pins: ['J1.2', 'J2.2'] }] })
+six = await run6(six, 'add_zone', { net: 'GND', layer: 'In4.Cu' })
+k6.build(six)
+const b6 = k6.boardState(six)!.board
+const p1 = b6.pads.find((p) => p.ref === 'J1' && p.pin === '1')!.center
+const p2 = b6.pads.find((p) => p.ref === 'J2' && p.pin === '1')!.center
+six = await run6(six, 'add_track', { net: 'A', layer: 'F.Cu', points: [[p1.x, p1.y], [-2, p1.y]] })
+six = await run6(six, 'add_via', { net: 'A', at: [-2, p1.y], span: ['F.Cu', 'In2.Cu'] })
+six = await run6(six, 'add_track', { net: 'A', layer: 'In2.Cu', points: [[-2, p1.y], [2, p1.y]] })
+six = await run6(six, 'add_via', { net: 'A', at: [2, p1.y], span: ['In2.Cu', 'In3.Cu'] })
+six = await run6(six, 'add_track', { net: 'A', layer: 'In3.Cu', points: [[2, p1.y], [p2.x, p2.y]] })
+k6.build(six)
+const st6 = k6.boardState(six)!
+const r6 = writeKicadPcb(six, st6.board, st6.zones)
+writeFileSync(resolve(out, 'six-layer.kicad_pcb'), r6.text)
+console.log(`wrote ${resolve(out, 'six-layer.kicad_pcb')}`, r6.counts)

@@ -2,7 +2,7 @@
 // JLCPCB-style BOM and CPL. Regions are emitted as G36/G37 polygons, tracks
 // as stroked lines with round apertures.
 
-import type { Pcb } from '../doc'
+import { type Pcb, copperLayersOf, viaLayers } from '../doc'
 import type { ResolvedBoard } from './board'
 import type { Poly } from './geometry'
 import type { Teardrop } from './teardrops'
@@ -93,11 +93,13 @@ export interface FabFiles {
 
 export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: Teardrop[] = []): FabFiles {
   const files: FabFiles = {}
-  const copper = b.layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu']
+  const copper = copperLayersOf(b.layers)
   const fn: Record<string, [string, string]> = {
     'F.Cu': ['board-F_Cu.gtl', 'Copper,L1,Top'],
     'In1.Cu': ['board-In1_Cu.g2', 'Copper,L2,Inr'],
     'In2.Cu': ['board-In2_Cu.g3', 'Copper,L3,Inr'],
+    'In3.Cu': ['board-In3_Cu.g4', 'Copper,L4,Inr'],
+    'In4.Cu': ['board-In4_Cu.g5', 'Copper,L5,Inr'],
     'B.Cu': ['board-B_Cu.gbl', `Copper,L${copper.length},Bot`],
   }
 
@@ -119,7 +121,7 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], dro
     for (const p of b.pads) if (p.layers.includes(layer)) g.region(p.outline)
     for (const t of pcb.tracks) if (t.layer === layer) g.line(t.points, t.width)
     for (const d of drops) if (d.layer === layer) g.region(d.outline)
-    for (const v of pcb.vias) g.flash(v.at[0], v.at[1], v.diameter)
+    for (const v of pcb.vias) if (viaLayers(v, b.layers).includes(layer)) g.flash(v.at[0], v.at[1], v.diameter)
     files[fn[layer][0]] = g.toString()
   }
 
@@ -160,8 +162,27 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], dro
 
   // Separate PTH/NPTH files: plating is machine-readable, not just a comment.
   // G85 slots carry both tool-center endpoints, already mirrored/rotated.
+  // Blind and buried vias: one plated file per layer pair, as fabs expect (X2 FileFunction span).
+  const spans = [...new Set(boardDrills(pcb, b).flatMap((h) => (h.span ? [h.span.join('-')] : [])))]
+  for (const key of spans) {
+    const [from, to] = key.split('-').map(Number)
+    const hits = boardDrills(pcb, b).filter((h) => h.span?.join('-') === key)
+    const tools = new Map<string, number>()
+    for (const h of hits) if (!tools.has(h.d.toFixed(4))) tools.set(h.d.toFixed(4), tools.size + 1)
+    const kind = from === 1 || to === b.layers ? 'Blind' : 'Buried'
+    const drl = ['M48', `; #@! TF.FileFunction,Plated,${from},${to},${kind}`, '; FILE_FORMAT=4:4', 'FMAT,2', 'METRIC,TZ']
+    for (const [d, tool] of tools) drl.push(`T${tool}C${d}`)
+    drl.push('%', 'G90', 'G05')
+    for (const [d, tool] of tools) {
+      drl.push(`T${tool}`)
+      for (const h of hits.filter((h) => h.d.toFixed(4) === d)) drl.push(`X${h.at.x.toFixed(4)}Y${h.at.y.toFixed(4)}`)
+    }
+    drl.push('T0', 'M30', '')
+    files[`board-${kind}-L${from}-L${to}.drl`] = drl.join('\n')
+  }
+
   for (const plated of [true, false]) {
-    const hits = boardDrills(pcb, b).filter((h) => h.plated === plated)
+    const hits = boardDrills(pcb, b).filter((h) => h.plated === plated && !h.span)
     const tools = new Map<string, number>()
     for (const h of hits) if (!tools.has(h.d.toFixed(4))) tools.set(h.d.toFixed(4), tools.size + 1)
     const drl = ['M48', `; #@! TF.FileFunction,${plated ? 'Plated' : 'NonPlated'},1,${b.layers},${plated ? 'PTH' : 'NPTH'}`, '; FILE_FORMAT=4:4', 'FMAT,2', 'METRIC,TZ']

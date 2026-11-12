@@ -92,7 +92,7 @@ describe('keep-outs', () => {
     const k = new Kernel()
     const doc = await run(emptyDoc(), k, 'set_board', { outline: { rect: { w: 20, h: 10 } } })
     await expect(run(doc, k, 'add_keepout', { name: 'x', forbid: ['parts'] })).rejects.toThrow(/polygon or rect/)
-    await expect(run(doc, k, 'add_keepout', { name: 'x', rect: { at: [0, 0], w: 1, h: 1 }, layers: ['In1.Cu'] })).rejects.toThrow(/4-layer/)
+    await expect(run(doc, k, 'add_keepout', { name: 'x', rect: { at: [0, 0], w: 1, h: 1 }, layers: ['In1.Cu'] })).rejects.toThrow(/not on a 2-layer board.*4 or 6/)
     await expect(run(doc, k, 'remove_keepouts', { names: ['nope'] })).rejects.toThrow(/no keep-out nope/)
   })
 })

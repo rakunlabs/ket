@@ -28,12 +28,18 @@ export async function manufacturingReport(ctx: Ctx, a: z.output<typeof options>)
   const failedChecks = checks.filter((c) => !c.ok).map((c) => c.name)
   const unverified = ctx.doc.pcb.components.filter((c) => !c.model && !c.footprint.model).map((c) => c.ref)
   const xs = st.board.outline.map((p) => p.x), ys = st.board.outline.map((p) => p.y)
+  const drills = boardDrills(ctx.doc.pcb, st.board)
+  const spanFiles = [...new Set(drills.flatMap((h) => (h.span ? [`board-${h.span[0] === 1 || h.span[1] === st.board.layers ? 'Blind' : 'Buried'}-L${h.span[0]}-L${h.span[1]}.drl`] : [])))]
+  const stackup = ctx.doc.pcb.stackup
+  const special = drills.filter((h) => h.span).length
   return {
     format: 'ket-manufacturing', version: 1,
     manufacturer: a.manufacturer, quantity: a.quantity, units: 'mm',
     board: { layers: st.board.layers, thickness: st.board.thickness, width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys), solder_mask: boardStyle(ctx.doc.pcb).mask, silkscreen: boardStyle(ctx.doc.pcb).silk },
+    stackup: stackup ? { preset: stackup.preset ?? 'custom', copper_um: stackup.copper, dielectric: stackup.dielectric } : undefined,
+    blind_buried_vias: special || undefined,
     artwork: (st.board.artwork ?? []).map((art) => ({ name: art.name, kind: art.kind, side: art.side, width: art.width })),
-    drilling: { files: ['board-PTH.drl', 'board-NPTH.drl'], holes: boardDrills(ctx.doc.pcb, st.board).map((h) => ({ id: h.id, diameter: h.d, plated: h.plated, from: h.from, to: h.to })) },
+    drilling: { files: ['board-PTH.drl', 'board-NPTH.drl', ...spanFiles], holes: boardDrills(ctx.doc.pcb, st.board).map((h) => ({ id: h.id, diameter: h.d, plated: h.plated, from: h.from, to: h.to })) },
     electrically_ready: !st.board.errors.length && !st.drc?.length && !st.ratsnest.unrouted.length && erc.ok,
     erc,
     model_checks_pass: build.ok && !failedChecks.length,
@@ -49,7 +55,8 @@ export async function manufacturingReport(ctx: Ctx, a: z.output<typeof options>)
     warnings: [
       'Prototype package: inspect Gerbers in the manufacturer viewer before ordering.',
       'Electrical DRC and model checks do not verify physical actuator travel, component tolerances, RF keepouts, or manufacturability.',
-      'Review stackup, copper weight, finish, mask, panelisation and assembly rotations with the manufacturer.',
+      stackup ? `Stackup ${stackup.preset ?? 'custom'} is listed in manufacturing.json: select the same build-up in the order form (impedance control is a separate option).` : 'Review stackup, copper weight, finish, mask, panelisation and assembly rotations with the manufacturer.',
+      ...(special ? [`${special} blind/buried via(s): a separate drill file per layer pair. JLCPCB's standard service does not make blind or buried vias; ask for HDI or use a fab that offers it (PCBWay HDI), or change them to through vias.`] : []),
       ...(erc.coverage.unknown ? [`ERC has ${erc.coverage.unknown} untyped pads. Declare electrical intent from datasheets with set_pin_rules; clean geometry is not circuit validation.`] : []),
       ...erc.issues.filter((p) => p.severity === 'warning').map((p) => `ERC: ${p.message}`),
       'Mask and silkscreen colors are order preferences, not encoded in Gerber. Select them explicitly in the manufacturer order form; availability and actual shades vary.',

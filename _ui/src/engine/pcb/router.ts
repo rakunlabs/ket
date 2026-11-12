@@ -16,7 +16,7 @@
 // nets' copper so tracks keep even spacing, and PathFinder's present and
 // history congestion costs. Nets go widest first, then shortest.
 
-import type { Pcb, Track, Via } from '../doc'
+import { type Pcb, type Track, type Via, copperLayersOf } from '../doc'
 import type { NetClass } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS } from './board'
@@ -53,8 +53,6 @@ export interface RouterResult {
   iterations: number
 }
 
-const LAYERS_2 = ['F.Cu', 'B.Cu'] as const
-const LAYERS_4 = ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] as const
 
 function distPS(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax
@@ -152,7 +150,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
   const started = Date.now()
   const budget = opts.budget ?? 60_000
   const pitch = opts.pitch ?? 0.1
-  const layerNames = b.layers === 4 ? LAYERS_4 : LAYERS_2
+  const layerNames = copperLayersOf(b.layers)
   const L = layerNames.length
   const def = b.classes.get('default') ?? DEFAULT_CLASS
   const xs = b.outline.map((p) => p.x)

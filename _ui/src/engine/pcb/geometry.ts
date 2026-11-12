@@ -2,7 +2,7 @@
 // board outline, and distance helpers for DRC. Board coordinates are world
 // X/Y in mm with y up; a bottom-side part is mirrored in x before rotating.
 
-import type { Component, Footprint, Pad, P } from '../doc'
+import { type Component, type Footprint, type LayerCount, type Pad, type P, copperLayersOf } from '../doc'
 
 export type Poly = P[]
 
@@ -50,18 +50,26 @@ function padLocal(pad: Pad): Poly {
   if (pad.shape === 'polygon' && pad.polygon?.length) {
     pts = pad.polygon
   } else if (pad.shape === 'circle' || pad.shape === 'oval') {
-    // Stadium approximated by 16 points.
+    // Stadium as a polygon around the true outline: each quarter arc becomes
+    // edges tangent to it (vertices at radius r / cos(Δ/2), between the tangent
+    // points), so clearances to the polygon are never less than to the real pad.
     const rx = pad.w / 2
     const ry = pad.h / 2
     const r = Math.min(rx, ry)
     const hx = rx - r
     const hy = ry - r
+    const steps = 6
+    const step = Math.PI / 2 / steps
+    const R = r / Math.cos(step / 2)
     pts = []
     const arc = (cx: number, cy: number, a0: number) => {
-      for (let i = 0; i <= 4; i++) {
-        const a = a0 + (i / 4) * (Math.PI / 2)
-        pts.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
+      // Tangent point on the axis, then the outer vertices, then the next tangent point.
+      pts.push({ x: cx + r * Math.cos(a0), y: cy + r * Math.sin(a0) })
+      for (let i = 0; i < steps; i++) {
+        const a = a0 + (i + 0.5) * step
+        pts.push({ x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) })
       }
+      pts.push({ x: cx + r * Math.cos(a0 + Math.PI / 2), y: cy + r * Math.sin(a0 + Math.PI / 2) })
     }
     arc(hx, hy, 0)
     arc(-hx, hy, Math.PI / 2)
@@ -84,7 +92,7 @@ function padLocal(pad: Pad): Poly {
 }
 
 const copperOf = (pad: Pad, side: 'top' | 'bottom', layers: number): string[] => {
-  if (pad.layer === 'through') return layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu']
+  if (pad.layer === 'through') return copperLayersOf(layers as LayerCount)
   const top = pad.layer === 'top'
   return [(side === 'bottom' ? !top : top) ? 'F.Cu' : 'B.Cu']
 }

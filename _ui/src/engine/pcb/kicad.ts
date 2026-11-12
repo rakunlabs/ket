@@ -14,6 +14,7 @@ import type { Doc, Pcb } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS, copperLayers } from './board'
 import { type Poly, toWorld } from './geometry'
+import type { ZoneFill } from './zones'
 
 const n = (v: number) => String(Math.round(v * 1e6) / 1e6 + 0)
 const X = (x: number) => n(x)
@@ -42,7 +43,7 @@ export interface KicadExport {
   counts: Record<string, number>
 }
 
-export function writeKicadPcb(doc: Doc, b: ResolvedBoard): KicadExport {
+export function writeKicadPcb(doc: Doc, b: ResolvedBoard, fills: ZoneFill[] = []): KicadExport {
   const pcb = doc.pcb as Pcb
   const out: string[] = []
   const notes: string[] = []
@@ -57,7 +58,7 @@ export function writeKicadPcb(doc: Doc, b: ResolvedBoard): KicadExport {
   out.push(`  (general (thickness ${n(b.thickness)}) (legacy_teardrops no))`)
   out.push('  (paper "A4")')
   out.push('  (layers')
-  const ids: Record<string, number> = { 'F.Cu': 0, 'In1.Cu': 1, 'In2.Cu': 2, 'B.Cu': 31 }
+  const ids: Record<string, number> = { 'F.Cu': 0, 'In1.Cu': 1, 'In2.Cu': 2, 'In3.Cu': 3, 'In4.Cu': 4, 'B.Cu': 31 }
   for (const l of layers) out.push(`    (${ids[l]} ${q(l)} signal)`)
   for (const [id, name, kind] of [
     [32, 'B.Adhes', 'user'], [33, 'F.Adhes', 'user'], [34, 'B.Paste', 'user'], [35, 'F.Paste', 'user'],
@@ -151,16 +152,28 @@ export function writeKicadPcb(doc: Doc, b: ResolvedBoard): KicadExport {
       out.push(`  (segment (start ${X(a[0])} ${Y(a[1])}) (end ${X(c[0])} ${Y(c[1])}) (width ${n(t.width)}) (layer ${q(t.layer)}) ${netId(t.net)} (uuid ${q(uuid(`seg ${ti} ${i}`))}))`)
     }
   })
-  pcb.vias.forEach((v, i) => out.push(`  (via (at ${X(v.at[0])} ${Y(v.at[1])}) (size ${n(v.diameter)}) (drill ${n(v.drill)}) (layers ${q(layers[0])} ${q(layers[layers.length - 1])}) ${netId(v.net)} (uuid ${q(uuid(`via ${i}`))}))`))
+  pcb.vias.forEach((v, i) => {
+    const span = v.span ?? [layers[0], layers[layers.length - 1]]
+    // KiCad has one type for blind and buried vias: "blind", with its two layers.
+    const kind = v.span ? ' blind' : ''
+    out.push(`  (via${kind} (at ${X(v.at[0])} ${Y(v.at[1])}) (size ${n(v.diameter)}) (drill ${n(v.drill)}) (layers ${q(span[0])} ${q(span[1])}) ${netId(v.net)} (uuid ${q(uuid(`via ${i}`))}))`)
+  })
 
-  // Pours as zones (KiCad refills them: press B), keep-outs as rule areas.
+  // Pours as zones with Ket's fill (KiCad may refill them: press B), keep-outs as rule areas.
   const edgeRing = b.outline
+  // A KiCad filled polygon is one outline: holes are joined to it by a zero-width cut, the way KiCad stores them.
+  const filled = (index: number, layer: string) =>
+    fills
+      .filter((f) => f.index === index)
+      .flatMap((f) => f.regions)
+      .map((reg) => ` (filled_polygon (layer ${q(layer)}) (pts ${withHoles(reg).map((p) => `(xy ${X(p.x)} ${Y(p.y)})`).join(' ')}))`)
+      .join('')
   ;(pcb.zones ?? []).forEach((z, i) => {
     const ring = z.polygon?.length ? z.polygon.map(([x, y]) => ({ x, y })) : edgeRing
     const cls = b.netClass.get(z.net) ?? DEFAULT_CLASS
     const thermal = z.thermal === false ? '(connect_pads yes (clearance 0))' : `(connect_pads (clearance ${n(z.clearance ?? cls.clearance)}))`
     out.push(
-      `  (zone ${netId(z.net)} (net_name ${q(z.net)}) (layer ${q(z.layer)}) (uuid ${q(uuid(`zone ${i}`))}) (hatch edge 0.5) (priority ${z.priority ?? 0}) ${thermal} (min_thickness 0.25) (filled_areas_thickness no) (fill yes (thermal_gap ${n(z.thermal ? z.thermal.gap : 0.5)}) (thermal_bridge_width ${n(z.thermal ? z.thermal.spoke : 0.5)})) (polygon (pts ${ring.map((p) => `(xy ${X(p.x)} ${Y(p.y)})`).join(' ')})))`,
+      `  (zone ${netId(z.net)} (net_name ${q(z.net)}) (layer ${q(z.layer)}) (uuid ${q(uuid(`zone ${i}`))}) (hatch edge 0.5) (priority ${z.priority ?? 0}) ${thermal} (min_thickness 0.25) (filled_areas_thickness no) (fill yes (thermal_gap ${n(z.thermal ? z.thermal.gap : 0.5)}) (thermal_bridge_width ${n(z.thermal ? z.thermal.spoke : 0.5)})) (polygon (pts ${ring.map((p) => `(xy ${X(p.x)} ${Y(p.y)})`).join(' ')}))${filled(i, z.layer)})`,
     )
   })
   for (const k of b.keepouts) {
@@ -188,7 +201,7 @@ export function writeKicadPcb(doc: Doc, b: ResolvedBoard): KicadExport {
 
   if (pcb.teardrops) notes.push('teardrops are not written: turn them on in KiCad (Edit → Edit Teardrops)')
   if (pcb.classes.length) notes.push(`net classes (${pcb.classes.map((c) => c.name).join(', ')}) live in the .kicad_pro file, which is not written: set them in Board Setup → Net Classes`)
-  if (pcb.zones?.length) notes.push('pours are written as zone outlines: press B in KiCad to fill them')
+  if (pcb.zones?.length && !fills.length) notes.push('pours are written as zone outlines: press B in KiCad to fill them')
   for (const c of b.components) if (c.footprint.pads.some((p) => p.shape === 'polygon')) notes.push(`${c.ref}: polygon pads are custom pads; check them in KiCad`)
 
   return {
@@ -196,6 +209,28 @@ export function writeKicadPcb(doc: Doc, b: ResolvedBoard): KicadExport {
     notes: [...new Set(notes)],
     counts: { footprints: b.components.length, nets: pcb.nets.length, tracks: pcb.tracks.reduce((s, t) => s + t.points.length - 1, 0), vias: pcb.vias.length, zones: pcb.zones?.length ?? 0, keepouts: b.keepouts.length, artwork_polygons: artPolys },
   }
+}
+
+/**
+ * One ring from an outline and its holes: for each hole, a bridge from the
+ * outline's nearest point into the hole, round it, and back (KiCad's
+ * fractured polygon form).
+ */
+function withHoles(reg: Poly[]): Poly {
+  let ring = [...reg[0]]
+  for (const hole of reg.slice(1)) {
+    let bi = 0
+    let bj = 0
+    let bd = Infinity
+    for (let i = 0; i < ring.length; i++)
+      for (let j = 0; j < hole.length; j++) {
+        const d = Math.hypot(ring[i].x - hole[j].x, ring[i].y - hole[j].y)
+        if (d < bd) [bd, bi, bj] = [d, i, j]
+      }
+    const loop = [...hole.slice(bj), ...hole.slice(0, bj), hole[bj]]
+    ring = [...ring.slice(0, bi + 1), ...loop, ring[bi], ...ring.slice(bi + 1)]
+  }
+  return ring
 }
 
 function netOfPin(pcb: Pcb, ref: string, pin: string): string | undefined {

@@ -2,7 +2,7 @@
 // capabilities. Every violation names the objects and the measured value
 // so a model can fix it directly.
 
-import type { Pcb } from '../doc'
+import { type Pcb, copperLayersOf, viaLayers } from '../doc'
 import { type ResolvedBoard } from './board'
 import { type Poly, distPointSeg, distPolyPoly, distSegPoly, distSegSeg, inside } from './geometry'
 import { area, circle, difference, inRegion, intersect, offset, overlaps, stroke } from './poly'
@@ -21,6 +21,8 @@ export const JLCPCB = {
   holeToHole: 0.5,
   /** Unplated to unplated (JLCPCB same-net hole spacing). */
   npthToNpth: 0.254,
+  /** Unplated hole to copper of any net. */
+  holeToCopper: 0.25,
 }
 
 export interface Violation {
@@ -99,14 +101,15 @@ export function ratsnest(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Ra
     vias.forEach((v, k) => {
       const vi = pads.length + segs.length + k
       const c = { x: v.at[0], y: v.at[1] }
+      const vl = viaLayers(v, b.layers)
       segs.forEach((s, j) => {
-        if (distPointSeg(c, s.a, s.b) <= v.diameter / 2 + s.w / 2 + eps) d.union(vi, pads.length + j)
+        if (vl.includes(s.layer as never) && distPointSeg(c, s.a, s.b) <= v.diameter / 2 + s.w / 2 + eps) d.union(vi, pads.length + j)
       })
       pads.forEach((p, i) => {
-        if (distSegPoly(c, c, p.outline) <= v.diameter / 2 + eps) d.union(vi, i)
+        if (p.layers.some((l) => vl.includes(l as never)) && distSegPoly(c, c, p.outline) <= v.diameter / 2 + eps) d.union(vi, i)
       })
       vias.slice(k + 1).forEach((other, j) => {
-        if (Math.hypot(c.x - other.at[0], c.y - other.at[1]) <= (v.diameter + other.diameter) / 2 + eps) d.union(vi, pads.length + segs.length + k + 1 + j)
+        if (viaLayers(other, b.layers).some((l) => vl.includes(l)) && Math.hypot(c.x - other.at[0], c.y - other.at[1]) <= (v.diameter + other.diameter) / 2 + eps) d.union(vi, pads.length + segs.length + k + 1 + j)
       })
     })
     // Copper pours: everything a pour region touches is one island.
@@ -125,6 +128,7 @@ export function ratsnest(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Ra
           if (s.layer === z.layer && overlaps(reg, stroke([s.a, s.b], s.w))) join(pads.length + j)
         })
         vias.forEach((v, k) => {
+          if (!viaLayers(v, b.layers).includes(z.layer as never)) return
           if (inRegion({ x: v.at[0], y: v.at[1] }, reg) || overlaps(reg, stroke([{ x: v.at[0], y: v.at[1] }], v.diameter))) join(pads.length + segs.length + k)
         })
       }
@@ -264,7 +268,13 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: T
     if (v.drill < R.minViaDrill - 1e-9) out.push({ rule: 'via', message: `via ${vi + 1} drill ${f(v.drill)} < ${R.minViaDrill} mm`, at: v.at })
     if ((v.diameter - v.drill) / 2 < R.minAnnular - 1e-9)
       out.push({ rule: 'via', message: `via ${vi + 1} annular ring ${f((v.diameter - v.drill) / 2)} < ${R.minAnnular} mm`, at: v.at })
-    cu.push({ kind: 'via', id: `via ${vi + 1}`, net: v.net, layers: b.layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu'], c, r: v.diameter / 2 })
+    if (v.span) {
+      const all = copperLayersOf(b.layers)
+      const bad = v.span.filter((l) => !all.includes(l))
+      if (bad.length) out.push({ rule: 'via', message: `via ${vi + 1} spans ${bad.join(', ')}, which a ${b.layers}-layer board does not have`, at: v.at, objects: [`via ${vi + 1}`] })
+      else if (v.span[0] === v.span[1]) out.push({ rule: 'via', message: `via ${vi + 1} starts and ends on ${v.span[0]}; a via joins two layers`, at: v.at, objects: [`via ${vi + 1}`] })
+    }
+    cu.push({ kind: 'via', id: `via ${vi + 1}`, net: v.net, layers: viaLayers(v, b.layers), c, r: v.diameter / 2 })
   })
 
   // Teardrops are copper of their net: they take part in clearance like a pad.
@@ -376,6 +386,23 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: T
         if (!k.layers.includes(layer) && !k.layers.some((l) => l.startsWith('In'))) continue
         if (overlaps([c.courtyard], ring)) out.push({ rule: 'keepout', message: `${c.ref} sits in ${id}, which forbids parts on the ${c.side}; move it out (move_component, or auto_place keeps out)`, at: [c.at.x, c.at.y], objects: [c.ref, id], fix: 'Move the part out of the keep-out.' })
       }
+  }
+
+  // Unplated holes to copper (tracks, vias, pours): the drill wanders, copper must stay back.
+  for (const h of b.holes) {
+    const c = h.at
+    const need = R.holeToCopper
+    for (const x of cu) {
+      if (x.kind === 'pad' && h.ref && x.id.startsWith(`${h.ref}.`)) continue
+      const d = x.kind === 'track' ? distPointSeg(c, x.seg![0], x.seg![1]) - x.w! / 2 : x.kind === 'via' ? Math.hypot(c.x - x.c!.x, c.y - x.c!.y) - x.r! : distSegPoly(c, c, x.poly!)
+      const gap = d - h.d / 2
+      if (gap < need - 0.005) out.push({ rule: 'hole_to_copper', message: `${x.id} is ${f(gap)} mm from the ${f(h.d)} mm hole at [${f(c.x)}, ${f(c.y)}]; keep ${need}`, at: pt(c), objects: [x.id], measured: gap, required: need, fix: 'Move the copper back from the hole or move the hole.' })
+    }
+    for (const z of zones) {
+      const rings = z.regions.flatMap((r) => r)
+      if (rings.length && intersect(rings, [circle(c, h.d / 2 + need - 0.005, 32)]).some((r) => Math.abs(area(r)) > 1e-6))
+        out.push({ rule: 'hole_to_copper', message: `zone ${z.index + 1} (${z.net}) is closer than ${need} mm to the hole at [${f(c.x)}, ${f(c.y)}]`, objects: [`zone ${z.index + 1}`], required: need })
+    }
   }
 
   // Holes.

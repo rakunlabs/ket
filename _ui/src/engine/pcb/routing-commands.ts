@@ -2,7 +2,7 @@
 
 import { z } from 'zod'
 
-import type { Pcb, Track, Via } from '../doc'
+import { type CopperLayer, type Pcb, type Track, type Via, COPPER_LAYERS, copperLayersOf } from '../doc'
 import { define } from '../registry'
 import { expr, ident, vec2 } from '../schema'
 import { tidyTracks } from './autoroute'
@@ -19,7 +19,7 @@ define({
   description: 'Draw a track by hand: a polyline on one copper layer for a net. Width defaults to the net class. Usually autoroute does this; use add_track for short fixes.',
   args: z.object({
     net: z.string(),
-    layer: z.enum(['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu']).optional(),
+    layer: z.enum(COPPER_LAYERS).optional(),
     points: z.array(z.tuple([z.number(), z.number()])).min(2),
     width: z.number().positive().optional(),
   }),
@@ -28,6 +28,7 @@ define({
     const pcb = pcbOf(next)
     const net = pcb.nets.find((n) => n.name === a.net)
     if (!net) throw new Error(`no net "${a.net}"`)
+    if (a.layer && !copperLayersOf(pcb.layers).includes(a.layer)) throw new Error(`${a.layer} is not on a ${pcb.layers}-layer board; layers are ${copperLayersOf(pcb.layers).join(', ')}`)
     const cls = pcb.classes.find((c) => c.name === net.class) ?? DEFAULT_CLASS
     pcb.tracks.push({ net: a.net, layer: a.layer ?? 'F.Cu', width: a.width ?? cls.track, points: a.points })
     return { doc: next, summary: `track on ${a.net}` }
@@ -38,16 +39,27 @@ define({
   name: 'add_via',
   group: 'pcb',
   kind: 'mutate',
-  description: 'Add a via for a net at [x, y]; size defaults to the net class.',
-  args: z.object({ net: z.string(), at: z.tuple([z.number(), z.number()]) }),
+  description:
+    'Add a via for a net at [x, y]; size defaults to the net class. A through via joins every layer; span: [from, to] makes a blind (from an outer layer) or buried (inner layers only) via on 4- and 6-layer boards. Blind and buried vias cost extra and not every fab makes them: export_manufacturing says so.',
+  args: z.object({ net: z.string(), at: z.tuple([z.number(), z.number()]), span: z.tuple([z.enum(COPPER_LAYERS), z.enum(COPPER_LAYERS)]).optional() }),
   apply(doc, a) {
     const next = clone(doc)
     const pcb = pcbOf(next)
     const net = pcb.nets.find((n) => n.name === a.net)
     if (!net) throw new Error(`no net "${a.net}"`)
     const cls = pcb.classes.find((c) => c.name === net.class) ?? DEFAULT_CLASS
-    pcb.vias.push({ net: a.net, at: a.at, drill: cls.via_drill, diameter: cls.via_diameter })
-    return { doc: next, summary: `via on ${a.net}` }
+    let span: [CopperLayer, CopperLayer] | undefined
+    if (a.span) {
+      const all = copperLayersOf(pcb.layers)
+      const bad = a.span.filter((l) => !all.includes(l))
+      if (bad.length) throw new Error(`span: ${bad.join(', ')} is not on a ${pcb.layers}-layer board; layers are ${all.join(', ')}`)
+      if (a.span[0] === a.span[1]) throw new Error('span: a via joins two different layers')
+      const [i, j] = a.span.map((l) => all.indexOf(l)).sort((x, y) => x - y)
+      // A span over every layer is a through via.
+      if (!(i === 0 && j === all.length - 1)) span = [all[i], all[j]]
+    }
+    pcb.vias.push({ net: a.net, at: a.at, drill: cls.via_drill, diameter: cls.via_diameter, ...(span ? { span } : {}) })
+    return { doc: next, summary: `${span ? (span[0] === 'F.Cu' || span[1] === 'B.Cu' ? 'blind' : 'buried') : ''} via on ${a.net}${span ? ` (${span.join('–')})` : ''}`.trim() }
   },
 })
 
@@ -119,7 +131,7 @@ define({
     'Add a copper pour for a net on a layer, usually GND on B.Cu (and/or F.Cu). Without polygon it covers the whole board. The fill keeps clearance to other nets, ties same-net pads with thermal spokes and drops islands that reach no pad of the net. Add pours after placing parts; autoroute routes the other nets and leaves the pour net to the pour, so add GND vias next to F.Cu GND pads when pouring only on B.Cu.',
   args: z.object({
     net: z.string(),
-    layer: z.enum(['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu']),
+    layer: z.enum(COPPER_LAYERS),
     polygon: z.array(z.tuple([z.number(), z.number()])).min(3).optional().describe('Board coordinates; default the whole board'),
     clearance: z.number().positive().optional().describe('To other nets; default the net class clearance'),
     edge: z.number().min(0).optional().describe('To the board edge; default 0.3'),
@@ -131,13 +143,13 @@ define({
     const next = clone(doc)
     const pcb = pcbOf(next)
     if (!pcb.nets.some((n) => n.name === a.net)) throw new Error(`no net "${a.net}"; nets are: ${pcb.nets.map((n) => n.name).join(', ') || '(none)'}`)
-    if ((a.layer === 'In1.Cu' || a.layer === 'In2.Cu') && pcb.layers !== 4) throw new Error(`${a.layer} needs a 4-layer board (set_board layers: 4)`)
+    if (!copperLayersOf(pcb.layers).includes(a.layer)) throw new Error(`${a.layer} is not on a ${pcb.layers}-layer board (set_board layers: 4 or 6); layers are ${copperLayersOf(pcb.layers).join(', ')}`)
     pcb.zones = [...(pcb.zones ?? []), Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined)) as never]
     return { doc: next, summary: `pour ${a.net} on ${a.layer}` }
   },
 })
 
-const layerEnum = z.enum(['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu'])
+const layerEnum = z.enum(COPPER_LAYERS)
 
 define({
   name: 'add_keepout',
@@ -159,7 +171,8 @@ define({
   apply(doc, a) {
     const next = clone(doc)
     const pcb = pcbOf(next)
-    if (a.layers?.some((l) => l.startsWith('In')) && pcb.layers !== 4) throw new Error('inner layers need a 4-layer board (set_board layers: 4)')
+    const missing = a.layers?.filter((l) => !copperLayersOf(pcb.layers).includes(l)) ?? []
+    if (missing.length) throw new Error(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} not on a ${pcb.layers}-layer board (inner layers need set_board layers: 4 or 6)`)
     const polygon: [number, number][] = a.polygon ?? (() => {
       const [x, y] = a.rect!.at
       const [w, h] = [a.rect!.w / 2, a.rect!.h / 2]
@@ -365,7 +378,7 @@ define({
  * would only cut it up. Nets poured on one layer are still routed.
  */
 function pourOnlyNets(pcb: Pcb): Set<string> {
-  const layers = pcb.layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu']
+  const layers = copperLayersOf(pcb.layers)
   const out = new Set<string>()
   for (const n of pcb.nets) {
     const poured = new Set((pcb.zones ?? []).filter((zn) => zn.net === n.name && !zn.polygon).map((zn) => zn.layer))

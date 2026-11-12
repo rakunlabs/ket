@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import type { Doc } from '../doc'
+import { type Doc, COPPER_LAYERS, copperLayersOf } from '../doc'
 import { define } from '../registry'
 
 const point = z.tuple([z.number().finite(), z.number().finite()])
@@ -24,7 +24,7 @@ define({
   name: 'edit_copper', group: 'pcb', kind: 'mutate',
   description: 'Precisely repair existing copper without rerouting whole nets: move/resize track segments or vias and/or remove numbered objects. Numbers are 1-based from the current get_copper/get_problems revision; all edits/removals reference the original arrays and are atomic. Net identity stays unchanged. Refuses conflicting/unknown numbers. Use preview_changes first and run_drc afterwards; this command does not certify legality or silently weaken rules.',
   args: z.object({
-    tracks: z.array(z.object({ number, width: z.number().positive().max(100).optional(), points: z.array(point).min(2).max(10000).optional(), layer: z.enum(['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu']).optional() })).max(200).default([]),
+    tracks: z.array(z.object({ number, width: z.number().positive().max(100).optional(), points: z.array(point).min(2).max(10000).optional(), layer: z.enum(COPPER_LAYERS).optional() })).max(200).default([]),
     vias: z.array(z.object({ number, at: point.optional(), diameter: z.number().positive().max(100).optional(), drill: z.number().positive().max(100).optional() })).max(200).default([]),
     remove_tracks: z.array(number).max(10000).default([]), remove_vias: z.array(number).max(10000).default([]),
   }),
@@ -39,7 +39,7 @@ define({
     }
     for (const { number, ...edit } of a.tracks) {
       if (!Object.keys(edit).length) throw new Error(`track ${number}: specify width, points or layer`)
-      if (pcb.layers === 2 && edit.layer?.startsWith('In')) throw new Error(`track ${number}: ${edit.layer} is unavailable on a 2-layer board; use F.Cu/B.Cu or set_board layers: 4`)
+      if (edit.layer && !copperLayersOf(pcb.layers).includes(edit.layer)) throw new Error(`track ${number}: ${edit.layer} is not on a ${pcb.layers}-layer board; use ${copperLayersOf(pcb.layers).join(', ')} or set_board layers: 4 or 6`)
       Object.assign(pcb.tracks[number - 1], edit)
     }
     for (const { number, ...edit } of a.vias) {
