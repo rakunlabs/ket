@@ -1,0 +1,10 @@
+_ui/node_modules
+_ui/test-results
+_ui/playwright-report
+_ui/e2e-logs
+internal/server/dist
+bin
+.git
+ket.yaml
+.env
+.env.local

@@ -7,7 +7,7 @@
 // from their features; other bodies from motion joints. Physics bodies are
 // listed for the simulator.
 
-import { type Doc, type Joint, bodies } from './doc'
+import { type Doc, type Joint, bodies, effectiveParameters } from './doc'
 import { evaluate, num, resolveParameters } from './expr'
 import { type GearState, GearError, gearStates } from './gears'
 import { beltStates, camStates, genevaAngle, genevaStates } from './mechanisms'
@@ -119,7 +119,7 @@ export function motionPlan(doc: Doc, params: Map<string, number>): MotionPlan {
   let bumped: Map<string, number> | undefined
   if (param) {
     try {
-      bumped = resolveParameters(doc.parameters.map((p) => (p.name === param ? { ...p, expr: plan.base + 1 } : p)))
+      bumped = resolveParameters(effectiveParameters(doc).map((p) => (p.name === param ? { ...p, expr: plan.base + 1 } : p)))
     } catch (e) {
       problems.push(`cannot vary ${param}: ${(e as Error).message}`)
     }
@@ -273,7 +273,9 @@ export function motionPlan(doc: Doc, params: Map<string, number>): MotionPlan {
       const sign = dot(d.axis, b.normal) >= 0 ? 1 : -1
       for (const p of b.pulleys) {
         if (!p.body || byBody.has(p.body) || !visible.has(p.body)) continue
-        byBody.set(p.body, { body: p.body, kind: 'rotate', axis: b.normal, origin: p.center, rate: (d.rate * sign * driver.r) / p.r, from: 'belt' })
+        // A back idler turns against the pulleys the belt runs around.
+        const turn = (driver.back ? -1 : 1) * (p.back ? -1 : 1)
+        byBody.set(p.body, { body: p.body, kind: 'rotate', axis: b.normal, origin: p.center, rate: (d.rate * sign * turn * driver.r) / p.r, from: 'belt' })
       }
       void name
     }

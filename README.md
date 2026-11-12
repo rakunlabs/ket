@@ -16,6 +16,14 @@ OpenCascade (WASM) runs in the browser.
 
 ## Quick start
 
+With Docker (Ket and PostgreSQL):
+
+```sh
+docker compose -f deploy/compose.yaml up -d   # http://localhost:8080
+```
+
+Or a release binary from GitHub Releases, or from source:
+
 ```sh
 make env                 # PostgreSQL in Docker
 make build && ./bin/ket  # http://localhost:8080
@@ -42,7 +50,8 @@ database DSN, port, base path. An `ai:` section from an older config seeds
 the settings once, on first start.
 
 Development: `make run` (backend on :8080) and `make run-ui` (Vite with
-hot reload, proxies the API).
+hot reload, proxies the API). `make e2e` runs the browser tests against
+`bin/ket` on a separate `ket_e2e` database, which it empties first.
 
 Connect an external agent (open the project in the browser first: the
 geometry kernel runs there):

@@ -142,6 +142,43 @@ describe('belt', () => {
     const plan = await q(doc, k, 'get_motion')
     expect(plan.moves.find((x: any) => x.body === 'big').rate).toBeCloseTo(0.5, 9)
   }, 60_000)
+
+  it('runs over the back of a tensioner and turns it the other way', async () => {
+    let doc = crank(emptyDoc())
+    doc = run(doc, 'cylinder', { name: 'left', r: 10, h: 6, translate: [0, 0, 0] })
+    doc = run(doc, 'cylinder', { name: 'right', r: 10, h: 6, translate: [60, 0, 0] })
+    doc = run(doc, 'cylinder', { name: 'idler', r: 5, h: 6, translate: [30, 13, 0] })
+    doc = run(doc, 'set_motion', { drive: { param: 'crank', speed: 90 }, joints: [{ body: 'left', kind: 'rotate', axis: [0, 0, 1], origin: [0, 0, 0] }] })
+    doc = run(doc, 'belt', {
+      name: 'belt',
+      plane: 'XY',
+      offset: 3,
+      pulleys: [{ at: [0, 0], d: 20, body: 'left' }, { at: [60, 0], d: 20, body: 'right' }, { at: [30, 13], d: 10, body: 'idler', back: true }],
+      thickness: 1,
+      width: 4,
+    })
+    const k = new Kernel()
+    expect(k.build(doc).features.filter((f) => !f.ok).map((f) => f.error)).toEqual([])
+    const [m] = await q(doc, k, 'get_mechanisms')
+    // The idler sits 3 mm into the top run (y = 10) and bends it down. Expected
+    // length from an independent tangent search: 60 + 2·29.0516 + 20·3.2093 + 5·0.1354.
+    expect(m.length).toBeCloseTo(182.967, 1)
+    const idler = m.pulleys.find((p: any) => p.body === 'idler')
+    expect(idler.back).toBe(true)
+    expect(idler.turns_per_turn_of_first).toBeCloseTo(-2, 5)
+    const plan = await q(doc, k, 'get_motion')
+    expect(plan.moves.find((x: any) => x.body === 'right').rate).toBeCloseTo(1, 9)
+    expect(plan.moves.find((x: any) => x.body === 'idler').rate).toBeCloseTo(-2, 9)
+  }, 60_000)
+
+  it('says what to do with an idler inside the loop', async () => {
+    let doc = emptyDoc()
+    doc = run(doc, 'belt', { name: 'belt', plane: 'XY', pulleys: [{ at: [0, 0], d: 20 }, { at: [60, 0], d: 20 }, { at: [30, 5], d: 10 }], thickness: 1, width: 4 })
+    const k = new Kernel()
+    const f = k.build(doc).features.find((x) => x.name === 'belt')!
+    expect(f.ok).toBe(false)
+    expect(f.error).toMatch(/back: true/)
+  }, 60_000)
 })
 
 describe('sweep_motion', () => {

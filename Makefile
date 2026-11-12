@@ -50,6 +50,10 @@ lint: ## Vet Go code and type-check the UI
 	go vet ./...
 	@cd _ui && pnpm run check
 
+.PHONY: e2e
+e2e: build ## Browser tests against bin/ket; empties the database at KET_E2E_DSN (default ket_e2e on the dev PostgreSQL)
+	@cd _ui && pnpm exec playwright install chromium && pnpm run e2e
+
 .PHONY: help
 help: ## Show this help
 	@grep -h -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-12s\033[0m %s\n", $$1, $$2}'

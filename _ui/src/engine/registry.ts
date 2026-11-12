@@ -8,7 +8,8 @@
 import { z } from 'zod'
 
 import type { Doc, Selector, Track, Via } from './doc'
-import type { BuildResult, CheckResult, EdgeInfo, FaceInfo, Kernel, MeshData } from './kernel'
+import type { View } from './drawing'
+import type { BuildResult, CheckResult, EdgeInfo, FaceInfo, Kernel, MeshData, SketchFrame } from './kernel'
 import type { MotionPlan } from './motion'
 import type { BoardState } from './pcb/state'
 import type { ReplayFailure } from './operations'
@@ -33,7 +34,7 @@ export interface KernelAPI {
   update3MF(pairs: { body: string; object: string }[]): Promise<{ blob: Blob; file: string; replaced: string[]; also_changed: string[] }>
   /** Cross-sections of bodies by a plane. */
   section(names: string[], axis: 'X' | 'Y' | 'Z', at: number): Promise<{ bodies: Record<string, unknown>[]; image?: string }>
-  sketch(name: string): Promise<SolvedSketch>
+  sketch(name: string): Promise<SolvedSketch & { frame?: SketchFrame; frame_error?: string }>
   /** The resolved board with DRC and ratsnest; undefined without a PCB. */
   board(opts?: { drc?: boolean }): Promise<BoardState | undefined>
   export(format: 'step' | 'stl' | '3mf', names: string[], models?: Record<string, string>): Promise<Blob>
@@ -49,7 +50,14 @@ export interface KernelAPI {
   mechanisms(): Promise<Record<string, unknown>[]>
   /** Routes the board with the built-in autorouter (in the kernel worker). */
   autoroute(opts: AutorouteOptions): Promise<AutorouteResult>
+  /** Hidden-line views of bodies (front, top, right, ..., iso) as polylines in mm. */
+  views(names: string[], views: string[]): Promise<View[]>
+  /** A flat 2D outline (a sketch, or a face of a body) as closed polylines in its own (u, v), mm. */
+  profile(source: ProfileSource): Promise<{ loops: [number, number][][]; frame?: SketchFrame }>
 }
+
+/** What export_dxf takes the outline from. */
+export type ProfileSource = { sketch: string } | { feature: string; face: Selector }
 
 export interface AutorouteOptions {
   timeout?: number
@@ -94,7 +102,7 @@ export function localKernel(kernel: Kernel, doc: Doc): KernelAPI {
     solids: async (n) => (await build(), kernel.listSolids(n)),
     update3MF: async (pairs) => (await build(), kernel.update3MF(doc, pairs)),
     section: async (names, axis, at) => (await build(), kernel.sectionImage(names, axis, at)),
-    sketch: async (n) => (await build(), kernel.sketch(n)),
+    sketch: async (n) => (await build(), kernel.sketchReport(n)),
     board: async (o) => (await build(), kernel.boardState(doc, o)),
     export: async (f, names, models) => (await build(), kernel.export(f, names, models)),
     gears: async () => (await build(), kernel.gearReport()),
@@ -103,7 +111,15 @@ export function localKernel(kernel: Kernel, doc: Doc): KernelAPI {
     sweep: async (o) => (await build(), kernel.sweep(doc, o)),
     mechanisms: async () => (await build(), kernel.mechanismReport()),
     autoroute: async (o) => (await build(), kernel.autoroute(doc, o)),
+    views: async (n, v) => (await build(), kernel.views(n, v)),
+    profile: async (s) => (await build(), kernel.profile(s)),
   }
+}
+
+/** A kernel for another variant of the document (isolated, never shown). */
+export function configKernel(ctx: Ctx, doc: Doc): KernelAPI {
+  if (ctx.kernelFor) return ctx.kernelFor(doc)
+  throw new Error('working on another configuration needs an open project session; use_configuration first')
 }
 
 /** What a command can use while running. */

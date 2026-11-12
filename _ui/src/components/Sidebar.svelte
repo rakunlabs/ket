@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AlertTriangle, Box, CheckCircle2, CircleX, EyeOff, History, Layers, ListChecks, Palette, PenTool, SlidersHorizontal } from '@lucide/svelte'
 
-  import { inputsOf } from '../engine/doc'
+  import { effectiveParameters, inputsOf } from '../engine/doc'
   import type { CheckResult } from '../engine/kernel'
   import { projectAccess } from '../lib/access.svelte'
   import type { Session } from '../lib/session.svelte'
@@ -20,6 +20,14 @@
 
   const status = $derived(new Map(session.build?.features.map((f) => [f.name, f]) ?? []))
   const used = $derived(new Set(session.doc.features.flatMap(inputsOf)))
+
+  async function useConfiguration(name: string) {
+    try {
+      await session.run('use_configuration', name ? { name } : {})
+    } catch (e) {
+      paramError = (e as Error).message
+    }
+  }
 
   async function runChecks() {
     checking = true
@@ -48,7 +56,10 @@
     if (!v) return
     const expr = /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v
     try {
-      await session.run('set_parameters', { parameters: [{ name, expr }] })
+      // With a configuration active, the edit belongs to it; the base value stays.
+      const conf = session.doc.configuration
+      if (conf) await session.run('set_configuration', { name: conf, values: { [name]: expr } })
+      else await session.run('set_parameters', { parameters: [{ name, expr }] })
       editing = undefined
     } catch (e) {
       paramError = (e as Error).message
@@ -84,12 +95,22 @@
       {#if session.build?.parameterError}
         <p class="note danger mx-3 mb-1 py-1 text-xs">{session.build.parameterError}</p>
       {/if}
+      {#if session.doc.configurations?.length}
+        <label class="flex items-center gap-2 px-3 pb-1.5 text-xs">
+          <span class="text-ink-2">Configuration</span>
+          <select class="input min-w-0 flex-1 px-1.5 py-0.5 text-xs" aria-label="Configuration" disabled={!access.canEdit} value={session.doc.configuration ?? ''} onchange={(e) => useConfiguration(e.currentTarget.value)}>
+            <option value="">Base parameters</option>
+            {#each session.doc.configurations as c (c.name)}<option value={c.name} title={c.note ?? ''}>{c.name}</option>{/each}
+          </select>
+        </label>
+      {/if}
       {#if session.doc.parameters.length === 0}
         <p class="px-3 pb-2 text-xs text-ink-2">None yet.</p>
       {/if}
       <ul class="px-1.5 pb-2">
-        {#each session.doc.parameters as p (p.name)}
+        {#each effectiveParameters(session.doc) as p (p.name)}
           {@const value = session.build?.parameters[p.name]}
+          {@const overridden = !!session.doc.configuration && session.doc.configurations?.find((c) => c.name === session.doc.configuration)?.values[p.name] !== undefined}
           <li class="rounded px-1.5 py-1 hover:bg-hover">
             {#if editing === p.name}
               <form
@@ -106,7 +127,7 @@
               {#if paramError}<p class="mt-1 text-xs text-danger">{paramError}</p>{/if}
             {:else}
               <button class="flex w-full items-center gap-2 text-left" title={p.description ?? 'Click to edit'} disabled={!access.canEdit} onclick={() => startEdit(p.name, p.expr)}>
-                <span class="min-w-0 flex-1 truncate font-mono text-xs">{p.name}</span>
+                <span class={['min-w-0 flex-1 truncate font-mono text-xs', overridden && 'font-semibold']}>{p.name}{#if overridden}<span class="ml-1 font-sans text-[10px] font-normal text-link" title="Set by the configuration">cfg</span>{/if}</span>
                 {#if typeof p.expr === 'string'}
                   <span class="max-w-24 truncate font-mono text-[11px] text-ink-3">{p.expr}</span>
                 {/if}

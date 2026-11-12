@@ -391,13 +391,44 @@ func (h *Hub) executor(p *store.Project, branchID string) *Session {
 	return nil
 }
 
+// BranchFollowTimeout bounds how long a call on a proposal branch waits
+// for the browser, which has the project open, to switch to the branch.
+var BranchFollowTimeout = 10 * time.Second
+
+// waitExecutor polls for a session on the branch until timeout.
+func (h *Hub) waitExecutor(ctx context.Context, p *store.Project, branchID string, timeout time.Duration) *Session {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-deadline.C:
+			return nil
+		case <-tick.C:
+			if s := h.executor(p, branchID); s != nil {
+				return s
+			}
+		}
+	}
+}
+
 // Call runs a command in a browser that has the branch open and waits for
 // its result. The result is the command's JSON answer; a failed command
 // returns its error message as err.
 func (h *Hub) Call(ctx context.Context, p *store.Project, branchID, cmd string, args json.RawMessage, author string) (json.RawMessage, error) {
 	s := h.executor(p, branchID)
+	proposal := branchID != "" && branchID != p.MainBranch
+	if s == nil && proposal {
+		// The browser follows a new proposal by itself, a moment after
+		// start_proposal (it leaves main and joins the branch): wait for it.
+		s = h.waitExecutor(ctx, p, branchID, BranchFollowTimeout)
+	}
 	if s == nil {
-		if branchID != "" && branchID != p.MainBranch {
+		if proposal {
 			return nil, errors.New("the proposal branch is not open in a browser; open the project in Ket (it follows the agent's proposal automatically)")
 		}
 		return nil, ErrNoSession

@@ -72,6 +72,14 @@ export interface Sketch {
   name: string
   plane: Plane
   offset?: Expr
+  /**
+   * Sketch on a flat face of a built feature instead of a fixed plane: the
+   * face is picked by selector (">Z": the top), never by index, so it
+   * follows rebuilds. Origin at the face's center, normal out of the face;
+   * offset moves along the normal. plane is the nearest axis plane, kept
+   * for display and for checks that need one.
+   */
+  on?: { feature: string; face: Selector }
   points: SketchPoint[]
   entities: SketchEntity[]
   constraints: SketchConstraint[]
@@ -157,6 +165,82 @@ export type Feature =
   | (FeatureBase & { type: 'fillet'; target: string; r: Expr; edges?: Selector })
   | (FeatureBase & { type: 'chamfer'; target: string; d: Expr; edges?: Selector })
   | (FeatureBase & { type: 'shell'; target: string; thickness: Expr; open?: Selector })
+  | (FeatureBase & {
+      /** Another placement of a body that stays where it is (a second identical part): the source is not consumed. */
+      type: 'instance'
+      of: string
+    } & Transform)
+  | (FeatureBase & {
+      type: 'hole'
+      target: string
+      /** The flat face the holes start from (e.g. { where: ">Z" }); they go in along its normal. */
+      face: Selector
+      /** Hole centers in the face's (u, v) coordinates (see sketch on a face). */
+      at: Vec2E[]
+      kind?: 'plain' | 'counterbore' | 'countersink' | 'tapped'
+      /** Metric screw size (M2..M6): sets the diameters. */
+      size?: string
+      /** Hole diameter, overrides the size's clearance (or tap) diameter. */
+      d?: Expr
+      /** Clearance fit for plain/counterbore/countersink holes: close or normal (ISO 273, default normal). */
+      fit?: 'close' | 'normal'
+      /** Depth below the face; default through the whole body. */
+      depth?: Expr
+      /** Extra diameter for 3D printing (added to every diameter), default 0. */
+      clearance?: Expr
+    })
+  | (FeatureBase & {
+      type: 'insert_boss'
+      target: string
+      face: Selector
+      at: Vec2E[]
+      /** Insert size (M2..M5). */
+      size: string
+      /** Boss height above the face; 0 for a hole straight into the face. */
+      height?: Expr
+      /** Boss outer diameter; default hole + 2 × the insert's wall. */
+      d?: Expr
+    })
+  | (FeatureBase & {
+      type: 'thread'
+      /** external: a threaded rod (screw); internal: a threaded hole tool to cut (nut). */
+      kind: 'external' | 'internal'
+      size?: string
+      /** Major diameter and pitch (default from size). */
+      d?: Expr
+      pitch?: Expr
+      length: Expr
+      /** Extra radial gap for printed threads, default 0.15 for internal, 0 for external. */
+      clearance?: Expr
+      axis?: 'X' | 'Y' | 'Z'
+    } & Transform)
+  | (FeatureBase & {
+      type: 'draft'
+      target: string
+      /** Faces to taper (e.g. side walls { where: "#Z" }). */
+      faces: Selector
+      /** Degrees; positive narrows the part away from the neutral plane (along its normal), negative widens it. */
+      angle: Expr
+      /** Neutral plane: faces keep their place where they cross it (default XY at z = 0). */
+      plane?: Plane
+      offset?: Expr
+    })
+  | (FeatureBase & {
+      type: 'snap_fit'
+      /** hook: the cantilever with its catch; window: the opening it latches into (cut it from the mating part), made from the hook's sizes. */
+      part: 'hook' | 'window'
+      /** window: the hook it matches. */
+      hook?: string
+      /** hook: beam length, width, thickness, catch depth (overhang) and length. */
+      length?: Expr
+      width?: Expr
+      thickness?: Expr
+      catch?: Expr
+      catch_length?: Expr
+      /** window: clearance around the catch, and the wall thickness it goes through. */
+      clearance?: Expr
+      wall?: Expr
+    } & Transform)
   | (FeatureBase & { type: 'transform'; target: string; align?: Align } & Transform)
   | (FeatureBase & { type: 'solids'; source: string; pick?: SolidPick })
   | (FeatureBase & { type: 'import'; url: string; scale?: Expr } & Transform)
@@ -232,8 +316,8 @@ export type Feature =
       type: 'belt'
       plane: Plane
       offset?: Expr
-      /** Pulleys around which the belt runs: center in plane coordinates, pitch diameter (or teeth with the belt's pitch); body: the pulley body, which then turns with the belt. */
-      pulleys: { at: Vec2E; d?: Expr; teeth?: Expr; body?: string }[]
+      /** Pulleys around which the belt runs: center in plane coordinates, pitch diameter (or teeth with the belt's pitch); body: the pulley body, which then turns with the belt; back: the belt runs over it with its back (a tensioner outside the loop, bending a run inward). */
+      pulleys: { at: Vec2E; d?: Expr; teeth?: Expr; body?: string; back?: boolean }[]
       thickness: Expr
       width: Expr
       /** Chain or timing belt pitch: pulley d = pitch / sin(180°/teeth). */
@@ -265,6 +349,8 @@ export type Check =
   | { name: string; kind: 'no_overlap'; a: string; b: string; /** Intended overlap, mm³ (snap-fit clips). */ allow?: number; note?: string }
   | { name: string; kind: 'inside'; inner: string; outer: string; margin?: Expr; note?: string }
   | { name: string; kind: 'volume'; target: string; min?: Expr; max?: Expr; note?: string }
+  | { name: string; kind: 'overhang'; target: string; angle?: Expr; axis?: '+Z' | '-Z' | '+X' | '-X' | '+Y' | '-Y'; max_area?: Expr; note?: string }
+  | { name: string; kind: 'min_wall'; target: string; min: Expr; note?: string }
 
 export interface Doc {
   version: 1
@@ -282,7 +368,40 @@ export interface Doc {
   motion?: Motion
   /** Exploded view (display only): bodies moved apart to show the assembly. */
   explode?: Explode
+  /** Named variants of the design: parameter values that replace the base ones. */
+  configurations?: Configuration[]
+  /** The configuration the design is built with; none = the base parameters. */
+  configuration?: string
   meta: { description?: string }
+}
+
+/** A named set of parameter values (a variant: "ESP32-S3", "large"). */
+export interface Configuration {
+  name: string
+  values: Record<string, Expr>
+  note?: string
+}
+
+/**
+ * The parameters a document builds with: the base ones, with the active
+ * configuration's values in place of theirs (or of the named one).
+ */
+export function effectiveParameters(doc: Doc, configuration = doc.configuration): Parameter[] {
+  const c = configuration ? doc.configurations?.find((x) => x.name === configuration) : undefined
+  if (!c) return doc.parameters
+  return doc.parameters.map((p) => (p.name in c.values ? { ...p, expr: c.values[p.name] } : p))
+}
+
+/** The document as built with another configuration (undefined: the base parameters). */
+export function withConfiguration(doc: Doc, configuration: string | undefined): Doc {
+  if (configuration && !doc.configurations?.some((c) => c.name === configuration)) {
+    const known = doc.configurations?.map((c) => c.name) ?? []
+    throw new Error(`no configuration "${configuration}"; configurations are: ${known.join(', ') || '(none; add one with set_configuration)'}`)
+  }
+  const next = { ...doc }
+  if (configuration) next.configuration = configuration
+  else delete next.configuration
+  return next
 }
 
 /**
@@ -655,12 +774,17 @@ export function refsOf(f: Feature): string[] {
   }
   if (f.type === 'geneva' && f.part === 'wheel') return [f.drive]
   if (f.type === 'solids') return [f.source]
+  if (f.type === 'instance') return [f.of]
+  if (f.type === 'snap_fit' && f.part === 'window' && f.hook) return [f.hook]
   return []
 }
 
 /** Features a feature needs built before it: what it consumes and what it reads without consuming. */
-export function dependsOn(f: Feature): string[] {
-  return f.type === 'solids' ? [...inputsOf(f), f.source] : inputsOf(f)
+export function dependsOn(f: Feature, doc?: Doc): string[] {
+  const own = f.type === 'solids' ? [...inputsOf(f), f.source] : f.type === 'instance' ? [f.of] : f.type === 'snap_fit' && f.part === 'window' && f.hook ? [f.hook] : inputsOf(f)
+  // A sketch on a face needs the feature that face belongs to.
+  const faces = doc ? sketchesOf(f).flatMap((n) => doc.sketches.find((s) => s.name === n)?.on?.feature ?? []) : []
+  return faces.length ? [...new Set([...own, ...faces])] : own
 }
 
 /** Features that consume other features; consumed bodies are not shown. */
@@ -674,6 +798,9 @@ export function inputsOf(f: Feature): string[] {
     case 'transform':
     case 'pattern':
     case 'mirror':
+    case 'hole':
+    case 'insert_boss':
+    case 'draft':
       return [f.target]
     default:
       return []

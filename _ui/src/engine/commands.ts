@@ -4,7 +4,7 @@
 
 import { z } from 'zod'
 
-import { type Doc, type Feature, dependsOn, findFeature, inputsOf, normalizeDoc, refsOf, sketchesOf } from './doc'
+import { type Doc, type Feature, dependsOn, findFeature, inputsOf, normalizeDoc, refsOf, sketchesOf, withConfiguration } from './doc'
 import { namesIn, num } from './expr'
 import { define, applyOp } from './registry'
 import { checkDef, common, expr, featureName, featureRef, ident, placement, plane, profile, selector, vec2, vec3 } from './schema'
@@ -37,7 +37,7 @@ export function upsert(doc: Doc, f: Feature, replaceIt: boolean | undefined): { 
     next.features[i] = f
     return { doc: next, summary: `replaced ${f.type} ${f.name}` }
   }
-  for (const input of dependsOn(f)) {
+  for (const input of dependsOn(f, next)) {
     if (!findFeature(next, input)) {
       const known = next.features.map((x) => x.name)
       throw new Error(`"${input}" does not exist; features are: ${known.join(', ') || '(none yet)'}`)
@@ -138,13 +138,73 @@ define({
       else if (v && typeof v === 'object') for (const x of Object.values(v)) scan(owner, x)
     }
     for (const p of next.parameters) if (!drop.has(p.name)) scan(`parameter ${p.name}`, p.expr)
+    for (const c of next.configurations ?? []) for (const [k, v] of Object.entries(c.values)) if (!drop.has(k)) scan(`configuration ${c.name} (${k})`, v)
     for (const f of next.features) scan(`feature ${f.name}`, { ...f, name: undefined, target: undefined, tools: undefined })
     for (const c of next.checks) scan(`check ${c.name}`, c)
     if (users.length) throw new Error(`cannot delete: ${users.join('; ')}`)
     const missing = a.names.filter((n) => !next.parameters.some((p) => p.name === n))
     if (missing.length) throw new Error(`no parameter ${missing.join(', ')}`)
     next.parameters = next.parameters.filter((p) => !drop.has(p.name))
+    // Configurations stop overriding what is gone.
+    for (const c of next.configurations ?? []) for (const k of Object.keys(c.values)) if (drop.has(k)) delete c.values[k]
     return { doc: next, summary: `deleted parameters ${a.names.join(', ')}` }
+  },
+})
+
+define({
+  name: 'set_configuration',
+  group: 'params',
+  kind: 'mutate',
+  description:
+    'Create or update a configuration: a named variant of the design whose values replace those of the base parameters (e.g. "esp32s3" with board_w 52, "esp32c3" with board_w 40). Only existing parameters can be overridden; values are numbers or expressions like any parameter. Merges into an existing configuration with this name (pass replace: true to start it over). The design keeps building with the base parameters until use_configuration picks one. Verify every variant with run_checks configurations: "all".',
+  args: z.object({
+    name: ident,
+    values: z.record(z.string(), expr).describe('Parameter name → value in this configuration'),
+    note: z.string().optional(),
+    replace: z.boolean().optional().describe('Replace the configuration instead of merging into it'),
+  }),
+  examples: [{ name: 'large', values: { board_w: 80, wall: 2.4 }, note: 'Bigger board, thicker walls' }],
+  apply(doc, a) {
+    const next = clone(doc)
+    const unknown = Object.keys(a.values).filter((k) => !next.parameters.some((p) => p.name === k))
+    if (unknown.length) throw new Error(`no parameter ${unknown.join(', ')}; a configuration only overrides existing parameters (add them with set_parameters first)`)
+    next.configurations ??= []
+    const i = next.configurations.findIndex((c) => c.name === a.name)
+    const old = i >= 0 && !a.replace ? next.configurations[i] : undefined
+    const entry = compact({ name: a.name, values: { ...(old?.values ?? {}), ...a.values }, note: a.note ?? old?.note })
+    if (i >= 0) next.configurations[i] = entry
+    else next.configurations.push(entry)
+    const n = Object.keys(entry.values).length
+    return { doc: next, summary: `${i >= 0 ? 'updated' : 'added'} configuration ${a.name} (${n} value${n === 1 ? '' : 's'})` }
+  },
+})
+
+define({
+  name: 'use_configuration',
+  group: 'params',
+  kind: 'mutate',
+  description: 'Build the design with a configuration (its values replace the base parameters), or with the base parameters when name is omitted. Everything rebuilds: features, the board, checks. Exports use it too.',
+  args: z.object({ name: z.string().optional().describe('Configuration name; omit for the base parameters') }),
+  apply(doc, a) {
+    const next = withConfiguration(clone(doc), a.name)
+    return { doc: next, summary: a.name ? `building with configuration ${a.name}` : 'building with the base parameters' }
+  },
+})
+
+define({
+  name: 'delete_configurations',
+  group: 'params',
+  kind: 'mutate',
+  description: 'Delete configurations. When the active one goes, the design builds with the base parameters again.',
+  args: z.object({ names: z.array(z.string()).min(1) }),
+  apply(doc, a) {
+    const next = clone(doc)
+    const missing = a.names.filter((n) => !next.configurations?.some((c) => c.name === n))
+    if (missing.length) throw new Error(`no configuration ${missing.join(', ')}`)
+    next.configurations = next.configurations!.filter((c) => !a.names.includes(c.name))
+    if (!next.configurations.length) delete next.configurations
+    if (next.configuration && a.names.includes(next.configuration)) delete next.configuration
+    return { doc: next, summary: `deleted configurations ${a.names.join(', ')}` }
   },
 })
 
@@ -415,6 +475,91 @@ featureCommand(
   [{ name: 'case_shell', target: 'case_round', thickness: 'wall', open: { where: '>Z' } }],
 )
 
+// ── Mechanical features ─────────────────────────────────────────────────
+
+const faceSel = selector.describe('One flat face of target the holes start from, e.g. { where: ">Z" } for the top; they go in along its normal. Positions at are (u, v) on that face from its center, as for a sketch on a face')
+const metric = z.enum(['M2', 'M2.5', 'M3', 'M4', 'M5', 'M6'])
+
+featureCommand(
+  'hole',
+  'hole',
+  'Drill screw holes into a face of a body: plain (clearance hole, ISO 273 normal fit by default), counterbore (room for a socket head cap screw, ISO 4762), countersink (90° for a flat head, ISO 10642) or tapped (tap drill for a thread cut later or a self-tapping screw in plastic). size (M2..M6) sets the diameters; d overrides the hole diameter. Through the whole body unless depth is given. clearance adds to every diameter for 3D printing (0.1..0.2 mm). The face is found by selector on every rebuild.',
+  {
+    target: featureRef,
+    face: faceSel,
+    at: z.array(vec2).min(1).max(200).describe('Hole centers [u, v] on the face'),
+    kind: z.enum(['plain', 'counterbore', 'countersink', 'tapped']).optional().describe('Default plain'),
+    size: metric.optional(),
+    d: expr.optional().describe('Hole diameter, mm (overrides the size)'),
+    fit: z.enum(['close', 'normal']).optional().describe('Clearance fit for plain/counterbore/countersink (default normal)'),
+    depth: expr.optional().describe('Depth below the face, mm (default through)'),
+    clearance: expr.optional().describe('Added to every diameter, mm (default 0)'),
+  },
+  [{ name: 'lid_screws', target: 'lid', face: { where: '>Z' }, at: [[-16, -10], [16, -10], [-16, 10], [16, 10]], kind: 'countersink', size: 'M3', clearance: 0.15 }],
+)
+
+featureCommand(
+  'insert_boss',
+  'insert_boss',
+  'Add bosses with holes for brass heat-set inserts (M2..M5, common short inserts) on a face of a body, or (height 0) holes straight into the face. The hole is the insert\'s melt diameter and its length + 0.5 mm deep; the boss is hole + 2 × wall unless d is given. Bosses overlap the face 0.3 mm so they fuse with it. Warns when the wall is thin or the hole goes through the part.',
+  {
+    target: featureRef,
+    face: faceSel,
+    at: z.array(vec2).min(1).max(200).describe('Boss centers [u, v] on the face'),
+    size: z.enum(['M2', 'M2.5', 'M3', 'M4', 'M5']),
+    height: expr.optional().describe('Boss height above the face, mm (default 0: holes in the face)'),
+    d: expr.optional().describe('Boss outer diameter, mm'),
+  },
+  [{ name: 'base_bosses', target: 'base_shell', face: { where: '<Z', near: [0, 0, 2] }, at: [[-20, -12], [20, 12]], size: 'M3', height: 4 }],
+)
+
+featureCommand(
+  'thread',
+  'thread',
+  'Make a metric thread (ISO 60° profile) as a solid along +axis (default Z) from the origin: external is the threaded rod; internal is a tool to cut a threaded hole with boolean. size (M2..M6) gives d and coarse pitch, or set d and pitch. clearance opens printed threads (default 0.15 mm radial for internal). Threads under M3 rarely print well: use a tapped hole or a heat-set insert. Heavy geometry: use few threads per part.',
+  {
+    kind: z.enum(['external', 'internal']),
+    size: metric.optional(),
+    d: expr.optional().describe('Major diameter, mm'),
+    pitch: expr.optional().describe('Thread pitch, mm'),
+    length: expr,
+    clearance: expr.optional(),
+    axis: z.enum(['X', 'Y', 'Z']).optional(),
+    ...placement,
+  },
+  [{ name: 'knob_thread', kind: 'external', size: 'M6', length: 12, translate: [0, 0, 5] }],
+)
+
+featureCommand(
+  'draft',
+  'draft',
+  'Taper faces by an angle (degrees) from a neutral plane, for molded or cast parts and for walls that release from a print bed or a mold. The faces keep their place where they cross the neutral plane (default XY at z = 0) and lean in as they go away from it along the plane normal (+Z for XY), so a part standing on the plane narrows upward and pulls out of a mold; a negative angle widens it. Select side walls, e.g. { where: "#Z" }. Apply before fillets and shells.',
+  { target: featureRef, faces: selector, angle: expr, plane: plane.optional(), offset: expr.optional() },
+  [{ name: 'case_draft', target: 'case_body', faces: { where: '#Z' }, angle: 2 }],
+)
+
+featureCommand(
+  'snap_fit',
+  'snap_fit',
+  'A cantilever snap-fit: part hook is a beam standing on z = 0 (thickness along X from 0, width along Y centered, length up +Z) with a catch on +X at the top (flat underside that holds, 30° lead-in on top); place it with translate/rotate and union it with its part. part window (hook: the hook feature) is the matching opening, placed where the catch latches, to cut from the mating wall with boolean; it follows the hook\'s placement. Warns when the bending strain is above what PLA takes (about 3%).',
+  {
+    part: z.enum(['hook', 'window']),
+    hook: featureRef.optional().describe('window: the snap_fit hook it takes'),
+    length: expr.optional().describe('hook: beam length, mm (default 10)'),
+    width: expr.optional().describe('hook: beam width (default 6)'),
+    thickness: expr.optional().describe('hook: beam thickness (default 1.6)'),
+    catch: expr.optional().describe('hook: catch overhang (default 1)'),
+    catch_length: expr.optional().describe('hook: catch height along the beam (default 2)'),
+    clearance: expr.optional().describe('window: gap around the catch (default 0.3)'),
+    wall: expr.optional().describe('window: thickness of the wall it cuts through (default 2)'),
+    ...placement,
+  },
+  [
+    { name: 'lid_hook', part: 'hook', length: 8, thickness: 1.2, catch: 0.8, translate: [20, 0, 0] },
+    { name: 'base_window', part: 'window', hook: 'lid_hook' },
+  ],
+)
+
 featureCommand(
   'transform',
   'transform',
@@ -433,6 +578,14 @@ featureCommand(
     { name: 'lid_placed', target: 'lid', translate: [0, 0, 30], rotate: [180, 0, 0] },
     { name: 'queen_in_pocket', target: 'queen', rotate: [0, 90, 0], align: { to: ['pocket_x', 'pocket_y', 'floor_z + 0.2'] } },
   ],
+)
+
+featureCommand(
+  'instance',
+  'instance',
+  'Place another copy of a body without consuming it: the second (third, ...) of the same part in an assembly, e.g. four identical feet, two hinges. The source stays a body where it is; the instance follows it whenever it changes (edit the source once). Each instance is its own body for checks, measure, explode, motion joints and export (STEP writes one named product per instance). For a pattern that becomes one merged body, use pattern instead.',
+  { of: featureRef.describe('The body to place again'), ...placement },
+  [{ name: 'foot_2', of: 'foot', translate: [60, 0, 0] }],
 )
 
 featureCommand(
@@ -584,7 +737,7 @@ define({
       i = at + members.length
     }
     const before = new Set(next.features.slice(0, i).map((x) => x.name))
-    for (const input of dependsOn(next.features[i])) {
+    for (const input of dependsOn(next.features[i], next)) {
       if (before.has(input)) continue
       const later = next.features.some((x) => x.name === input)
       throw new Error(
@@ -653,6 +806,8 @@ define({
       if (typeof g.target === 'string') g.target = ren(g.target)
       if (Array.isArray(g.tools)) g.tools = (g.tools as string[]).map(ren)
       if (typeof g.source === 'string') g.source = ren(g.source)
+      if (typeof g.of === 'string') g.of = ren(g.of)
+      if (typeof g.hook === 'string') g.hook = ren(g.hook)
       // Gears follow the gear they mesh with or share a shaft with; a geneva wheel its drive.
       for (const k of ['mesh', 'coaxial'] as const) {
         const m = g[k] as { with?: string } | undefined
@@ -661,6 +816,8 @@ define({
       if (typeof g.drive === 'string') g.drive = ren(g.drive)
       return g as unknown as Feature
     })
+    // Sketches on a face of it follow the new name.
+    next.sketches = next.sketches.map((s) => (s.on?.feature === a.name ? { ...s, on: { ...s.on, feature: a.to } } : s))
     if (a.keep_checks) return { doc: next, summary: `renamed ${a.name} → ${a.to} (checks and decals stay on ${a.name})` }
     next.checks = next.checks.map((c) => {
       const g = { ...c } as Record<string, unknown>
@@ -689,7 +846,7 @@ define({
       grew = false
       for (const f of next.features) {
         if (drop.has(f.name)) continue
-        const used = dependsOn(f).filter((i) => drop.has(i))
+        const used = dependsOn(f, next).filter((i) => drop.has(i))
         if (used.length) {
           users.push(`${f.name} uses ${used.join(', ')}`)
           if (a.cascade) {
@@ -699,7 +856,11 @@ define({
         }
       }
     }
+    for (const s of next.sketches) if (s.on && drop.has(s.on.feature) && !users.some((u) => u.includes(`sketch ${s.name}`))) users.push(`sketch ${s.name} lies on a face of ${s.on.feature}`)
     if (users.length && !a.cascade) throw new Error(`cannot delete: ${users.join('; ')}. Pass cascade: true to delete them too.`)
+    // Cascade: sketches on a deleted feature's faces go too (their users were collected above).
+    const droppedSketches = next.sketches.filter((s) => s.on && drop.has(s.on.feature)).map((s) => s.name)
+    next.sketches = next.sketches.filter((s) => !droppedSketches.includes(s.name))
     next.features = next.features.filter((f) => !drop.has(f.name))
     const refs = (c: Record<string, unknown>) => ['a', 'b', 'inner', 'outer', 'target'].some((k) => drop.has(c[k] as string))
     const droppedChecks = next.checks.filter((c) => refs(c as never)).map((c) => c.name)
@@ -708,7 +869,7 @@ define({
     if (next.decals) next.decals = next.decals.filter((d) => !drop.has(d.target))
     return {
       doc: next,
-      summary: `deleted ${[...drop].join(', ')}${droppedChecks.length ? `; removed checks ${droppedChecks.join(', ')}` : ''}${droppedDecals.length ? `; removed decals ${droppedDecals.join(', ')}` : ''}`,
+      summary: `deleted ${[...drop].join(', ')}${droppedSketches.length ? `; removed sketches ${droppedSketches.join(', ')}` : ''}${droppedChecks.length ? `; removed checks ${droppedChecks.join(', ')}` : ''}${droppedDecals.length ? `; removed decals ${droppedDecals.join(', ')}` : ''}`,
     }
   },
 })
@@ -720,7 +881,7 @@ define({
   group: 'checks',
   kind: 'mutate',
   description:
-    'Add or replace (by name) design checks: requirements that run_checks verifies after every change. Write the requirements first, then model, then run_checks. Kinds: expr (boolean over parameters), min_distance (clearance between two bodies), no_overlap, inside (inner fits in outer with margin), volume (min/max).',
+    'Add or replace (by name) design checks: requirements that run_checks verifies after every change. Write the requirements first, then model, then run_checks. Kinds: expr (boolean over parameters), min_distance (clearance between two bodies), no_overlap, inside (inner fits in outer with margin), volume (min/max), overhang (surface steeper than angle from vertical for the print direction, which needs support) and min_wall (walls thinner than min, found by sampling: approximate).',
   args: z.object({ checks: z.array(checkDef).min(1) }),
   examples: [
     {

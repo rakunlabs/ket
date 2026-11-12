@@ -85,12 +85,12 @@ define({
   group: 'cad',
   kind: 'mutate',
   description:
-    'Add a belt or chain loop around pulleys in a plane (plane coordinates as in sketch, offset = the plane\'s mid-belt position). Each pulley: at (center), d (pitch diameter) or teeth with the belt pitch (d = pitch / sin(180°/teeth), GT2 pitch 2, #25 chain 6.35). The belt runs around the outside of every pulley. Pulleys with body: "<feature>" turn with it: when one of them turns (a gear, a joint), the others follow at the diameter ratio, same direction. get_mechanisms gives the length and, with pitch, the number of links (make it whole).',
+    'Add a belt or chain loop around pulleys in a plane (plane coordinates as in sketch, offset = the plane\'s mid-belt position). Each pulley: at (center), d (pitch diameter) or teeth with the belt pitch (d = pitch / sin(180°/teeth), GT2 pitch 2, #25 chain 6.35). The belt runs around the outside of every pulley, except back idlers (back: true): a tensioner outside the loop that the belt runs over with its back, bending a run inward; the pulleys are taken in order around their middle. Pulleys with body: "<feature>" turn with it: when one of them turns (a gear, a joint), the others follow at the diameter ratio, same direction (back idlers the other way). get_mechanisms gives the length and, with pitch, the number of links (make it whole).',
   args: z.object({
     ...common,
     plane,
     offset: expr.optional(),
-    pulleys: z.array(z.object({ at: vec2, d: expr.optional(), teeth: expr.optional(), body: featureRef.optional().describe('The pulley body, which turns with the belt') })).min(2),
+    pulleys: z.array(z.object({ at: vec2, d: expr.optional(), teeth: expr.optional(), body: featureRef.optional().describe('The pulley body, which turns with the belt'), back: z.boolean().optional().describe('The belt runs over this pulley with its back: an idler or tensioner outside the loop, close enough to bend a run inward. It turns the other way. Default false') })).min(2),
     thickness: expr.describe('Belt thickness (centered on the pitch line)'),
     width: expr,
     pitch: expr.optional().describe('Tooth or chain pitch, mm'),

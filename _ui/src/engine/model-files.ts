@@ -93,6 +93,25 @@ export function isZip(b: ArrayBuffer | Uint8Array): boolean {
 const MAX_ENTRY = 1 << 30
 const MAX_TOTAL = 2 ** 32
 
+/** A 64-bit little-endian count or offset; archives past 2^53 bytes are refused. */
+function big(dv: DataView, at: number): number {
+  if (at + 8 > dv.byteLength) throw new Error('broken zip64 archive (a field points outside the file)')
+  const v = dv.getBigUint64(at, true)
+  if (v > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('zip64 archive is too large to open')
+  return Number(v)
+}
+
+/** The start of the data of the zip64 extra field (id 1) in an extra block, or undefined. */
+function zip64Extra(dv: DataView, at: number, len: number): number | undefined {
+  for (let q = at; q + 4 <= at + len; ) {
+    const id = dv.getUint16(q, true)
+    const n = dv.getUint16(q + 2, true)
+    if (id === 1) return q + 4
+    q += 4 + n
+  }
+  return undefined
+}
+
 /** The files of a zip by name; each is inflated when read. */
 export function unzip(buf: ArrayBuffer | Uint8Array): Map<string, () => Promise<Uint8Array>> {
   const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
@@ -105,28 +124,47 @@ export function unzip(buf: ArrayBuffer | Uint8Array): Map<string, () => Promise<
     }
   }
   if (end < 0) throw new Error('not a zip file (no central directory)')
-  const count = dv.getUint16(end + 10, true)
+  let count = dv.getUint16(end + 10, true)
   let p = dv.getUint32(end + 16, true)
   let total = 0
-  if (p === 0xffffffff) throw new Error('zip64 archives are not supported; save the 3MF again from the slicer')
+  if (p === 0xffffffff || count === 0xffff) {
+    // zip64: the locator right before the end record points at the zip64 end record.
+    const loc = end - 20
+    if (loc < 0 || dv.getUint32(loc, true) !== 0x07064b50) throw new Error('broken zip64 archive (no zip64 end locator)')
+    const end64 = big(dv, loc + 8)
+    if (end64 + 56 > u.length || dv.getUint32(end64, true) !== 0x06064b50) throw new Error('broken zip64 archive (no zip64 end record)')
+    count = big(dv, end64 + 32)
+    p = big(dv, end64 + 48)
+  }
   const dec = new TextDecoder()
   const out = new Map<string, () => Promise<Uint8Array>>()
   for (let i = 0; i < count; i++) {
-    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('broken zip central directory')
+    if (p + 46 > u.length || dv.getUint32(p, true) !== 0x02014b50) throw new Error('broken zip central directory')
     const method = dv.getUint16(p + 10, true)
-    const size = dv.getUint32(p + 20, true)
-    const unpacked = dv.getUint32(p + 24, true)
+    let size = dv.getUint32(p + 20, true)
+    let unpacked = dv.getUint32(p + 24, true)
     const nameLen = dv.getUint16(p + 28, true)
     const extraLen = dv.getUint16(p + 30, true)
     const commentLen = dv.getUint16(p + 32, true)
-    const local = dv.getUint32(p + 42, true)
+    let local = dv.getUint32(p + 42, true)
     const name = dec.decode(u.subarray(p + 46, p + 46 + nameLen))
+    if (unpacked === 0xffffffff || size === 0xffffffff || local === 0xffffffff) {
+      // zip64 extra field (id 1): only the fields that overflowed, in this order.
+      const z = zip64Extra(dv, p + 46 + nameLen, extraLen)
+      if (!z) throw new Error(`zip entry ${name} has 64-bit sizes but no zip64 field`)
+      let k = 0
+      if (unpacked === 0xffffffff) unpacked = big(dv, z + 8 * k++)
+      if (size === 0xffffffff) size = big(dv, z + 8 * k++)
+      if (local === 0xffffffff) local = big(dv, z + 8 * k++)
+    }
     p += 46 + nameLen + extraLen + commentLen
     if (name.endsWith('/')) continue
     total += unpacked
     if (unpacked > MAX_ENTRY || total > MAX_TOTAL) throw new Error(`the archive inflates to more than ${Math.round((unpacked > MAX_ENTRY ? MAX_ENTRY : MAX_TOTAL) / 2 ** 20)} MB (${name}); it is too large to open`)
     out.set(name, async () => {
+      if (local + 30 > u.length) throw new Error(`zip entry ${name} points outside the archive`)
       const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true)
+      if (start + size > u.length) throw new Error(`zip entry ${name} is cut off (the archive is truncated)`)
       const raw = u.subarray(start, start + size)
       if (method === 0) return raw
       if (method === 8) return inflateAtMost(raw, unpacked, name)
@@ -195,6 +233,7 @@ function writeZip(entries: ZipEntry[]): Blob {
     offset += 30 + n.length + packed.length
   }
   const size = central.reduce((s, b) => s + b.length, 0)
+  if (offset > 0xfffffffe || entries.length > 0xfffe) throw new Error('the archive would be larger than 4 GB or hold more than 65534 files; export fewer or smaller bodies')
   const end = new DataView(new ArrayBuffer(22))
   end.setUint32(0, 0x06054b50, true)
   end.setUint16(8, entries.length, true)

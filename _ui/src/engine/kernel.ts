@@ -5,700 +5,46 @@
 // inputs changed. replicad operations consume their inputs, so the cache
 // keeps a master copy of each shape and every use works on a clone.
 
-import RAPIER from '@dimforge/rapier3d-compat'
-import * as R from 'replicad'
-import type { AnyShape, Edge, EdgeFinder, Face, FaceFinder, Shape3D } from 'replicad'
+//
+// Helpers live in ./kernel/: result types, shape helpers, selectors,
+// placement, drawings, feature building, checks and motion runs.
 
-import { type Check, type Decal, type Doc, type Expr, type Feature, type Material, type Model3D, type Plane, type Profile, type Selector, type Sketch, type Track, type Vec3E, type Via, bodies, dependsOn, inputsOf, sketchesOf } from './doc'
+import * as R from 'replicad'
+import type { Edge, Face, Shape3D } from 'replicad'
+
+import { type Check, type Doc, type Feature, type Profile, type Plane, type Selector, type Sketch, type Expr, type Track, type Via, bodies, dependsOn, effectiveParameters, inputsOf, sketchesOf } from './doc'
 import { namesIn, num, resolveParameters } from './expr'
 import { explodeOffset } from './explode'
-import { fontMetrics } from './fonts'
 import { boardStyle } from './pcb/artwork'
 import { boardDrills } from './pcb/drills'
 import { type GearState, GearError, describeGear, gearLocalShape, gearOptions, gearStates, localKey, placeGear } from './gears'
 import { type MotionPlan, motionPlan } from './motion'
-import { type Mechanisms, mechanismReport, mechanismShape, mechanismStates } from './mechanisms'
-import { createWorld, drivenPose, initPhysics, rotate } from './physics'
-
-function meshCenter(m: { vertices: Float32Array }): [number, number, number] {
-  let x = 0
-  let y = 0
-  let z = 0
-  const n = m.vertices.length / 3
-  for (let i = 0; i < n; i++) {
-    x += m.vertices[i * 3]
-    y += m.vertices[i * 3 + 1]
-    z += m.vertices[i * 3 + 2]
-  }
-  return [x / n, y / n, z / n]
-}
+import { type Mechanisms, mechanismReport, mechanismStates } from './mechanisms'
 import { autorouteBoard } from './pcb/autoroute'
 import { type ResolvedBoard, resolveBoard } from './pcb/board'
-import type { AutorouteOptions, AutorouteResult } from './registry'
+import type { AutorouteOptions, AutorouteResult, ProfileSource, SweepOptions } from './registry'
+import { type View, boxOf, pathsToLines } from './drawing'
 import { drc, ratsnest } from './pcb/drc'
-import { parseOBJ, placeModel } from './pcb/model3d'
 import { type ZoneFill, fillZones } from './pcb/zones'
 import type { BoardState } from './pcb/state'
-import { type Loop, type SolvedSketch, loopInside, solveSketch } from './sketch'
+import { type SolvedSketch, solveSketch } from './sketch'
 import { drawSection } from './section-draw'
-import { MeshBody, composeBodies, displayMesh, forgetPaint, meshBody, meshCube, meshFromTriangles, paintAll } from './mesh-body'
+import { MeshBody, displayMesh, forgetPaint, meshBody, meshCube, composeBodies } from './mesh-body'
 import { type ThreeMF, type TriMesh, fetchKey, isZip, paintFilament, parseSTL, pickObject, read3MF, update3MF, urlFile, urlFragment, write3MF, writeSTL } from './model-files'
+import { runCheck } from './kernel/checks'
+import { polyDrawing, profileDrawing, resolveDecal, sketchDrawing } from './kernel/drawings'
+import { makeFeature, makeMeshFeature } from './kernel/features'
+import { simulateMotion, sweepMotion } from './kernel/motion-run'
+import { meshShape } from './kernel/part-models'
+import { place, vec } from './kernel/placement'
+import { centerOf, directionOf, friendlyType, selectIndexed } from './kernel/selectors'
+import { type Body, SOLID_STL_TRIANGLES, type Loaded, bboxOf, bodyBox, bodyVolume, boxGap, brepToMesh, countTopo, faceCount, importUrls, isMesh, kernelMessage, overlapRegions, r3, round, safeDistance, simplifyRing, volumeOf } from './kernel/shapes'
+import type { BBox, BuildResult, CheckResult, EdgeInfo, FaceInfo, FeatureStatus, MeshData, ResolvedDecal, SketchFrame, SketchLines, SketchStatus, V3 } from './kernel/types'
+import { BOARD, PART_PREFIX } from './kernel/types'
 
-/** A built feature: an OpenCascade solid, or a triangle-mesh solid (imported STL / 3MF and what is built from it). */
-export type Body = Shape3D | MeshBody
-
-const isMesh = (b: Body): b is MeshBody => b instanceof MeshBody
-
-/** STL files up to this size also become OpenCascade solids (faces to select, part models). */
-const SOLID_STL_TRIANGLES = 20_000
-
-/** A downloaded model file, by URL (with #fragment). */
-type Loaded = { shape: Shape3D } | { tri: TriMesh; solid?: Shape3D | Error; mesh?: MeshBody }
-
-/** Every model URL a document imports (import features and board part models). */
-function importUrls(doc: Doc): Set<string> {
-  return new Set([...doc.features.flatMap((f) => (f.type === 'import' ? [f.url] : [])), ...(doc.pcb?.components ?? []).flatMap((c) => (c.model ? [c.model.url] : []))])
-}
-
-/** The triangles of a B-rep solid as a mesh body (fine tessellation: booleans with meshes, mesh checks). */
-function brepToMesh(s: Shape3D, what: string): MeshBody {
-  const m = s.mesh({ tolerance: 0.01, angularTolerance: 0.1 })
-  return meshFromTriangles(m.vertices, m.triangles, what)
-}
-
-/** True when two boxes are more than tol apart on some axis. */
-export function boxesApart(a: BBox, b: BBox, tol = 0): boolean {
-  return a[0].some((lo, k) => lo > b[1][k] + tol || b[0][k] > a[1][k] + tol)
-}
-
-/** The gap between two boxes (0 when they touch or overlap). */
-function boxGap(a: BBox, b: BBox): number {
-  let gap = 0
-  for (let k = 0; k < 3; k++) gap = Math.max(gap, a[0][k] - b[1][k], b[0][k] - a[1][k])
-  return gap
-}
-
-function bodyBox(b: Body): BBox {
-  if (isMesh(b)) {
-    const [lo, hi] = b.bbox()
-    return [r3(lo), r3(hi)]
-  }
-  return bboxOf(b)
-}
-
-function bodyVolume(b: Body): number {
-  return isMesh(b) ? b.volume() : volumeOf(b)
-}
-
-export type V3 = [number, number, number]
-export type BBox = [V3, V3]
-
-export interface FeatureStatus {
-  name: string
-  type: Feature['type']
-  ok: boolean
-  error?: string
-  warnings?: string[]
-  bbox?: BBox
-  volume?: number
-  solids?: number
-  /** Build time when slow (≥ 300 ms). */
-  ms?: number
-  faces?: number
-  edges?: number
-  /** A triangle-mesh body (imported STL / 3MF): its triangle count. It has no faces or edges to select. */
-  triangles?: number
-}
-
-export interface SketchStatus {
-  name: string
-  plane: Plane
-  ok: boolean
-  status: SolvedSketch['status']
-  dof: number
-  loops: number
-  message?: string
-}
-
-export interface BuildResult {
-  ok: boolean
-  sketches: SketchStatus[]
-  /** Parameter values after resolving expressions. */
-  parameters: Record<string, number>
-  parameterError?: string
-  features: FeatureStatus[]
-  /** Names of the visible result bodies. */
-  bodies: string[]
-  /** Problems with materials or decals (display only, never fail the build). */
-  appearance?: string[]
-  /** Where the last build spent its time, ms (worker): imports, build, mesh, board. */
-  timing?: Record<string, number>
-}
-
-export interface MeshData {
-  name: string
-  key: string
-  color?: string
-  vertices: Float32Array
-  normals: Float32Array
-  triangles: Uint32Array
-  edges: Float32Array
-  /** edgeGroups[i] = [start, count] in points of edges for B-rep edge i;
-   *  the ruler snaps to their ends, midpoints and arc centers. */
-  edgeGroups: Uint32Array
-  /** faceGroups[i] = [start, count] in triangles for face i. */
-  faceGroups: Uint32Array
-  /** RGB per vertex from slicer paint (3MF); -1 where a triangle is unpainted (the body color shows). */
-  colors?: Float32Array
-  /** 0..1, from the feature; 1 when unset. */
-  opacity?: number
-  /** The feature's material (display only). */
-  material?: Material
-  /** Decals projected onto this body, with numbers resolved. */
-  decals?: ResolvedDecal[]
-  /** Exploded-view offset (display only). */
-  explode?: V3
-}
-
-export interface ResolvedDecal extends Omit<Decal, 'at' | 'size' | 'depth' | 'rotation' | 'font_size'> {
-  at: V3
-  size: [number, number]
-  depth: number
-  rotation: number
-  font_size?: number
-}
-
-export interface SketchLines {
-  name: string
-  ok: boolean
-  dof: number
-  /** Consumed by a feature; drawn faintly. */
-  used: boolean
-  lines: Float32Array
-  construction: Float32Array
-}
-
-export interface CheckResult {
-  name: string
-  kind: Check['kind']
-  ok: boolean
-  /** What was measured, e.g. "distance 0.40 mm < 1.00 mm". */
-  detail: string
-  note?: string
-  /** Time it took when slow (≥ 200 ms). */
-  ms?: number
-}
-
-export interface FaceInfo {
-  index: number
-  type: string
-  center: V3
-  normal?: V3
-  area: number
-}
-
-export interface EdgeInfo {
-  index: number
-  type: string
-  start: V3
-  end: V3
-  length: number
-}
-
-const round = (v: number, d = 3) => Math.round(v * 10 ** d) / 10 ** d
-const r3 = (v: V3): V3 => [round(v[0]), round(v[1]), round(v[2])]
-
-/** Number of distinct faces or edges, without building wrapper objects for each. */
-function countTopo(s: AnyShape, kind: 'face' | 'edge'): number {
-  let n = 0
-  for (const e of R.iterTopo(s.wrapped, kind)) {
-    n++
-    ;(e as { delete?: () => void }).delete?.()
-  }
-  return n
-}
-
-/** Boxes of big shapes, by the TopoDS_Shape they wrap (cleared when shapes are rebuilt). */
-const bigBoxes = new WeakMap<object, BBox>()
-
-/** Faces met by a topology walk, stopping after limit (no dedupe, no wrappers: fast). */
-function faceCount(s: AnyShape, limit = Infinity): number {
-  const oc = R.getOC()
-  let n = 0
-  const ex = new oc.TopExp_Explorer(s.wrapped, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE)
-  for (; ex.More() && n <= limit; ex.Next()) n++
-  ex.delete()
-  return n
-}
-
-function bboxOf(s: AnyShape): BBox {
-  const hit = bigBoxes.get(s.wrapped)
-  if (hit) return hit
-  // The exact box (AddOptimal) walks every surface: seconds for a vendor
-  // STEP model. The box from its triangulation is as good for checks.
-  const oc = R.getOC()
-  if (faceCount(s, 200) > 200) {
-    const box = new oc.Bnd_Box()
-    oc.BRepBndLib.Add(s.wrapped, box, true)
-    const lo = box.CornerMin()
-    const hi = box.CornerMax()
-    const out: BBox = [r3([lo.X(), lo.Y(), lo.Z()]), r3([hi.X(), hi.Y(), hi.Z()])]
-    lo.delete()
-    hi.delete()
-    box.delete()
-    bigBoxes.set(s.wrapped, out)
-    return out
-  }
-  const [a, b] = s.boundingBox.bounds as [V3, V3]
-  return [r3(a), r3(b)]
-}
-
-function volumeOf(s: Shape3D): number {
-  try {
-    return R.measureVolume(s)
-  } catch {
-    return 0
-  }
-}
-
-/** OpenCascade throws WebAssembly exceptions without a message. */
-function kernelMessage(e: unknown): string {
-  if (e instanceof Error && e.message) return e.message
-  if (typeof e === 'string') return e
-  return 'OpenCascade could not compute this operation'
-}
-
-const SURFACE_TYPES: Record<string, string> = {
-  plane: 'PLANE',
-  cylinder: 'CYLINDRE',
-  cone: 'CONE',
-  sphere: 'SPHERE',
-  torus: 'TORUS',
-  bspline: 'BSPLINE_SURFACE',
-  bezier: 'BEZIER_SURFACE',
-  revolution: 'REVOLUTION_SURFACE',
-  extrusion: 'EXTRUSION_SURFACE',
-  offset: 'OFFSET_SURFACE',
-}
-
-const CURVE_TYPES: Record<string, string> = {
-  line: 'LINE',
-  circle: 'CIRCLE',
-  ellipse: 'ELLIPSE',
-  hyperbola: 'HYPERBOLA',
-  parabola: 'PARABOLA',
-  bezier: 'BEZIER_CURVE',
-  bspline: 'BSPLINE_CURVE',
-}
-
-function friendlyType(t: string): string {
-  for (const [k, v] of Object.entries({ ...SURFACE_TYPES, ...CURVE_TYPES })) if (v === t) return k
-  return t.toLowerCase()
-}
-
-const AXES: Record<string, V3> = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] }
-
-const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-const norm = (a: V3) => Math.hypot(a[0], a[1], a[2])
-
-function centerOf(el: Face | Edge): V3 {
-  const [a, b] = el.boundingBox.bounds as [V3, V3]
-  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]
-}
-
-function directionOf(el: Face | Edge, isFace: boolean): V3 | undefined {
-  try {
-    if (isFace) return (el as Face).normalAt().toTuple() as V3
-    return (el as Edge).tangentAt(0.5).toTuple() as V3
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * One selector term in CadQuery's string syntax, which models know well:
- *   >Z / <Z   the elements farthest along +Z / -Z (by center)
- *   +Z / -Z   faces whose normal points along +Z / -Z
- *   |Z        faces: normal parallel to Z; edges: edge parallel to Z
- *   #Z        faces: normal perpendicular to Z; edges: edge perpendicular to Z
- *   all
- */
-function termFilter(term: string, all: (Face | Edge)[], isFace: boolean): (el: Face | Edge) => boolean {
-  const t = term.trim()
-  if (t === 'all' || t === '') return () => true
-  if (t.startsWith('not ')) {
-    const f = termFilter(t.slice(4), all, isFace)
-    return (el) => !f(el)
-  }
-
-  const m = /^([<>+\-|#])([XYZ])$/.exec(t)
-  if (!m) {
-    throw new Error(`unknown selector "${term}": use >Z <Z +Z -Z |Z #Z (any axis X Y Z), "all", "not ...", joined with " and "`)
-  }
-  const [, op, ax] = m
-  const axis = AXES[ax]
-  const tol = 1e-3
-
-  switch (op) {
-    case '>':
-    case '<': {
-      const vals = all.map((el) => dot(centerOf(el), axis))
-      const ext = op === '>' ? Math.max(...vals) : Math.min(...vals)
-      return (el) => Math.abs(dot(centerOf(el), axis) - ext) < tol
-    }
-    case '+':
-    case '-': {
-      if (!isFace) throw new Error(`"${term}" applies to faces; for edges use >${ax}, <${ax}, |${ax} or #${ax}`)
-      const sign = op === '+' ? 1 : -1
-      return (el) => {
-        const d = directionOf(el, true)
-        return !!d && dot(d, axis) * sign > 1 - tol
-      }
-    }
-    case '|':
-      return (el) => {
-        const d = directionOf(el, isFace)
-        return !!d && Math.abs(Math.abs(dot(d, axis)) / (norm(d) || 1) - 1) < tol
-      }
-    case '#':
-      return (el) => {
-        const d = directionOf(el, isFace)
-        return !!d && Math.abs(dot(d, axis)) / (norm(d) || 1) < tol
-      }
-  }
-
-  return () => true
-}
-
-/** Elements of shape matched by a selector. */
-function selectElements(shape: AnyShape, sel: Selector | undefined, isFace: boolean, params: Map<string, number>, what: string): (Face | Edge)[] {
-  const { all, picked } = selectIndexed(shape, sel, isFace, params, what)
-  return picked.map((i) => all[i])
-}
-
-/** Like selectElements, but returns indices into one list of elements. */
-function selectIndexed(
-  shape: AnyShape,
-  sel: Selector | undefined,
-  isFace: boolean,
-  params: Map<string, number>,
-  what = 'selector',
-): { all: (Face | Edge)[]; picked: number[] } {
-  const all: (Face | Edge)[] = isFace ? shape.faces : shape.edges
-  const idx = all.map((_, i) => i)
-  if (!sel) return { all, picked: idx }
-
-  let out = idx
-  if (sel.where) {
-    for (const term of sel.where.split(/\s+and\s+/)) {
-      const f = termFilter(term, all, isFace)
-      out = out.filter((i) => f(all[i]))
-    }
-  }
-  if (sel.type) {
-    const want = (isFace ? SURFACE_TYPES : CURVE_TYPES)[sel.type.toLowerCase()]
-    if (!want) {
-      throw new Error(`${what}: unknown ${isFace ? 'face' : 'edge'} type "${sel.type}"; use one of ${Object.keys(isFace ? SURFACE_TYPES : CURVE_TYPES).join(', ')}`)
-    }
-    out = out.filter((i) => all[i].geomType === want)
-  }
-  if (sel.inBox) {
-    const a = vec(sel.inBox[0], params, `${what}.inBox[0]`)
-    const b = vec(sel.inBox[1], params, `${what}.inBox[1]`)
-    const lo = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])]
-    const hi = [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])]
-    out = out.filter((i) => {
-      const c = centerOf(all[i])
-      return c.every((v, k) => v >= lo[k] - 1e-6 && v <= hi[k] + 1e-6)
-    })
-  }
-  if (sel.near) {
-    const p = vec(sel.near, params, `${what}.near`)
-    const probe = R.makeSphere(0.001).translate(p[0], p[1], p[2])
-    out = out.filter((i) => {
-      try {
-        return R.measureDistanceBetween(all[i], probe) < 0.01
-      } catch {
-        return false
-      }
-    })
-    probe.delete()
-  }
-
-  return { all, picked: out }
-}
-
-function finderOf<T extends FaceFinder | EdgeFinder>(list: (Face | Edge)[]) {
-  return (f: T) => (f as FaceFinder & EdgeFinder).inList(list as never) as T
-}
-
-function vec(v: Vec3E | undefined, params: Map<string, number>, what: string, fallback: V3 = [0, 0, 0]): V3 {
-  if (!v) return fallback
-  if (!Array.isArray(v) || v.length !== 3) throw new Error(`${what} must be [x, y, z]`)
-  return [num(v[0], params, `${what}[0]`), num(v[1], params, `${what}[1]`), num(v[2], params, `${what}[2]`)]
-}
-
-function place(s: Shape3D, f: { translate?: Vec3E; rotate?: Vec3E }, params: Map<string, number>, what: string): Shape3D {
-  const [rx, ry, rz] = vec(f.rotate, params, `${what}.rotate`)
-  const [tx, ty, tz] = vec(f.translate, params, `${what}.translate`)
-  if (!rx && !ry && !rz && !tx && !ty && !tz) return s
-  // Big shapes (vendor STEP models with hundreds of faces): move them by
-  // location, one transform and no copy of the geometry, instead of a copy
-  // per rotate and translate.
-  if (faceCount(s, 200) > 200) return moveByLocation(s, [rx, ry, rz], [tx, ty, tz])
-  if (rx) s = s.rotate(rx, [0, 0, 0], [1, 0, 0])
-  if (ry) s = s.rotate(ry, [0, 0, 0], [0, 1, 0])
-  if (rz) s = s.rotate(rz, [0, 0, 0], [0, 0, 1])
-  if (tx || ty || tz) s = s.translate(tx, ty, tz)
-  return s
-}
-
-/** Rotates (X, then Y, then Z, degrees, about the origin) and translates a shape by changing its location only. */
-function moveByLocation(s: Shape3D, r: V3, t: V3): Shape3D {
-  const oc = R.getOC()
-  const total = new oc.gp_Trsf()
-  const step = (fn: (tr: InstanceType<typeof oc.gp_Trsf>) => void) => {
-    const tr = new oc.gp_Trsf()
-    fn(tr)
-    // total = tr ∘ total (apply tr after what came before)
-    total.PreMultiply(tr)
-    tr.delete()
-  }
-  const axes: V3[] = [
-    [1, 0, 0],
-    [0, 1, 0],
-    [0, 0, 1],
-  ]
-  for (let i = 0; i < 3; i++) {
-    if (!r[i]) continue
-    step((tr) => {
-      const o = new oc.gp_Pnt(0, 0, 0)
-      const d = new oc.gp_Dir(axes[i][0], axes[i][1], axes[i][2])
-      const ax = new oc.gp_Ax1(o, d)
-      tr.SetRotation(ax, (r[i] * Math.PI) / 180)
-      ax.delete()
-      d.delete()
-      o.delete()
-    })
-  }
-  if (t[0] || t[1] || t[2])
-    step((tr) => {
-      const v = new oc.gp_Vec(t[0], t[1], t[2])
-      tr.SetTranslation(v)
-      v.delete()
-    })
-  const loc = new oc.TopLoc_Location(total)
-  const moved = R.cast(s.wrapped.Moved(loc, false)) as Shape3D
-  loc.delete()
-  total.delete()
-  s.delete()
-  return moved
-}
-
-/** A 2D outline from a profile (rect, circle, slot, polygon). */
-function resolveDecal(d: Decal, params: Map<string, number>): ResolvedDecal {
-  const w = `decal ${d.name}`
-  const at = vec(d.at, params, `${w}.at`)
-  const size: [number, number] = [num(d.size[0], params, `${w}.size[0]`), num(d.size[1], params, `${w}.size[1]`)]
-  if (size[0] <= 0 || size[1] <= 0) throw new Error(`size must be > 0 (got ${size[0]} × ${size[1]})`)
-  if (!d.text && !d.image) throw new Error('needs text or image')
-  const len = Math.hypot(...d.normal)
-  if (len < 1e-9) throw new Error('normal must not be [0, 0, 0]')
-  const { at: _a, size: _s, depth, rotation, font_size, ...rest } = d
-  return {
-    ...rest,
-    at,
-    size,
-    depth: num(depth, params, `${w}.depth`, 2),
-    rotation: num(rotation, params, `${w}.rotation`, 0),
-    ...(font_size !== undefined ? { font_size: num(font_size, params, `${w}.font_size`) } : {}),
-  }
-}
-
-/** A 2D outline from a profile (rect, circle, slot, polygon). */
-function profileDrawing(p: NonNullable<Extract<Feature, { type: 'extrude' }>['profile']>, params: Map<string, number>, what: string): R.Drawing {
-  const d = baseProfileDrawing(p, params, what)
-  const off = num((p as { inset?: Expr }).inset, params, `${what}.profile.inset`, 0)
-  if (!off) return d
-  // inset > 0 shrinks the outline (walls, lips, clearances from one outline); < 0 grows it. Sharp corners stay sharp.
-  try {
-    // The offset sign follows the outline's winding: take the one that shrinks for inset > 0.
-    const a = d.offset(-off, { lineJoinType: 'miter' })
-    const b = d.offset(off, { lineJoinType: 'miter' })
-    const size = (x: R.Drawing) => {
-      const [[x0, y0], [x1, y1]] = x.boundingBox.bounds
-      return (x1 - x0) * (y1 - y0)
-    }
-    return off > 0 === size(a) < size(b) ? a : b
-  } catch (e) {
-    throw new Error(`${what}: cannot inset the profile by ${off} mm (${kernelMessage(e)}); a narrow part of the outline may vanish, use a smaller inset`)
-  }
-}
-
-function baseProfileDrawing(p: NonNullable<Extract<Feature, { type: 'extrude' }>['profile']>, params: Map<string, number>, what: string): R.Drawing {
-  const c2 = (c: [unknown, unknown] | undefined, w: string): [number, number] =>
-    c ? [num(c[0] as never, params, `${w}[0]`), num(c[1] as never, params, `${w}[1]`)] : [0, 0]
-
-  let drawing: R.Drawing
-  switch (p.kind) {
-    case 'rect': {
-      const w = num(p.w, params, `${what}.profile.w`)
-      const h = num(p.h, params, `${what}.profile.h`)
-      const r = num(p.r, params, `${what}.profile.r`, 0)
-      if (w <= 0 || h <= 0) throw new Error(`${what}: profile w and h must be > 0 (got ${w} × ${h})`)
-      if (r * 2 > Math.min(w, h)) throw new Error(`${what}: profile corner r=${r} is more than half the smaller side (${Math.min(w, h)})`)
-      drawing = R.drawRoundedRectangle(w, h, r || undefined)
-      const [cx, cy] = c2(p.center, `${what}.profile.center`)
-      if (cx || cy) drawing = drawing.translate(cx, cy)
-      return drawing
-    }
-    case 'circle': {
-      const r = num(p.r, params, `${what}.profile.r`)
-      if (r <= 0) throw new Error(`${what}: profile r must be > 0`)
-      drawing = R.drawCircle(r)
-      const [cx, cy] = c2(p.center, `${what}.profile.center`)
-      if (cx || cy) drawing = drawing.translate(cx, cy)
-      return drawing
-    }
-    case 'slot': {
-      const len = num(p.length, params, `${what}.profile.length`)
-      const wid = num(p.width, params, `${what}.profile.width`)
-      if (len < wid) throw new Error(`${what}: slot length (${len}) must be ≥ width (${wid})`)
-      drawing = R.drawRoundedRectangle(len, wid, wid / 2 - 1e-6)
-      const ang = num(p.angle, params, `${what}.profile.angle`, 0)
-      if (ang) drawing = drawing.rotate(ang)
-      const [cx, cy] = c2(p.center, `${what}.profile.center`)
-      if (cx || cy) drawing = drawing.translate(cx, cy)
-      return drawing
-    }
-    case 'polygon': {
-      if (!p.points || p.points.length < 3) throw new Error(`${what}: polygon needs at least 3 points`)
-      const pts = p.points.map((pt, i) => c2(pt, `${what}.profile.points[${i}]`))
-      let pen = R.draw(pts[0])
-      for (const pt of pts.slice(1)) pen = pen.lineTo(pt)
-      return pen.close()
-    }
-    default:
-      throw new Error(`${what}: unknown profile kind "${(p as { kind: string }).kind}"; use rect, circle, slot or polygon`)
-  }
-}
-
-function loopDrawing(loop: Loop): R.Drawing {
-  const first = loop.segments[0]
-  if (first.kind === 'circle') return R.drawCircle(first.r).translate(first.c[0], first.c[1])
-  let pen = R.draw(first.from)
-  for (const s of loop.segments) {
-    if (s.kind === 'line') pen = pen.lineTo(s.to)
-    else if (s.kind === 'arc') pen = pen.threePointsArcTo(s.to, s.mid)
-  }
-  return pen.close()
-}
-
-/**
- * The outline of a solved sketch: the largest loop, minus every loop
- * inside it (holes). Other loops outside it are added as separate regions.
- */
-function sketchDrawing(sk: SolvedSketch, what: string): R.Drawing {
-  if (!sk.ok) throw new Error(`${what}: sketch ${sk.name} does not solve: ${sk.message}`)
-  if (!sk.loops.length) {
-    throw new Error(
-      `${what}: sketch ${sk.name} has no closed outline. Lines and arcs must join end to end (share points) to form a loop; construction entities do not count.`,
-    )
-  }
-  const outers: { loop: Loop; holes: Loop[] }[] = []
-  for (const loop of sk.loops) {
-    const parent = outers.find((o) => loopInside(loop, o.loop) && !o.holes.some((h) => loopInside(loop, h)))
-    if (parent) parent.holes.push(loop)
-    else outers.push({ loop, holes: [] })
-  }
-  let out: R.Drawing | undefined
-  for (const o of outers) {
-    let d = loopDrawing(o.loop)
-    for (const h of o.holes) d = d.cut(loopDrawing(h))
-    out = out ? out.fuse(d) : d
-  }
-  return out!
-}
-
-/** replicad's XZ plane normal is -Y; flip so every plane works along +axis. */
-function onPlane(d: R.Drawing, plane: Plane, offset: number): R.Sketch | R.Sketches {
-  const flip = plane === 'XZ' ? -1 : 1
-  return d.sketchOnPlane(plane, offset * flip) as R.Sketch | R.Sketches
-}
-
-const PLANE_AXES: Record<Plane, ['X' | 'Y' | 'Z', 'X' | 'Y' | 'Z', 'X' | 'Y' | 'Z']> = {
-  XY: ['X', 'Y', 'Z'],
-  XZ: ['X', 'Z', 'Y'],
-  YZ: ['Y', 'Z', 'X'],
-}
-
-const sub3 = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-const add3 = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-const mul3 = (a: V3, k: number): V3 => [a[0] * k, a[1] * k, a[2] * k]
-const dot3 = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-const cross3 = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-const len3 = (a: V3) => Math.hypot(a[0], a[1], a[2])
-const norm3 = (a: V3): V3 => mul3(a, 1 / (len3(a) || 1))
-
-/**
- * A sweep path: straight segments through the points, with each inner
- * corner rounded to radius bend (0 = sharp corners).
- */
-function pathWire(pts: V3[], bend: number, what: string): R.Wire {
-  for (let i = 1; i < pts.length; i++) {
-    if (len3(sub3(pts[i], pts[i - 1])) < 1e-6) throw new Error(`${what}.path: points ${i - 1} and ${i} are the same`)
-  }
-  // Per corner: tangent points and the arc's middle.
-  const corners: ({ a: V3; m: V3; b: V3 } | undefined)[] = pts.map(() => undefined)
-  const used = pts.map(() => 0)
-  if (bend > 0) {
-    for (let i = 1; i + 1 < pts.length; i++) {
-      const d1 = norm3(sub3(pts[i], pts[i - 1]))
-      const d2 = norm3(sub3(pts[i + 1], pts[i]))
-      const cos = Math.max(-1, Math.min(1, dot3(d1, d2)))
-      const turn = Math.acos(cos)
-      if (turn < 1e-4) continue
-      if (Math.PI - turn < 1e-3) throw new Error(`${what}.path: the path turns back on itself at point ${i}`)
-      const t = bend * Math.tan(turn / 2)
-      used[i] = t
-      const a = sub3(pts[i], mul3(d1, t))
-      const b = add3(pts[i], mul3(d2, t))
-      const bis = norm3(sub3(d2, d1))
-      const c = add3(pts[i], mul3(bis, bend / Math.cos(turn / 2)))
-      const m = sub3(c, mul3(bis, bend))
-      corners[i] = { a, m, b }
-    }
-    for (let i = 1; i < pts.length; i++) {
-      const l = len3(sub3(pts[i], pts[i - 1]))
-      if (used[i - 1] + used[i] > l + 1e-6) {
-        throw new Error(`${what}: bend ${bend} is too large for the segment from point ${i - 1} to ${i} (${round(l, 3)} mm long); use a smaller bend or longer segments`)
-      }
-    }
-  }
-  const edges: Edge[] = []
-  let cur = pts[0]
-  for (let i = 1; i < pts.length; i++) {
-    const c = corners[i]
-    const end = c ? c.a : pts[i]
-    if (len3(sub3(end, cur)) > 1e-6) edges.push(R.makeLine(cur, end))
-    if (c) {
-      edges.push(R.makeThreePointArc(c.a, c.m, c.b))
-      cur = c.b
-    } else cur = end
-  }
-  return R.assembleWire(edges)
-}
-
-/** Body names the board adds to the model. */
-export const BOARD = 'board'
-export const PART_PREFIX = 'part_'
-
-function polyDrawing(poly: { x: number; y: number }[]): R.Drawing {
-  let pen = R.draw([poly[0].x, poly[0].y])
-  for (const p of poly.slice(1)) pen = pen.lineTo([p.x, p.y])
-  return pen.close()
-}
-
+export type { Body } from './kernel/shapes'
+export { boxesApart } from './kernel/shapes'
+export * from './kernel/types'
 interface CacheEntry {
   key: string
   shape: Body
@@ -708,10 +54,12 @@ interface CacheEntry {
 }
 
 export class Kernel {
-  private cache = new Map<string, CacheEntry>()
+  /** @internal */
+  cache = new Map<string, CacheEntry>()
   private meshCache = new Map<string, MeshData>()
   private params = new Map<string, number>()
-  private doc: Doc | undefined
+  /** @internal */
+  doc: Doc | undefined
   /** STEP/STL/3MF files by URL, read before a build (import features). */
   private imported = new Map<string, Loaded | Error>()
   /** Opened 3MF files by fetch URL: each #object is read from it on demand. */
@@ -835,7 +183,8 @@ export class Kernel {
   }
 
   /** The loaded body of an import URL: a B-rep solid (STEP, small STL) unless mesh is preferred. */
-  private importedBody(url: string, what: string, solidOnly = false): Body {
+  /** @internal */
+  importedBody(url: string, what: string, solidOnly = false): Body {
     const s = this.imported.get(url)
     if (!s) {
       if (this.threeMF.has(fetchKey(url))) throw new Error(`${url} is not read yet; build again`)
@@ -879,17 +228,73 @@ export class Kernel {
     }
   }
 
-  private outline(f: { name: string; sketch?: string; profile?: Profile; plane?: Plane; offset?: Expr }): { drawing: R.Drawing; plane: Plane; offset: number } {
+  /** A solved sketch, with where it lies when it is on a face. */
+  sketchReport(name: string): SolvedSketch & { frame?: SketchFrame; frame_error?: string } {
+    const sk = this.sketch(name)
+    const s = this.doc!.sketches.find((x) => x.name === name)!
+    if (!s.on) return sk
+    try {
+      return { ...sk, frame: this.sketchFrame(s) }
+    } catch (e) {
+      return { ...sk, frame_error: (e as Error).message }
+    }
+  }
+
+  /** @internal */
+  outline(f: { name: string; sketch?: string; profile?: Profile; plane?: Plane; offset?: Expr }): { drawing: R.Drawing; plane: Plane; offset: number; frame?: SketchFrame } {
     const p = this.params
     if (f.sketch) {
       if (f.profile) throw new Error('use either sketch or profile, not both')
       const s = this.doc!.sketches.find((x) => x.name === f.sketch) as Sketch | undefined
       const sk = this.sketch(f.sketch)
-      return { drawing: sketchDrawing(sk, f.name), plane: s!.plane, offset: num(s!.offset, p, `sketch ${s!.name}.offset`, 0) }
+      const offset = num(s!.offset, p, `sketch ${s!.name}.offset`, 0)
+      return { drawing: sketchDrawing(sk, f.name), plane: s!.plane, offset, ...(s!.on ? { frame: this.sketchFrame(s!) } : {}) }
     }
     if (!f.profile) throw new Error('needs a sketch (name of a sketch) or a profile (rect, circle, slot, polygon)')
     if (!f.plane) throw new Error('a profile needs a plane: XY, XZ or YZ')
     return { drawing: profileDrawing(f.profile, p, f.name), plane: f.plane, offset: num(f.offset, p, `${f.name}.offset`, 0) }
+  }
+
+  /**
+   * Where a sketch on a face lies: the face (by selector) of a built
+   * feature, which must be one flat face. Origin at its center plus offset
+   * along the outward normal; u along the face's own X (world X or Y,
+   * whichever lies most in the face), v = normal × u.
+   */
+  sketchFrame(s: Sketch): SketchFrame {
+    return this.faceFrame(s.on!.feature, s.on!.face, num(s.offset, this.params, `sketch ${s.name}.offset`, 0), `sketch ${s.name}`)
+  }
+
+  /**
+   * The frame of one flat face of a built feature, picked by selector:
+   * origin at the face center plus offset along the outward normal, u the
+   * world axis lying most in the face (X, else Y), v = normal × u.
+   */
+  faceFrame(feature: string, face: Selector, offset: number, what: string): SketchFrame {
+    if (!this.cache.has(feature)) throw new Error(`${what}: "${feature}" is not built (it is missing, failed or comes later); a face of it is needed`)
+    const body = this.body(feature)
+    try {
+      if (isMesh(body)) throw new Error(`${what}: "${feature}" is a triangle mesh and has no faces to pick; use a plane (XY, XZ, YZ with offset) instead`)
+      const { all, picked } = selectIndexed(body, face, true, this.params, `${what}.face`)
+      if (picked.length !== 1)
+        throw new Error(`${what}: the face selector matches ${picked.length} faces of "${feature}" (it has ${all.length}); make it pick exactly one (e.g. ">Z", or add near / inBox; list_faces shows them)`)
+      const f = all[picked[0]] as R.Face
+      if (f.geomType !== 'PLANE') throw new Error(`${what}: the face of "${feature}" is ${friendlyType(f.geomType)}, not flat; pick a flat face`)
+      const n = directionOf(f, true)
+      if (!n) throw new Error(`${what}: the face of "${feature}" has no normal`)
+      const c = centerOf(f)
+      const origin: V3 = [c[0] + n[0] * offset, c[1] + n[1] * offset, c[2] + n[2] * offset]
+      const pick = Math.abs(n[0]) < 0.9 ? ([1, 0, 0] as V3) : ([0, 1, 0] as V3)
+      const d = pick[0] * n[0] + pick[1] * n[1] + pick[2] * n[2]
+      const u0: V3 = [pick[0] - d * n[0], pick[1] - d * n[1], pick[2] - d * n[2]]
+      const ul = Math.hypot(...u0)
+      const u: V3 = [u0[0] / ul, u0[1] / ul, u0[2] / ul]
+      const v: V3 = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]
+      const r = (x: V3) => x.map((a) => Math.round(a * 1e6) / 1e6 + 0) as V3
+      return { origin: r(origin), normal: r(n), u: r(u), v: r(v) }
+    } finally {
+      body.delete()
+    }
   }
 
   /** Solves every sketch for the build result. */
@@ -918,7 +323,7 @@ export class Kernel {
     const result: BuildResult = { ok: true, parameters: {}, features: [], bodies: [], sketches: [] }
 
     try {
-      this.params = resolveParameters(doc.parameters)
+      this.params = resolveParameters(effectiveParameters(doc))
     } catch (e) {
       this.params = new Map()
       result.ok = false
@@ -942,7 +347,7 @@ export class Kernel {
       }
       seen.add(f.name)
 
-      const inputs = dependsOn(f)
+      const inputs = dependsOn(f, doc)
       const missing = inputs.filter((i) => !keys.has(i))
       if (missing.length) {
         const st: FeatureStatus = {
@@ -1194,207 +599,18 @@ export class Kernel {
   }
 
   /** Headless physics: loose bodies' centers over time. */
-  async simulate(doc: Doc, seconds: number, samples: number): Promise<Record<string, unknown>> {
-    const plan = this.motion(doc)
-    if (!plan.physics.length && !plan.moves.length) return { note: 'nothing moves: add physics bodies or joints with set_motion (gear trains move from their first gear rotation parameter)', problems: plan.problems }
-    await initPhysics()
-    const meshes = this.meshes({ bodies: bodies(doc).map((f) => f.name).filter((n) => this.cache.has(n)) } as BuildResult)
-    const world = createWorld(meshes, plan)
-    const centers = new Map(meshes.map((m) => [m.name, meshCenter(m)]))
-    const r1 = (v: number) => Math.round(v * 10) / 10
-    const shots: Record<string, unknown>[] = []
-    const dt = 1 / 60
-    const total = Math.round(seconds / dt)
-    const every = Math.max(1, Math.round(total / samples))
-    let last = new Map<string, [number, number, number]>()
-    const escaped: string[] = []
-    try {
-      for (let i = 1; i <= total; i++) {
-        const t = i * dt
-        world.step(dt, plan.base + (plan.param ? plan.speed * t : 0))
-        if (i % every === 0 || i === total) {
-          const poses = world.poses()
-          const touching = world.contacts()
-          const shot: Record<string, unknown> = { t: r1(t), ...(plan.param ? { [plan.param]: r1(plan.base + plan.speed * t) } : {}) }
-          for (const p of plan.physics) {
-            const pose = poses.get(p.name)
-            const c0 = centers.get(p.name)!
-            if (!pose) continue
-            const rc = rotate(pose.q, c0)
-            const c: [number, number, number] = [rc[0] + pose.t[0], rc[1] + pose.t[1], rc[2] + pose.t[2]]
-            const prev = last.get(p.name)
-            const still = prev ? Math.hypot(c[0] - prev[0], c[1] - prev[1], c[2] - prev[2]) < 0.2 : false
-            shot[p.name] = { center: c.map(r1), moved: r1(Math.hypot(c[0] - c0[0], c[1] - c0[1], c[2] - c0[2])), resting: still || undefined, touching: touching.get(p.name)?.length ? touching.get(p.name) : undefined }
-            // Watchdog: a loose body inside a solid passed through it.
-            const inside = this.insideOf(c, p.name)
-            if (inside) {
-              escaped.push(`${p.name} is inside "${inside}" at t=${r1(t)} s: it passed through a wall; make the wall thicker or the body slower`)
-            }
-            last.set(p.name, c)
-          }
-          shots.push(shot)
-          last = new Map(last)
-        }
-      }
-    } finally {
-      world.dispose()
-    }
-    return { param: plan.param, speed: plan.speed, moving: plan.moves.map((m) => m.body), loose: plan.physics.map((p) => p.name), samples: shots, escaped: escaped.length ? [...new Set(escaped)].slice(0, 5) : undefined, problems: plan.problems.length ? plan.problems : undefined }
+  simulate(doc: Doc, seconds: number, samples: number): Promise<Record<string, unknown>> {
+    return simulateMotion(this, doc, seconds, samples)
   }
 
-  /**
-   * Interference sweep: steps the driven parameter over a range, poses every
-   * moving body and finds pairs of bodies that overlap. Exact: the pose's
-   * solids are intersected with OpenCascade for every pair whose bounds
-   * meet, so it takes a while; steps × moving pairs boolean operations.
-   */
-  async sweep(doc: Doc, opts: { from?: number; to?: number; steps?: number; bodies?: string[]; ignore?: [string, string][]; min_volume?: number }): Promise<Record<string, unknown>> {
-    const plan = this.motion(doc)
-    if (!plan.param) return { error: 'nothing drives the model: make a gear or mechanism rotation an expression of a parameter, or set motion drive' }
-    if (!plan.moves.length) return { error: 'nothing moves with ' + plan.param, problems: plan.problems }
-    const from = opts.from ?? plan.base
-    const to = opts.to ?? plan.base + 360
-    const steps = Math.max(1, Math.min(720, opts.steps ?? 72))
-    const minVol = opts.min_volume ?? 0.001
-    await initPhysics()
-    const moves = new Map(plan.moves.map((m) => [m.body, m]))
-    const all = bodies(doc)
-      .map((f) => f.name)
-      .filter((n) => this.cache.has(n))
-    const chosen = opts.bodies?.length ? all.filter((n) => opts.bodies!.includes(n)) : all
-    const unknown = (opts.bodies ?? []).filter((n) => !all.includes(n))
-    if (unknown.length) return { error: `not visible bodies: ${unknown.join(', ')}; bodies are ${all.join(', ')}` }
-    const skip = new Set((opts.ignore ?? []).flatMap(([a, b]) => [`${a}|${b}`, `${b}|${a}`]))
-    // A belt rides on its pulleys: that contact is the point.
-    for (const f of doc.features) if (f.type === 'belt') for (const p of f.pulleys) if (p.body) skip.add(`${f.name}|${p.body}`).add(`${p.body}|${f.name}`)
-    const pairs: [string, string][] = []
-    for (let i = 0; i < chosen.length; i++)
-      for (let j = i + 1; j < chosen.length; j++) {
-        const a = chosen[i]
-        const b = chosen[j]
-        if ((moves.has(a) || moves.has(b)) && !skip.has(`${a}|${b}`)) pairs.push([a, b])
-      }
-    const posed = (name: string, d: number): Body => {
-      const s = this.body(name)
-      const mv = moves.get(name)
-      if (!mv) return s
-      const p = drivenPose(mv, d)
-      const { axis, angle } = quatAxisAngle(p.q)
-      if (isMesh(s)) {
-        let out = s
-        if (angle) out = out.rotateAbout(angle, [0, 0, 0], axis)
-        if (p.t[0] || p.t[1] || p.t[2]) out = out.translate(p.t)
-        return out
-      }
-      let out = s
-      if (angle) out = out.rotate(angle, [0, 0, 0], axis)
-      if (p.t[0] || p.t[1] || p.t[2]) out = out.translate(p.t[0], p.t[1], p.t[2])
-      return out
-    }
-    const hits = new Map<string, { first: number; last: number; volume: number; depth: number; at: number; count: number }>()
-    const started = performance.now()
-    let done = 0
-    let stopped = false
-    // Broad phase on the display meshes with Rapier (milliseconds per pair):
-    // only pairs whose meshes touch go to the exact OpenCascade intersection
-    // (about a second for two gears). The meshes sit within their tolerance
-    // inside curved surfaces, so overlaps under ~0.05 mm can slip through.
-    const meshes = new Map(this.meshes({ bodies: chosen } as BuildResult).map((m) => [m.name, m]))
-    const world = new RAPIER.World({ x: 0, y: 0, z: 0 })
-    const colliders = new Map<string, RAPIER.Collider>()
-    for (const [name, m] of meshes) {
-      const d = RAPIER.ColliderDesc.trimesh(m.vertices, m.triangles, RAPIER.TriMeshFlags.MERGE_DUPLICATE_VERTICES | RAPIER.TriMeshFlags.DELETE_DEGENERATE_TRIANGLES)
-      colliders.set(name, world.createCollider(d))
-    }
-    // Penetration depth of two meshes (> 0 overlap), undefined when apart.
-    const depth = (a: string, b: string): number | undefined => {
-      const ca = colliders.get(a)
-      const cb = colliders.get(b)
-      if (!ca || !cb) return 0
-      try {
-        const c = ca.contactCollider(cb, 0.01)
-        return c && c.distance < 0.01 ? -c.distance : undefined
-      } catch {
-        return 0
-      }
-    }
-    try {
-      for (let i = 0; i <= steps && !stopped; i++) {
-        const v = from + ((to - from) * i) / steps
-        const d = v - plan.base
-        for (const [name, c] of colliders) {
-          const mv = moves.get(name)
-          if (!mv) continue
-          const p = drivenPose(mv, d)
-          c.setTranslation({ x: p.t[0], y: p.t[1], z: p.t[2] })
-          c.setRotation({ x: p.q[0], y: p.q[1], z: p.q[2], w: p.q[3] })
-        }
-        const cache = new Map<string, Body>()
-        const get = (n: string) => {
-          let s = cache.get(n)
-          if (!s) cache.set(n, (s = posed(n, d)))
-          return s
-        }
-        for (const [a, b] of pairs) {
-          const pen = depth(a, b)
-          if (pen === undefined) continue
-          const key = `${a}|${b}`
-          const h = hits.get(key)
-          // A pair already confirmed: follow it on the meshes (fast).
-          if (h) {
-            if (pen > 0.02) {
-              h.last = v
-              h.count++
-              if (pen > h.depth) {
-                h.depth = pen
-                h.at = v
-              }
-            }
-            continue
-          }
-          // First contact: confirm with the exact solids.
-          const A = get(a)
-          const B = get(b)
-          if (boxesApart(bodyBox(A), bodyBox(B))) continue
-          let vol: number
-          if (isMesh(A) || isMesh(B)) {
-            const ma = isMesh(A) ? A : brepToMesh(A, a)
-            const mb = isMesh(B) ? B : brepToMesh(B, b)
-            vol = ma.overlap(mb).volume
-            if (ma !== A) ma.delete()
-            if (mb !== B) mb.delete()
-          } else vol = overlapVolume(A, B)
-          if (vol > minVol) hits.set(key, { first: v, last: v, volume: vol, depth: Math.max(0, pen), at: v, count: 1 })
-        }
-        for (const s of cache.values()) s.delete()
-        done = i
-        if (performance.now() - started > 40_000) stopped = true
-      }
-    } finally {
-      world.free()
-    }
-    const r = (x: number) => Math.round(x * 1000) / 1000
-    const collisions = [...hits].map(([k, h]) => {
-      const [a, b] = k.split('|')
-      return { a, b, first: r(h.first), last: r(h.last), steps: h.count, volume_at_first: r(h.volume), worst_depth: r(h.depth), worst_at: r(h.at) }
-    })
-    collisions.sort((x, y) => x.first - y.first)
-    return {
-      param: plan.param,
-      from: r(from),
-      to: r(to),
-      steps: done,
-      step: r((to - from) / steps),
-      pairs: pairs.length,
-      clear: collisions.length === 0,
-      collisions,
-      ...(stopped ? { note: `stopped after ${done} of ${steps} steps (time limit); sweep a smaller range, fewer steps or fewer bodies` } : {}),
-      ...(plan.problems.length ? { problems: plan.problems } : {}),
-    }
+  /** Interference sweep of the moving bodies over the driven parameter. */
+  sweep(doc: Doc, opts: SweepOptions): Promise<Record<string, unknown>> {
+    return sweepMotion(this, doc, opts)
   }
 
   /** The still solid a point lies inside, if any (driven bodies move, so they are not checked). */
-  private insideOf(p: [number, number, number], self: string): string | undefined {
+  /** @internal */
+  insideOf(p: [number, number, number], self: string): string | undefined {
     const plan = this.doc ? this.motion(this.doc) : undefined
     const moving = new Set([...(plan?.moves.map((m) => m.body) ?? []), ...(plan?.physics.map((x) => x.name) ?? [])])
     for (const f of this.doc ? bodies(this.doc) : []) {
@@ -1408,7 +624,8 @@ export class Kernel {
     return undefined
   }
 
-  private gearShape(f: Extract<Feature, { type: 'gear' }>, warnings: string[]): Shape3D {
+  /** @internal */
+  gearShape(f: Extract<Feature, { type: 'gear' }>, warnings: string[]): Shape3D {
     const g = this.gears.get(f.name)
     if (!g) throw new Error('gear was not solved')
     if (g instanceof GearError) throw g
@@ -1459,7 +676,8 @@ export class Kernel {
     return b
   }
 
-  private isMeshBody(name: string): boolean {
+  /** @internal */
+  isMeshBody(name: string): boolean {
     const c = this.cache.get(name)
     return !!c && isMesh(c.shape)
   }
@@ -1469,400 +687,16 @@ export class Kernel {
   }
 
   private make(f: Feature, warnings: string[]): Body {
-    const p = this.params
-    const n = (e: Parameters<typeof num>[0], field: string, fb?: number) => num(e, p, `${f.name}.${field}`, fb)
-
-    // A feature over a triangle-mesh body works on meshes (B-rep inputs are tessellated for it).
-    if (inputsOf(f).some((i) => this.isMeshBody(i))) return this.makeMesh(f, warnings)
-    if (f.type === 'solids') return this.pickSolids(f)
-    if (f.type === 'transform' && f.align) {
-      const s = place(this.shape(f.target), { rotate: f.rotate }, p, f.name)
-      const [dx, dy, dz] = this.alignOffset(f, bboxOf(s))
-      return s.translate(dx, dy, dz)
-    }
-
-    switch (f.type) {
-      case 'box': {
-        const [x, y, z] = vec(f.size, p, `${f.name}.size`)
-        if (x <= 0 || y <= 0 || z <= 0) throw new Error(`size must be > 0 on every axis (got ${x} × ${y} × ${z})`)
-        const c = f.center === undefined ? [true, true, false] : typeof f.center === 'boolean' ? [f.center, f.center, f.center] : f.center
-        // makeBaseBox is centered on X/Y and sits on Z=0.
-        let s: Shape3D = R.makeBaseBox(x, y, z)
-        const dx = c[0] ? 0 : x / 2
-        const dy = c[1] ? 0 : y / 2
-        const dz = c[2] ? -z / 2 : 0
-        if (dx || dy || dz) s = s.translate(dx, dy, dz)
-        return place(s, f, p, f.name)
-      }
-      case 'cylinder': {
-        const r = n(f.r, 'r')
-        const h = n(f.h, 'h')
-        if (r <= 0 || h <= 0) throw new Error(`r and h must be > 0 (got r=${r}, h=${h})`)
-        const dir = AXES[f.axis ?? 'Z']
-        return place(R.makeCylinder(r, h, [0, 0, 0], dir), f, p, f.name)
-      }
-      case 'sphere': {
-        const r = n(f.r, 'r')
-        if (r <= 0) throw new Error(`r must be > 0`)
-        return place(R.makeSphere(r), f, p, f.name)
-      }
-      case 'extrude': {
-        const { drawing, plane, offset } = this.outline(f)
-        const dist = n(f.distance, 'distance')
-        if (!dist) throw new Error('distance must not be 0')
-        const flip = plane === 'XZ' ? -1 : 1
-        const sk = onPlane(drawing, plane, f.symmetric ? offset - dist / 2 : offset)
-        const solid = sk.extrude(dist * flip) as Shape3D
-        return place(solid, f, p, f.name)
-      }
-      case 'gear':
-        return this.gearShape(f, warnings)
-      case 'cam':
-      case 'geneva':
-      case 'belt':
-        return mechanismShape(f, this.mechanisms, this.params, warnings)
-      case 'text': {
-        const font = f.font ?? 'regular'
-        const metrics = fontMetrics(font)
-        if (!metrics) throw new Error(`font "${font}" is not loaded in this kernel`)
-        if (!f.text.trim()) throw new Error('text is empty')
-        const size = n(f.size, 'size')
-        const depth = n(f.depth, 'depth')
-        if (size <= 0) throw new Error('size (cap height in mm) must be > 0')
-        if (!depth) throw new Error('depth must not be 0; negative goes into the plane, e.g. to engrave')
-        let d: R.Drawing
-        try {
-          d = R.drawText(f.text, { fontSize: size / metrics.capHeight, fontFamily: font })
-        } catch (e) {
-          throw new Error(`cannot draw "${f.text}" with font ${font}: ${kernelMessage(e)}; use plain letters, digits and punctuation`)
-        }
-        const [[x0], [x1]] = d.boundingBox.bounds
-        const anchor = f.anchor ?? 'center'
-        const dx = anchor === 'left' ? -x0 : anchor === 'right' ? -x1 : -(x0 + x1) / 2
-        // Cap height is centred on at: the baseline sits size/2 below it.
-        d = d.translate(dx, -size / 2)
-        const ang = n(f.angle, 'angle', 0)
-        if (ang) d = d.rotate(ang, [0, 0])
-        const [ax, ay] = f.at ? [n(f.at[0], 'at[0]'), n(f.at[1], 'at[1]')] : [0, 0]
-        if (ax || ay) d = d.translate(ax, ay)
-        const plane = f.plane
-        const flip = plane === 'XZ' ? -1 : 1
-        const solid = onPlane(d, plane, n(f.offset, 'offset', 0)).extrude(depth * flip) as Shape3D
-        return place(solid, f, p, f.name)
-      }
-      case 'revolve': {
-        const { drawing, plane, offset } = this.outline(f)
-        const angle = n(f.angle, 'angle', 360)
-        if (angle <= 0 || angle > 360) throw new Error('angle must be in (0, 360]')
-        const axis = f.axis
-        const [u, v] = PLANE_AXES[plane]
-        if (axis !== u && axis !== v) {
-          throw new Error(`axis ${axis} is not in the ${plane} plane; revolve about ${u} or ${v} (an axis through the origin lying in the sketch plane)`)
-        }
-        const dir = AXES[axis]
-        const sk = onPlane(drawing, plane, offset)
-        const solid = (sk as R.Sketch).revolve(dir, { origin: [0, 0, 0], angle }) as Shape3D
-        return place(solid, f, p, f.name)
-      }
-      case 'loft': {
-        if (f.sections.length < 2) throw new Error('a loft needs at least 2 sections')
-        const sketches = f.sections.map((sec, i) => {
-          const what = `${f.name}.sections[${i}]`
-          const { drawing, plane, offset } = this.outline({ ...sec, name: what })
-          const sk = onPlane(drawing, plane, offset)
-          if (!(sk instanceof R.Sketch)) {
-            throw new Error(`${what} must be one closed outline without holes (loft joins single loops); loft the outer shape and cut the hole afterwards`)
-          }
-          return sk
-        })
-        const solid = sketches[0].loftWith(sketches.slice(1), { ruled: !!f.ruled }) as Shape3D
-        return place(solid, f, p, f.name)
-      }
-      case 'sweep': {
-        const pts = f.path.map((q, i) => vec(q, p, `${f.name}.path[${i}]`))
-        if (pts.length < 2) throw new Error('path needs at least 2 points')
-        const bend = n(f.bend, 'bend', 0)
-        if (bend < 0) throw new Error('bend must be ≥ 0')
-        const spine = pathWire(pts, bend, f.name)
-        let drawing: R.Drawing
-        if (f.sketch) {
-          if (f.profile) throw new Error('use either sketch or profile, not both')
-          drawing = sketchDrawing(this.sketch(f.sketch), f.name)
-        } else if (f.profile) drawing = profileDrawing(f.profile, p, f.name)
-        else throw new Error('needs a profile (rect, circle, slot, polygon) or a sketch for the cross-section')
-        const t = norm3(sub3(pts[1], pts[0]))
-        const up: V3 = Math.abs(t[2]) > 0.999 ? [0, 1, 0] : [0, 0, 1]
-        const xDir = norm3(cross3(up, t))
-        const sk = drawing.sketchOnPlane(new R.Plane(pts[0], xDir, t))
-        if (!(sk instanceof R.Sketch)) {
-          throw new Error('the cross-section must be one closed outline without holes; for a tube sweep the inner profile too and cut it')
-        }
-        const solid = R.genericSweep(sk.wire, spine, { transitionMode: 'right', forceProfileSpineOthogonality: true }) as Shape3D
-        return place(solid, f, p, f.name)
-      }
-      case 'boolean': {
-        let s = this.shape(f.target)
-        if (!f.tools.length) throw new Error('tools must name at least one feature')
-        const before = volumeOf(s)
-        const apart: string[] = []
-        if (f.op === 'intersect') {
-          for (const t of f.tools) s = s.intersect(this.shape(t)) as Shape3D
-        } else {
-          // Tools that are clear of each other go into one OpenCascade
-          // operation as a compound: one pass over the target instead of one
-          // per tool (5-6x faster on a case with many bosses and cut-outs).
-          // Tools that may overlap each other stay in separate passes, since
-          // a boolean needs arguments that do not interfere.
-          const targetBox = bboxOf(s)
-          const solids0 = s.solids?.length ?? 1
-          const tools = f.tools.map((name) => {
-            const shape = this.shape(name)
-            return { name, shape, box: bboxOf(shape) }
-          })
-          const clear = (a: BBox, b: BBox) => boxesApart(a, b, 0.01)
-          const groups: (typeof tools)[] = []
-          for (const t of tools) {
-            const g = groups.find((g) => g.every((o) => clear(o.box, t.box)))
-            if (g) g.push(t)
-            else groups.push([t])
-          }
-          for (const g of groups) {
-            const tool = g.length === 1 ? g[0].shape : (R.makeCompound(g.map((t) => t.shape)) as Shape3D)
-            s = f.op === 'union' ? s.fuse(tool) : s.cut(tool)
-          }
-          if (f.op === 'cut') {
-            // A tool that is clear of the target (outside it, or loose in its cavity) cut nothing.
-            const all = Math.abs(volumeOf(s) - before) < 1e-6
-            const base = all ? undefined : this.shape(f.target)
-            for (const t of f.tools) {
-              let missed = all
-              if (base) {
-                const tool = this.shape(t)
-                missed = clear(bboxOf(tool), targetBox) || safeDistance(base, tool) > 1e-6
-                tool.delete()
-              }
-              if (missed) warnings.push(`cutting "${t}" removed no material: it does not overlap "${f.target}"`)
-            }
-            base?.delete()
-          } else if (!f.separate && (s.solids?.length ?? 1) > solids0) {
-            // Only a union that really fell apart pays for the distance
-            // checks: a tool is apart when no chain of touching tools leads
-            // from it to the target.
-            const parts = [f.target, ...f.tools].map((name) => {
-              const shape = this.shape(name)
-              return { name, shape, box: bboxOf(shape) }
-            })
-            const joined = new Set([f.target])
-            const queue = [parts[0]]
-            while (queue.length) {
-              const a = queue.pop()!
-              for (const b of parts) {
-                if (joined.has(b.name) || clear(a.box, b.box) || safeDistance(a.shape, b.shape) > 1e-6) continue
-                joined.add(b.name)
-                queue.push(b)
-              }
-            }
-            for (const t of parts) {
-              if (!joined.has(t.name)) apart.push(t.name)
-              t.shape.delete()
-            }
-          }
-        }
-        if (apart.length) {
-          const list = apart.length > 5 ? `${apart.slice(0, 5).map((t) => `"${t}"`).join(', ')} and ${apart.length - 5} more` : apart.map((t) => `"${t}"`).join(', ')
-          warnings.push(`${list} do${apart.length === 1 ? 'es' : ''} not touch the rest: the union holds separate solids (pass separate: true if that is intended, e.g. keys or wheels)`)
-        }
-        if (f.op === 'intersect' && volumeOf(s) < 1e-9) warnings.push('the intersection is empty')
-        if (f.op === 'union' && before > 0 && Math.abs(volumeOf(s) - before) < 1e-6) warnings.push('the union added no material')
-        return s
-      }
-      case 'fillet':
-      case 'chamfer': {
-        const s = this.shape(f.target)
-        const size = f.type === 'fillet' ? n(f.r, 'r') : n(f.d, 'd')
-        if (size <= 0) throw new Error(`${f.type === 'fillet' ? 'r' : 'd'} must be > 0`)
-        const edges = selectElements(s, f.edges, false, p, `${f.name}.edges`) as Edge[]
-        if (!edges.length) throw new Error(`the edges selector matched no edge of "${f.target}" (it has ${s.edges.length}); try list_edges to see them`)
-        const out =
-          f.type === 'fillet'
-            ? s.fillet(size, finderOf<EdgeFinder>(edges))
-            : s.chamfer(size, finderOf<EdgeFinder>(edges))
-        return out
-      }
-      case 'shell': {
-        const s = this.shape(f.target)
-        const t = n(f.thickness, 'thickness')
-        if (t <= 0) throw new Error('thickness must be > 0')
-        const open = selectElements(s, f.open ?? { where: '>Z' }, true, p, `${f.name}.open`) as Face[]
-        if (!open.length) throw new Error(`the open selector matched no face of "${f.target}"; try list_faces`)
-        return s.shell(t, finderOf<FaceFinder>(open))
-      }
-      case 'transform':
-        return place(this.shape(f.target), f, p, f.name)
-      case 'import': {
-        const k = n(f.scale, 'scale', 1)
-        if (k <= 0) throw new Error('scale must be > 0')
-        const body = this.importedBody(f.url, f.name)
-        if (isMesh(body)) {
-          const scaled = k !== 1 ? body.scale(k) : body
-          return scaled.place(vec(f.rotate, p, `${f.name}.rotate`), vec(f.translate, p, `${f.name}.translate`))
-        }
-        let shape = body
-        if (k !== 1) shape = shape.scale(k, [0, 0, 0]) as Shape3D
-        return place(shape, f, p, f.name)
-      }
-      case 'pattern': {
-        const base = this.shape(f.target)
-        if (f.kind === 'polar') {
-          const count = Math.round(n(f.count, 'count'))
-          if (count < 1 || count > 500) throw new Error('count must be between 1 and 500')
-          const total = n(f.angle, 'angle', 360)
-          if (total <= 0 || total > 360) throw new Error('angle must be in (0, 360]')
-          const center = vec(f.center, p, `${f.name}.center`)
-          const dir = AXES[f.axis ?? 'Z']
-          const step = total >= 360 ? 360 / count : count > 1 ? total / (count - 1) : 0
-          let out: Shape3D | undefined
-          for (let i = 0; i < count; i++) {
-            let copy = base.clone() as Shape3D
-            if (i) copy = copy.rotate(step * i, center, dir)
-            out = out ? out.fuse(copy) : copy
-          }
-          base.delete()
-          return out!
-        }
-        const offsets: V3[] = []
-        if (f.kind === 'linear') {
-          const count = Math.round(n(f.count, 'count'))
-          if (count < 1 || count > 500) throw new Error('count must be between 1 and 500')
-          const step = vec(f.step, p, `${f.name}.step`)
-          for (let i = 0; i < count; i++) offsets.push([step[0] * i, step[1] * i, step[2] * i])
-        } else {
-          const cx = Math.round(num(f.count[0], p, `${f.name}.count[0]`))
-          const cy = Math.round(num(f.count[1], p, `${f.name}.count[1]`))
-          if (cx < 1 || cy < 1 || cx * cy > 2000) throw new Error('count must be ≥ 1 per axis and at most 2000 in total')
-          const sx = num(f.step[0], p, `${f.name}.step[0]`)
-          const sy = num(f.step[1], p, `${f.name}.step[1]`)
-          for (let i = 0; i < cx; i++) for (let j = 0; j < cy; j++) offsets.push([sx * i, sy * j, 0])
-        }
-        let out: Shape3D | undefined
-        for (const [x, y, z] of offsets) {
-          const copy = (base.clone() as Shape3D).translate(x, y, z)
-          out = out ? out.fuse(copy) : copy
-        }
-        base.delete()
-        return out!
-      }
-      case 'mirror': {
-        const s = this.shape(f.target)
-        const off = n(f.offset, 'offset', 0)
-        const normal: V3 = f.plane === 'XY' ? [0, 0, 1] : f.plane === 'XZ' ? [0, 1, 0] : [1, 0, 0]
-        const origin: V3 = [normal[0] * off, normal[1] * off, normal[2] * off]
-        const image = (s.clone() as Shape3D).mirror(normal, origin)
-        if (f.keep === false) {
-          s.delete()
-          return image
-        }
-        return s.fuse(image)
-      }
-    }
+    return makeFeature(this, f, warnings)
   }
 
-  /** Features whose inputs include a mesh body: booleans, transforms, patterns and mirrors on meshes. */
-  private makeMesh(f: Feature, warnings: string[]): MeshBody {
-    const p = this.params
-    const n = (e: Parameters<typeof num>[0], field: string, fb?: number) => num(e, p, `${f.name}.${field}`, fb)
-    switch (f.type) {
-      case 'boolean': {
-        if (!f.tools.length) throw new Error('tools must name at least one feature')
-        const target = this.meshOf(f.target)
-        const tools: { name: string; body: MeshBody }[] = []
-        try {
-          for (const t of f.tools) {
-            const fil = f.paint?.[t]
-            tools.push({ name: t, body: fil ? paintAll(this.meshOf(t), fil, t) : this.meshOf(t) })
-          }
-        } catch (e) {
-          target.delete()
-          for (const t of tools) t.body.delete()
-          throw e
-        }
-        const before = target.volume()
-        const targetBox = target.bbox()
-        if (f.op === 'cut') {
-          // Only tools whose box meets the target can cut; one that misses removes nothing.
-          for (const t of tools) if (boxesApart(t.body.bbox(), targetBox, 0.01)) warnings.push(`cutting "${t.name}" removed no material: it does not overlap "${f.target}"`)
-        }
-        const solids0 = f.op === 'union' && !f.separate ? target.solids() : 0
-        for (const k of Object.keys(f.paint ?? {})) if (!f.tools.includes(k)) warnings.push(`paint names "${k}", which is not one of the tools`)
-        const owned = tools.flatMap((t) => (t.body.paintId !== undefined ? [t.body.paintId] : []))
-        const out = target.boolean(f.op, tools.map((t) => t.body))
-        if (owned.length) out.ownPaint = owned
-        if (f.op === 'cut' && tools.length && !warnings.length && Math.abs(out.volume() - before) < 1e-6) warnings.push(`cutting ${f.tools.map((t) => `"${t}"`).join(', ')} removed no material: ${f.tools.length > 1 ? 'they do' : 'it does'} not overlap "${f.target}"`)
-        const after = out.volume()
-        if (f.op === 'intersect' && after < 1e-9) warnings.push('the intersection is empty')
-        if (f.op === 'union' && before > 0 && Math.abs(after - before) < 1e-6) warnings.push('the union added no material')
-        if (f.op === 'union' && !f.separate && out.solids() > solids0) warnings.push('some tools do not touch the rest: the union holds separate solids (pass separate: true if that is intended, e.g. keys or wheels)')
-        return out
-      }
-      case 'transform': {
-        const rotated = this.meshOf(f.target).place(vec(f.rotate, p, `${f.name}.rotate`), [0, 0, 0])
-        const t = f.align ? this.alignOffset(f, rotated.bbox()) : vec(f.translate, p, `${f.name}.translate`)
-        return rotated.translate(t)
-      }
-      case 'mirror': {
-        const s = this.meshOf(f.target)
-        const off = n(f.offset, 'offset', 0)
-        const normal: V3 = f.plane === 'XY' ? [0, 0, 1] : f.plane === 'XZ' ? [0, 1, 0] : [1, 0, 0]
-        const origin: V3 = [normal[0] * off, normal[1] * off, normal[2] * off]
-        const image = s.clone().mirror(normal, origin)
-        if (f.keep === false) {
-          s.delete()
-          return image
-        }
-        return s.boolean('union', [image])
-      }
-      case 'pattern': {
-        const base = this.meshOf(f.target)
-        const copies: MeshBody[] = []
-        if (f.kind === 'polar') {
-          const count = Math.round(n(f.count, 'count'))
-          if (count < 1 || count > 500) throw new Error('count must be between 1 and 500')
-          const total = n(f.angle, 'angle', 360)
-          if (total <= 0 || total > 360) throw new Error('angle must be in (0, 360]')
-          const center = vec(f.center, p, `${f.name}.center`)
-          const dir = AXES[f.axis ?? 'Z']
-          const step = total >= 360 ? 360 / count : count > 1 ? total / (count - 1) : 0
-          for (let i = 1; i < count; i++) copies.push(base.clone().rotateAbout(step * i, center, dir))
-        } else {
-          const offsets: V3[] = []
-          if (f.kind === 'linear') {
-            const count = Math.round(n(f.count, 'count'))
-            if (count < 1 || count > 500) throw new Error('count must be between 1 and 500')
-            const step = vec(f.step, p, `${f.name}.step`)
-            for (let i = 1; i < count; i++) offsets.push([step[0] * i, step[1] * i, step[2] * i])
-          } else {
-            const cx = Math.round(num(f.count[0], p, `${f.name}.count[0]`))
-            const cy = Math.round(num(f.count[1], p, `${f.name}.count[1]`))
-            if (cx < 1 || cy < 1 || cx * cy > 2000) throw new Error('count must be ≥ 1 per axis and at most 2000 in total')
-            const sx = num(f.step[0], p, `${f.name}.step[0]`)
-            const sy = num(f.step[1], p, `${f.name}.step[1]`)
-            for (let i = 0; i < cx; i++) for (let j = 0; j < cy; j++) if (i || j) offsets.push([sx * i, sy * j, 0])
-          }
-          for (const o of offsets) copies.push(base.clone().translate(o))
-        }
-        return copies.length ? base.boolean('union', copies) : base
-      }
-      case 'fillet':
-      case 'chamfer':
-      case 'shell':
-        throw new Error(`"${f.target}" is a triangle mesh (imported STL / 3MF): ${f.type} needs a B-rep solid with edges and faces. Round or hollow the B-rep parts before combining them with the mesh, or cut a shaped tool out of the mesh with boolean`)
-      default:
-        throw new Error(`${f.type} does not work on triangle meshes`)
-    }
+  makeMesh(f: Feature, warnings: string[]): MeshBody {
+    return makeMeshFeature(this, f, warnings)
   }
 
   /** The move that puts the align anchor of box at align.to, plus translate. */
-  private alignOffset(f: Extract<Feature, { type: 'transform' }>, box: BBox): V3 {
+  /** @internal */
+  alignOffset(f: Extract<Feature, { type: 'transform' }>, box: BBox): V3 {
     const p = this.params
     const to = vec(f.align!.to, p, `${f.name}.align.to`)
     const extra = vec(f.translate, p, `${f.name}.translate`)
@@ -1907,7 +741,8 @@ export class Kernel {
     }
   }
 
-  private pickSolids(f: Extract<Feature, { type: 'solids' }>): Body {
+  /** @internal */
+  pickSolids(f: Extract<Feature, { type: 'solids' }>): Body {
     const p = this.params
     const all = this.solidsOf(f.source).map((s, index) => ({ ...s, index }))
     let chosen = all
@@ -2102,7 +937,7 @@ export class Kernel {
       st.volume = round(s.volume(), 3)
       st.solids = s.solids()
       st.triangles = s.triangles
-      if (st.solids > 1 && f.type !== 'pattern' && f.type !== 'mirror' && f.type !== 'import' && f.type !== 'solids' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
+      if (st.solids > 1 && f.type !== 'pattern' && f.type !== 'mirror' && f.type !== 'import' && f.type !== 'solids' && f.type !== 'instance' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
       if (st.volume <= 0) warnings.push('the result has no volume')
       if (warnings.length) st.warnings = warnings
       return st
@@ -2121,7 +956,7 @@ export class Kernel {
     } catch {
       // A shape without a bounding box is still valid (empty intersect).
     }
-    if ((st.solids ?? 1) > 1 && f.type !== 'pattern' && f.type !== 'mirror' && f.type !== 'solids' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
+    if ((st.solids ?? 1) > 1 && f.type !== 'pattern' && f.type !== 'mirror' && f.type !== 'solids' && f.type !== 'instance' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
     if (st.volume !== undefined && st.volume <= 0) warnings.push('the result has no volume')
     if (warnings.length) st.warnings = warnings
     return st
@@ -2147,7 +982,18 @@ export class Kernel {
           return 0
         }
       })()
-      const to3 = (u: number, v: number): V3 => (s.plane === 'XY' ? [u, v, off] : s.plane === 'XZ' ? [u, off, v] : [off, u, v])
+      let frame: SketchFrame | undefined
+      if (s.on) {
+        try {
+          frame = this.sketchFrame(s)
+        } catch {
+          continue
+        }
+      }
+      const to3 = (u: number, v: number): V3 =>
+        frame
+          ? [frame.origin[0] + frame.u[0] * u + frame.v[0] * v, frame.origin[1] + frame.u[1] * u + frame.v[1] * v, frame.origin[2] + frame.u[2] * u + frame.v[2] * v]
+          : s.plane === 'XY' ? [u, v, off] : s.plane === 'XZ' ? [u, off, v] : [off, u, v]
       const lines: number[] = []
       const construction: number[] = []
       const seg = (dst: number[], a: V3, b: V3) => dst.push(...a, ...b)
@@ -2314,7 +1160,8 @@ export class Kernel {
   }
 
   /** Distance between two built features: OpenCascade for two B-rep solids, meshes when either is a mesh. */
-  private distanceOf(a: string, b: string): number {
+  /** @internal */
+  distanceOf(a: string, b: string): number {
     if (this.isMeshBody(a) || this.isMeshBody(b)) {
       const [ma, mb] = [this.meshOf(a), this.meshOf(b)]
       try {
@@ -2333,7 +1180,8 @@ export class Kernel {
     }
   }
 
-  private overlapOf(a: string, b: string): { volume: number; regions: { box: [V3, V3]; volume: number }[] } {
+  /** @internal */
+  overlapOf(a: string, b: string): { volume: number; regions: { box: [V3, V3]; volume: number }[] } {
     if (this.isMeshBody(a) || this.isMeshBody(b)) {
       const [ma, mb] = [this.meshOf(a), this.meshOf(b)]
       try {
@@ -2461,7 +1309,8 @@ export class Kernel {
   private pairCache = new Map<string, number>()
 
   /** Cached pairwise measure (overlap volume or distance); boxes that are apart skip OpenCascade. */
-  private pair(kind: 'overlap' | 'distance', a: string, b: string, compute: () => number, min = 0): number {
+  /** @internal */
+  pair(kind: 'overlap' | 'distance', a: string, b: string, compute: () => number, min = 0): number {
     const ca = this.cache.get(a)
     const cb = this.cache.get(b)
     if (!ca || !cb) return compute()
@@ -2485,7 +1334,8 @@ export class Kernel {
     return v
   }
 
-  private boxApart(a: string, b: string, min: number): boolean {
+  /** @internal */
+  boxApart(a: string, b: string, min: number): boolean {
     const ba = this.cache.get(a)?.status.bbox
     const bb = this.cache.get(b)?.status.bbox
     if (!ba || !bb) return false
@@ -2502,68 +1352,7 @@ export class Kernel {
   }
 
   private check(c: Check): CheckResult {
-    const p = this.params
-    {
-      const base = { name: c.name, kind: c.kind, note: c.note }
-      try {
-        switch (c.kind) {
-          case 'expr': {
-            const v = num(c.expr, p, `check ${c.name}`)
-            return { ...base, ok: v !== 0, detail: v !== 0 ? `${c.expr} holds` : `${c.expr} is false` }
-          }
-          case 'min_distance': {
-            const min = num(c.min, p, `check ${c.name}.min`)
-            const d = this.pair('distance', c.a, c.b, () => this.distanceOf(c.a, c.b), min)
-            const exact = !this.boxApart(c.a, c.b, min)
-            return { ...base, ok: d >= min - 1e-6, detail: `distance ${c.a}↔${c.b} ${exact ? '=' : '≥'} ${d.toFixed(3)} mm (min ${min})` }
-          }
-          case 'no_overlap': {
-            const v = this.pair('overlap', c.a, c.b, () => this.overlapOf(c.a, c.b).volume)
-            const allow = c.allow ?? 0
-            if (v < 1e-6) return { ...base, ok: true, detail: `${c.a} and ${c.b} do not overlap` }
-            return { ...base, ok: v <= allow + 1e-6, detail: `${c.a} and ${c.b} overlap by ${v.toFixed(3)} mm³${allow ? ` (allowed ${allow})` : ''}` }
-          }
-          case 'inside': {
-            // inner must lie fully within outer (a body that stands for the
-            // free space, e.g. a cavity), keeping margin to every side of
-            // outer's bounding box.
-            const margin = num(c.margin, p, `check ${c.name}.margin`, 0)
-            const [si, so] = [this.body(c.inner), this.body(c.outer)]
-            const [ilo, ihi] = bodyBox(si)
-            const [olo, ohi] = bodyBox(so)
-            const vi = bodyVolume(si)
-            si.delete()
-            so.delete()
-            const within = this.overlapOf(c.inner, c.outer).volume
-            // Mesh volumes carry float rounding: allow a tiny fraction of the inner volume.
-            const tol = Math.max(1e-6, vi * 1e-6)
-            const outside = Math.max(0, vi - within)
-            const gaps = [0, 1, 2].flatMap((i) => [ilo[i] - olo[i], ohi[i] - ihi[i]])
-            const minGap = Math.min(...gaps)
-            const ok = minGap >= margin - 1e-6 && outside < tol
-            const axis = ['-X', '+X', '-Y', '+Y', '-Z', '+Z'][gaps.indexOf(minGap)]
-            return {
-              ...base,
-              ok,
-              detail:
-                (outside >= tol ? `${outside.toFixed(3)} mm³ of ${c.inner} is outside ${c.outer}; ` : '') +
-                `smallest gap ${minGap.toFixed(3)} mm on ${axis} (margin ${margin})`,
-            }
-          }
-          case 'volume': {
-            const s = this.body(c.target)
-            const v = bodyVolume(s)
-            s.delete()
-            const min = c.min !== undefined ? num(c.min, p, `check ${c.name}.min`) : -Infinity
-            const max = c.max !== undefined ? num(c.max, p, `check ${c.name}.max`) : Infinity
-            return { ...base, ok: v >= min && v <= max, detail: `volume ${v.toFixed(2)} mm³` }
-          }
-        }
-      } catch (e) {
-        return { ...base, ok: false, detail: `cannot evaluate: ${kernelMessage(e)}` }
-      }
-      return { ...base, ok: false, detail: 'unknown check kind' }
-    }
+    return runCheck(this, c)
   }
 
   /**
@@ -2605,11 +1394,18 @@ export class Kernel {
       }
       return this.shape(n)
     })
-    const compound = shapes.length === 1 ? shapes[0] : (R.makeCompound(shapes) as Shape3D)
+    // One named product per body (instances included), with its color, so an assembly opens as parts in other CAD tools.
     try {
-      return compound.blobSTEP()
+      return R.exportSTEP(
+        shapes.map((shape, i) => {
+          const f = this.doc?.features.find((x) => x.name === names[i])
+          const material = f?.material ? this.doc?.materials?.find((x) => x.name === f.material) : undefined
+          const color = material?.color ?? f?.color
+          return { shape, name: names[i], ...(color && /^#[0-9a-f]{6}$/i.test(color) ? { color } : {}) }
+        }),
+      )
     } finally {
-      compound.delete()
+      for (const s of shapes) s.delete()
     }
   }
 
@@ -2654,139 +1450,101 @@ export class Kernel {
     return { blob, file: [...urls][0], replaced: [...asked].map(name), also_changed: touched.filter((t) => !asked.has(t)).map(name) }
   }
 
+  /**
+   * Hidden-line views of bodies, in view coordinates (mm, y up): front looks
+   * along +Y, top down -Z, right along -X (third-angle), iso from (1, -1, 1).
+   */
+  views(names: string[], views: string[]): View[] {
+    if (!names.length) throw new Error('nothing to draw: the model has no bodies')
+    const meshy = names.filter((n) => this.isMeshBody(n))
+    if (meshy.length) throw new Error(`${meshy.join(', ')} ${meshy.length === 1 ? 'is a triangle mesh' : 'are triangle meshes'}: drawings need B-rep edges; leave ${meshy.length === 1 ? 'it' : 'them'} out with names, or use section`)
+    const shapes = names.map((n) => this.shape(n))
+    const all = shapes.length === 1 ? shapes[0] : (R.makeCompound(shapes) as Shape3D)
+    try {
+      const planes: Record<string, R.ProjectionPlane> = { front: 'front', back: 'back', top: 'top', bottom: 'bottom', left: 'left', right: 'right' }
+      return views.map((name) => {
+        let cam: R.ProjectionPlane | R.ProjectionCamera
+        if (name === 'iso') {
+          const [lo, hi] = bboxOf(all)
+          const c: V3 = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2]
+          const far = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 2 + 10
+          cam = new R.ProjectionCamera([c[0] + far, c[1] - far, c[2] + far], [-1, 1, -1], [1, 1, 0])
+        } else if (planes[name]) cam = planes[name]
+        else throw new Error(`unknown view "${name}"; use front, back, top, bottom, left, right or iso`)
+        const { visible, hidden } = R.drawProjection(all, cam)
+        const vis = pathsToLines(visible.toSVGPaths().flat())
+        const hid = pathsToLines(hidden.toSVGPaths().flat())
+        return { name, visible: vis, hidden: hid, box: boxOf(vis.length ? vis : hid) }
+      })
+    } finally {
+      all.delete()
+    }
+  }
+
+  /** A flat outline as closed loops in its own (u, v): a solved sketch, or one flat face of a built B-rep body. */
+  profile(source: ProfileSource): { loops: [number, number][][]; frame?: SketchFrame } {
+    if ('sketch' in source) {
+      const sk = this.sketch(source.sketch)
+      const d = sketchDrawing(sk, `sketch ${source.sketch}`)
+      return { loops: pathsToLines(d.toSVGPaths().flat()) as [number, number][][] }
+    }
+    const frame = this.faceFrame(source.feature, source.face, 0, 'export_dxf')
+    const s = this.shape(source.feature)
+    try {
+      const { all, picked } = selectIndexed(s, source.face, true, this.params, 'export_dxf.face')
+      const face = all[picked[0]] as R.Face
+      // Project the face's edges on its own plane: (u, v) as in the frame.
+      const loops: [number, number][][] = []
+      // outerWire and innerWires consume the face they are called on: give each a copy.
+      const wires = [(face.clone() as R.Face).outerWire(), ...(face.clone() as R.Face).innerWires()]
+      for (const w of wires) {
+        // Edges come in wire order but each with its own direction: walk each from the end that meets the previous one.
+        const pts: [number, number][] = []
+        const uv = (q: V3): [number, number] => {
+          const d: V3 = [q[0] - frame.origin[0], q[1] - frame.origin[1], q[2] - frame.origin[2]]
+          return [d[0] * frame.u[0] + d[1] * frame.u[1] + d[2] * frame.u[2], d[0] * frame.v[0] + d[1] * frame.v[1] + d[2] * frame.v[2]]
+        }
+        // Chain the edges by their ends (an edge's direction need not follow the wire).
+        const runs = w.edges.map((e) => {
+          const n = e.geomType === 'LINE' ? 1 : Math.max(8, Math.ceil(e.length / 0.25))
+          const run: [number, number][] = []
+          for (let i = 0; i <= n; i++) run.push(uv(e.pointAt(i / n).toTuple() as V3))
+          return run
+        })
+        const dist = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1])
+        const left = runs.slice(1)
+        let chain = runs[0] ? [...runs[0]] : []
+        // Start the first edge in the direction that meets one of the others.
+        if (left.length && !left.some((r) => dist(r[0], chain[chain.length - 1]) < 1e-3 || dist(r[r.length - 1], chain[chain.length - 1]) < 1e-3)) chain.reverse()
+        while (left.length) {
+          const end = chain[chain.length - 1]
+          let best = 0
+          let flip = false
+          let bd = Infinity
+          left.forEach((r, i) => {
+            const a = dist(r[0], end)
+            const b = dist(r[r.length - 1], end)
+            if (a < bd) [bd, best, flip] = [a, i, false]
+            if (b < bd) [bd, best, flip] = [b, i, true]
+          })
+          const r = left.splice(best, 1)[0]
+          chain = chain.concat((flip ? [...r].reverse() : r).slice(1))
+        }
+        pts.push(...chain)
+        if (pts.length) {
+          const closed = Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) < 1e-4
+          loops.push((closed ? pts : [...pts, pts[0]]).map(([a, b]) => [Math.round(a * 1e4) / 1e4 + 0, Math.round(b * 1e4) / 1e4 + 0]))
+        }
+      }
+      return { loops, frame }
+    } finally {
+      s.delete()
+    }
+  }
+
   get parameters(): Map<string, number> {
     return this.params
   }
 }
 
-/** Drops points within tol of the outline (Ramer–Douglas–Peucker on a closed ring). */
-function simplifyRing(ring: [number, number][], tol: number): [number, number][] {
-  const n = ring.length
-  if (n <= 4 || tol <= 0) return ring
-  // Anchor the ring at its two far-apart points (corners, not a point mid-edge); simplify both open runs.
-  const cx = ring.reduce((s, p) => s + p[0], 0) / n
-  const cy = ring.reduce((s, p) => s + p[1], 0) / n
-  let first = 0
-  for (let i = 1; i < n; i++) if (Math.hypot(ring[i][0] - cx, ring[i][1] - cy) > Math.hypot(ring[first][0] - cx, ring[first][1] - cy)) first = i
-  ring = [...ring.slice(first), ...ring.slice(0, first)]
-  let split = 1
-  const d0 = (i: number) => Math.hypot(ring[i][0] - ring[0][0], ring[i][1] - ring[0][1])
-  for (let i = 2; i < n; i++) if (d0(i) > d0(split)) split = i
-  const keep = new Uint8Array(n)
-  keep[0] = keep[split] = 1
-  const pt = (i: number) => ring[i % n]
-  const stack: [number, number][] = [[0, split], [split, n]]
-  while (stack.length) {
-    const [a, b] = stack.pop()!
-    const [ax, ay] = pt(a)
-    const [bx, by] = pt(b)
-    const len = Math.hypot(bx - ax, by - ay)
-    let best = -1
-    let far = tol
-    for (let i = a + 1; i < b; i++) {
-      const [px, py] = pt(i)
-      const e = len > 1e-12 ? Math.abs((bx - ax) * (ay - py) - (ax - px) * (by - ay)) / len : Math.hypot(px - ax, py - ay)
-      if (e > far) {
-        far = e
-        best = i
-      }
-    }
-    if (best < 0) continue
-    keep[best % n] = 1
-    stack.push([a, best], [best, b])
-  }
-  return ring.filter((_, i) => keep[i])
-}
 
-/** A vendor mesh placed on the board, as sewn triangle faces. */
-function meshShape(obj: string, model: Model3D, c: ResolvedBoard['components'][number], b: ResolvedBoard): Shape3D {
-  const placed = placeModel(parseOBJ(obj), model)
-  const oc = R.getOC()
-  const sew = new oc.BRepBuilderAPI_Sewing(1e-4, true, true, true, false)
-  const rad = (c.rotation * Math.PI) / 180
-  const cos = Math.cos(rad)
-  const sin = Math.sin(rad)
-  const bottom = c.side === 'bottom'
-  const z0 = bottom ? b.z : b.z + b.thickness
-  const tr = (x: number, y: number, z: number): [number, number, number] => {
-    if (bottom) {
-      x = -x
-      z = -z
-    }
-    return [c.at.x + x * cos - y * sin, c.at.y + x * sin + y * cos, z0 + z]
-  }
-  let n = 0
-  for (const g of placed.groups) {
-    const p = g.positions
-    for (let i = 0; i + 8 < p.length; i += 9) {
-      try {
-        const f = R.makePolygon([tr(p[i], p[i + 1], p[i + 2]), tr(p[i + 3], p[i + 4], p[i + 5]), tr(p[i + 6], p[i + 7], p[i + 8])])
-        sew.Add(f.wrapped)
-        f.delete()
-        n++
-      } catch {
-        // degenerate triangle
-      }
-    }
-  }
-  if (!n) {
-    sew.delete()
-    throw new Error('empty model')
-  }
-  const progress = new oc.Message_ProgressRange()
-  sew.Perform(progress)
-  const shape = R.cast(sew.SewedShape()) as Shape3D
-  progress.delete()
-  sew.delete()
-  return shape
-}
-
-function safeDistance(a: Shape3D, b: Shape3D): number {
-  try {
-    return R.measureDistanceBetween(a, b)
-  } catch {
-    return Infinity
-  }
-}
-
-/** The overlap of two solids: its volume and each separate piece's box and volume. */
-function overlapRegions(a: Shape3D, b: Shape3D): { volume: number; regions: { box: [V3, V3]; volume: number }[] } {
-  try {
-    const i = (a.clone() as Shape3D).intersect(b.clone() as Shape3D) as Shape3D
-    const volume = volumeOf(i)
-    const regions: { box: [V3, V3]; volume: number }[] = []
-    if (volume > 1e-6) {
-      const solids = (i as unknown as { solids?: Shape3D[] }).solids ?? [i]
-      for (const s of solids as Shape3D[]) {
-        const v = volumeOf(s)
-        if (v < 1e-6) continue
-        const [lo, hi] = bboxOf(s)
-        regions.push({ box: [r3(lo), r3(hi)], volume: round(v, 4) })
-      }
-      regions.sort((x, y) => y.volume - x.volume)
-    }
-    i.delete()
-    return { volume, regions }
-  } catch {
-    return { volume: 0, regions: [] }
-  }
-}
-
-function overlapVolume(a: Shape3D, b: Shape3D): number {
-  try {
-    const i = (a.clone() as Shape3D).intersect(b.clone() as Shape3D) as Shape3D
-    const v = volumeOf(i)
-    i.delete()
-    return v
-  } catch {
-    return 0
-  }
-}
-
-/** Axis and angle (degrees) of a unit quaternion x, y, z, w. */
-function quatAxisAngle(q: [number, number, number, number]): { axis: V3; angle: number } {
-  const w = Math.max(-1, Math.min(1, q[3]))
-  const s = Math.sqrt(1 - w * w)
-  if (s < 1e-12) return { axis: [0, 0, 1], angle: 0 }
-  return { axis: [q[0] / s, q[1] / s, q[2] / s], angle: (2 * Math.acos(w) * 180) / Math.PI }
-}

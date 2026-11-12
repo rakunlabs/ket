@@ -10,7 +10,7 @@ import Manifold from 'manifold-3d'
 import manifoldWasmUrl from 'manifold-3d/manifold.wasm?url'
 
 import type { Doc, Selector } from './doc'
-import type { AutorouteOptions, SweepOptions } from './registry'
+import type { AutorouteOptions, ProfileSource, SweepOptions } from './registry'
 import { type BuildResult, Kernel } from './kernel'
 import { meshTransfer } from './mesh-transfer'
 import { setGcs } from './sketch'
@@ -66,6 +66,8 @@ export type WorkerRequest =
   | { id: number; type: 'simulate'; seconds: number; samples: number }
   | { id: number; type: 'sweep'; opts: SweepOptions }
   | { id: number; type: 'mechanisms' }
+  | { id: number; type: 'views'; names: string[]; views: string[] }
+  | { id: number; type: 'profile'; source: ProfileSource }
   | { id: number; type: 'autoroute'; opts: AutorouteOptions }
 
 self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
@@ -126,7 +128,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         result = k.measure(req.name, req.other)
         break
       case 'sketch':
-        result = k.sketch(req.name)
+        result = k.sketchReport(req.name)
         break
       case 'board':
         result = doc ? k.boardState(doc, { drc: req.drc }) : undefined
@@ -164,6 +166,12 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         break
       case 'mechanisms':
         result = k.mechanismReport()
+        break
+      case 'views':
+        result = k.views(req.names, req.views)
+        break
+      case 'profile':
+        result = k.profile(req.source)
         break
       case 'autoroute':
         if (!doc) throw new Error('nothing is built yet')

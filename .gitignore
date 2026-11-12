@@ -6,3 +6,6 @@
 /ket.yaml
 .env
 .env.local
+/_ui/test-results/
+/_ui/playwright-report/
+/_ui/e2e-logs/

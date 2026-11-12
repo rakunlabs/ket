@@ -322,7 +322,8 @@ export interface BeltState {
   plane: Plane
   offset: number
   normal: V3
-  pulleys: { center: V3; at: P2; r: number; body?: string; wrap: number }[]
+  /** back: the belt runs over the pulley with its back (a tensioner outside the loop); it turns the other way. */
+  pulleys: { center: V3; at: P2; r: number; body?: string; wrap: number; back?: boolean }[]
   thickness: number
   width: number
   /** Pitch length, mm. */
@@ -332,7 +333,7 @@ export interface BeltState {
   links?: number
   warnings: string[]
   /** Tangent points (pitch line) and arcs, in plane coordinates, for the solid. */
-  path: { c: P2; r: number; from: number; to: number }[]
+  path: { c: P2; r: number; from: number; to: number; s: 1 | -1 }[]
 }
 
 /** Plane axes u, v and u × v (the axis a counterclockwise turn in the plane is about). */
@@ -363,13 +364,16 @@ function solveBelt(f: BeltFeature, params: Params): BeltState {
       r = pitch / (2 * Math.sin(Math.PI / Math.round(N(p.teeth, `pulleys[${i}].teeth`))))
     } else throw new Error(`pulleys[${i}]: give d (pitch diameter) or teeth`)
     if (!(r > 0)) throw new Error(`pulleys[${i}]: diameter must be > 0`)
-    return { at, r, body: p.body }
+    return { at, r, body: p.body, s: (p.back ? -1 : 1) as 1 | -1 }
   })
+  if (ps.every((p) => p.s < 0)) throw new Error('every pulley is a back idler (back: true); the belt needs pulleys it runs around with its inner face')
   // Run counterclockwise around the middle; every pulley must be on the outside.
   const mid: P2 = [ps.reduce((s, p) => s + p.at[0], 0) / ps.length, ps.reduce((s, p) => s + p.at[1], 0) / ps.length]
   ps.sort((a, b) => Math.atan2(a.at[1] - mid[1], a.at[0] - mid[0]) - Math.atan2(b.at[1] - mid[1], b.at[0] - mid[0]))
   const count = ps.length
-  // Outer tangent from pulley i to i+1, on the right of the travel direction.
+  // Tangent from pulley i to i+1. n points out of the loop; the belt touches a
+  // pulley at center + s·r·n (s = 1 around it, -1 over its back), so the
+  // run between them satisfies (b - a)·n = s_a r_a - s_b r_b.
   const normals: P2[] = []
   for (let i = 0; i < count; i++) {
     const a = ps[i]
@@ -378,7 +382,8 @@ function solveBelt(f: BeltFeature, params: Params): BeltState {
     const dy = b.at[1] - a.at[1]
     const L = Math.hypot(dx, dy)
     if (L < a.r + b.r + thickness) throw new Error(`pulleys at [${a.at}] and [${b.at}] overlap (centers ${L.toFixed(2)} apart, radii ${a.r.toFixed(2)} + ${b.r.toFixed(2)})`)
-    const cos = (a.r - b.r) / L
+    const cos = (a.s * a.r - b.s * b.r) / L
+    if (Math.abs(cos) > 1) throw new Error(`no belt run joins the pulleys at [${a.at}] and [${b.at}]: they are too close for a run that crosses between their sides; move them apart`)
     const sin = Math.sqrt(Math.max(0, 1 - cos * cos))
     const t: P2 = [dx / L, dy / L]
     const right: P2 = [t[1], -t[0]]
@@ -391,18 +396,25 @@ function solveBelt(f: BeltFeature, params: Params): BeltState {
     const p = ps[i]
     const nin = normals[(i + count - 1) % count]
     const nout = normals[i]
-    const from = Math.atan2(nin[1], nin[0])
-    let to = Math.atan2(nout[1], nout[0])
-    while (to <= from) to += 2 * Math.PI
-    const wrap = to - from
-    if (wrap > 2 * Math.PI - 1e-6 || wrap < 1e-6) throw new Error(`pulley at [${p.at}] is inside the loop; a belt runs around the outside of every pulley (idlers inside are not supported)`)
+    // Around a pulley the belt turns counterclockwise (with the loop); over a back idler clockwise.
+    const from = Math.atan2(p.s * nin[1], p.s * nin[0])
+    let to = Math.atan2(p.s * nout[1], p.s * nout[0])
+    if (p.s > 0) while (to <= from) to += 2 * Math.PI
+    else while (to >= from) to -= 2 * Math.PI
+    const wrap = Math.abs(to - from)
+    if (wrap > 2 * Math.PI - 1e-6 || wrap < 1e-6)
+      throw new Error(
+        p.s > 0
+          ? `the belt cannot run around the pulley at [${p.at}]: it sits in toward the middle. An idler the belt runs over with its back (a tensioner outside the loop) needs back: true`
+          : `the back idler at [${p.at}] does not bend the belt (it is inside the loop, or only touches a straight run); drop back: true, or move it closer so it pushes a run inward`,
+      )
     if (wrap * R2D < 120 && p.body) warnings.push(`the belt wraps only ${(wrap * R2D).toFixed(0)}° around the pulley at [${p.at}]; under ~120° it slips (timing belts skip teeth)`)
-    path.push({ c: p.at, r: p.r, from, to })
+    path.push({ c: p.at, r: p.r, from, to, s: p.s })
     const nxt = ps[(i + 1) % count]
-    const a: P2 = [p.at[0] + p.r * nout[0], p.at[1] + p.r * nout[1]]
-    const b: P2 = [nxt.at[0] + nxt.r * nout[0], nxt.at[1] + nxt.r * nout[1]]
+    const a: P2 = [p.at[0] + p.s * p.r * nout[0], p.at[1] + p.s * p.r * nout[1]]
+    const b: P2 = [nxt.at[0] + nxt.s * nxt.r * nout[0], nxt.at[1] + nxt.s * nxt.r * nout[1]]
     length += wrap * p.r + Math.hypot(b[0] - a[0], b[1] - a[1])
-    pulleys.push({ center: add(add(scale(u, p.at[0]), scale(v, p.at[1])), scale(PLANE_AT[f.plane], offset)), at: p.at, r: p.r, body: p.body, wrap: wrap * R2D })
+    pulleys.push({ center: add(add(scale(u, p.at[0]), scale(v, p.at[1])), scale(PLANE_AT[f.plane], offset)), at: p.at, r: p.r, body: p.body, wrap: wrap * R2D, ...(p.s < 0 ? { back: true } : {}) })
   }
   const st: BeltState = { name: f.name, plane: f.plane, offset, normal: n, pulleys, thickness, width, length, warnings, path }
   if (pitch) {
@@ -430,13 +442,14 @@ export function beltStates(doc: Doc, params: Params): Map<string, BeltState | Er
 function beltLoop(b: BeltState, e: number): R.Drawing {
   const pt = (c: P2, r: number, a: number): P2 => [c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]
   const first = b.path[0]
-  let pen = R.draw(pt(first.c, first.r + e, first.from))
+  // Over a back idler the outside of the belt faces the pulley: e shrinks the radius there.
+  let pen = R.draw(pt(first.c, first.r + first.s * e, first.from))
   for (let i = 0; i < b.path.length; i++) {
     const s = b.path[i]
-    const r = s.r + e
+    const r = s.r + s.s * e
     pen = pen.threePointsArcTo(pt(s.c, r, s.to), pt(s.c, r, (s.from + s.to) / 2))
     const nx = b.path[(i + 1) % b.path.length]
-    if (i < b.path.length - 1) pen = pen.lineTo(pt(nx.c, nx.r + e, nx.from))
+    if (i < b.path.length - 1) pen = pen.lineTo(pt(nx.c, nx.r + nx.s * e, nx.from))
   }
   return pen.close()
 }
@@ -560,7 +573,7 @@ export function mechanismReport(m: Mechanisms): Record<string, unknown>[] {
       type: 'belt',
       length: r3(b.length, 2),
       ...(b.links !== undefined ? { links: r3(b.links, 2) } : {}),
-      pulleys: b.pulleys.map((p) => ({ at: p.at, d: r3(2 * p.r), body: p.body, wrap: r3(p.wrap, 1), turns_per_turn_of_first: r3(r0 / p.r, 5) })),
+      pulleys: b.pulleys.map((p) => ({ at: p.at, d: r3(2 * p.r), body: p.body, ...(p.back ? { back: true } : {}), wrap: r3(p.wrap, 1), turns_per_turn_of_first: r3(((b.pulleys[0].back ? -1 : 1) * (p.back ? -1 : 1) * r0) / p.r, 5) })),
       ...(b.warnings.length ? { warnings: b.warnings } : {}),
     })
   }

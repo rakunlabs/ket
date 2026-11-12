@@ -66,6 +66,10 @@ it changes, so every dimension can be an expression over parameters.
   on a plane, then extrude or revolve with sketch: "<name>".
 - add_to_sketch shapes (rect, circle, slot, polygon) come fully
   constrained; loops inside the outer loop become holes.
+- Features on a body (a boss on a lid, a pocket in a wall): sketch with
+  on: { feature, face: { where: ">Z" } } instead of computing the plane
+  offset; it follows the body when parameters change. Extrude > 0 adds,
+  < 0 makes a tool to cut with boolean. solve_sketch shows the frame.
 - For custom outlines, give points (rough guesses are fine), lines/arcs that
   share points, and constraints (horizontal, vertical, length, distance,
   radius, tangent, ...). Drive values with parameters.
@@ -181,7 +185,13 @@ it changes, so every dimension can be an expression over parameters.
   outer wall, the top a matching rebate (0.15 mm clearance). Arms and
   legs locate with flat tongue-and-groove plates, not thin pins.
 - Board screws from inside: pilot holes in bosses in the base; the top
-  presses on the screw heads. Two screws are enough for a small board:
+  presses on the screw heads.
+- Screws and inserts by size, not by hand-made cylinders: hole (plain,
+  counterbore, countersink, tapped; size M2..M6, clearance 0.15 for
+  printing) and insert_boss (heat-set inserts M2..M5) on a face picked by
+  selector. thread only for M5 and up; smaller threads: tapped hole or
+  insert. snap_fit hook + window for tool-free lids; draft for molded or
+  cast parts. Two screws are enough for a small board:
   give the board tabs (sketch outline) into solid parts of the case, such
   as arms, and screw there, so the cavity under the board stays free for
   the battery.
@@ -201,11 +211,18 @@ it changes, so every dimension can be an expression over parameters.
   instead); ribs, tongues and blocks join the walls on every side they
   reach (overlap them 0.3 mm into the wall), never stand free with a gap
   beside them. A union that leaves separate solids says so: fix it.
+  Make it a check: min_wall (min 1.2) on each printed shell, and overhang
+  (angle 45, axis = how it lies on the plate) so supports are a decision,
+  not a surprise; min_wall samples, so read it as a strong hint.
 - Openings at the split must be cut from both shells.
 - Check: no_overlap between shells, every part against both shells,
   min_distance for moving parts (keycaps, buttons). measure_between
   lists where two bodies clash (boxes of each overlap piece).
 - set_explode for an exploded view; render with explode: 1.
+- The same part more than once (feet, hinges, two identical shells):
+  model it once, then instance it with translate/rotate. Each instance is
+  its own body (checks, explode, joints, STEP product) and follows the
+  source. pattern instead when the copies should be one merged body.
 
 ## Rules of thumb
 - Save editable source with export_project (.ket); open it in another empty
@@ -222,5 +239,13 @@ it changes, so every dimension can be an expression over parameters.
   each open side, and avoid coplanar faces between tool and target.
 - Prefer one shell over many cuts for enclosures; add clearance (0.2-0.5 mm)
   for parts that must fit together when 3D printed.
+- Variants of one design (board sizes, a bigger battery): keep one model
+  and add set_configuration per variant with the parameter values that
+  differ; use_configuration switches the built design, run_checks
+  configurations: "all" verifies every variant, export / export_fab take
+  configuration. Do not copy features per variant.
+- Drawings for a workshop or a datasheet: drawing (front, top, right, iso
+  with hidden lines and overall dimensions; SVG, PDF or DXF). Flat parts
+  for a laser: export_dxf of the sketch, or of a body's face.
 - If a command fails, read the message: it says what to change.
 `

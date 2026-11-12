@@ -109,5 +109,21 @@ export const checkDef = z
       max: expr.optional(),
       note: z.string().optional(),
     }),
+    z.object({
+      name: ident,
+      kind: z.literal('overhang'),
+      target: featureRef,
+      angle: expr.optional().describe('Steepest printable overhang, degrees from vertical (default 45)'),
+      axis: z.enum(['+Z', '-Z', '+X', '-X', '+Y', '-Y']).optional().describe('Print direction: the way up on the printer (default +Z, the body as modelled)'),
+      max_area: expr.optional().describe('Overhang area allowed, mm² (default 0: any overhang fails); bridges and small chamfers may be fine'),
+      note: z.string().optional(),
+    }),
+    z.object({
+      name: ident,
+      kind: z.literal('min_wall'),
+      target: featureRef,
+      min: expr.describe('Thinnest wall the printer makes reliably, mm (e.g. 1.2 for a 0.4 mm nozzle)'),
+      note: z.string().optional(),
+    }),
   ])
   .describe('A requirement the design must keep meeting')

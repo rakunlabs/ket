@@ -10,6 +10,7 @@ import './pcb/erc-commands'
 import './pcb/copper-commands'
 import './pcb/manufacturing'
 import './queries'
+import './drawing-commands'
 import './problems'
 import './project-file'
 

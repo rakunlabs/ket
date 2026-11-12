@@ -185,7 +185,7 @@
           {#if kind === 'text'}
             <label class="block space-y-1 text-xs"><span>Printed text</span><input class="input" bind:value={text} maxlength="100" required /></label>
           {:else}
-            <label class="block space-y-1 text-xs"><span>{editing ? 'Replace logo (optional)' : 'Logo image'}</span><input class="input text-xs" type="file" accept="image/png,image/jpeg,image/webp" onchange={(e) => { logoFile = e.currentTarget.files?.[0]; void convertLogo() }} /></label>
+            <label class="block space-y-1 text-xs"><span>{editing ? 'Replace logo (optional)' : 'Logo image'}</span><input class="input text-xs" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg" onchange={(e) => { logoFile = e.currentTarget.files?.[0]; void convertLogo() }} /></label>
             <p class="text-xs text-ink-2">PNG, JPEG or WebP · up to 5 MiB. Dark pixels become {style.silk} ink; transparent areas stay empty. Converted locally.</p>
             {#if logoFile}
               <label class="block space-y-1 text-xs"><span>Threshold · {threshold}</span><input class="w-full accent-ink" type="range" min="1" max="254" bind:value={threshold} onchange={convertLogo} /></label>

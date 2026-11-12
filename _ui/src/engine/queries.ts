@@ -4,11 +4,11 @@
 
 import { z } from 'zod'
 
-import { type Doc, bodies, dependsOn, inputsOf } from './doc'
+import { type Doc, bodies, dependsOn, effectiveParameters, inputsOf, withConfiguration } from './doc'
 import type { BuildResult } from './kernel'
 import { urlFile } from './model-files'
 import { explodeOffset } from './explode'
-import { define } from './registry'
+import { type Ctx, type KernelAPI, command, configKernel, define } from './registry'
 import { featureRef, selector } from './schema'
 import { requireHealthyHistory } from './operations'
 
@@ -22,12 +22,15 @@ export function summarize(doc: Doc, build: BuildResult, detail: 'summary' | 'ful
     units: doc.units,
     ok: build.ok,
     parameter_error: build.parameterError,
-    parameters: doc.parameters.map((p) => {
+    parameters: effectiveParameters(doc).map((p) => {
       const v = build.parameters[p.name]
-      return typeof p.expr === 'number' || String(v) === String(p.expr)
-        ? `${p.name} = ${p.expr}`
-        : `${p.name} = ${p.expr} → ${v ?? '?'}`
+      const line = typeof p.expr === 'number' || String(v) === String(p.expr) ? `${p.name} = ${p.expr}` : `${p.name} = ${p.expr} → ${v ?? '?'}`
+      const base = doc.parameters.find((x) => x.name === p.name)
+      return base && base.expr !== p.expr ? `${line} (configuration ${doc.configuration}; base ${base.expr})` : line
     }),
+    ...(doc.configurations?.length
+      ? { configurations: doc.configurations.map((c) => ({ name: c.name, values: c.values, ...(c.note ? { note: c.note } : {}) })), active_configuration: doc.configuration ?? null }
+      : {}),
     features: doc.features.map((f) => {
       const st = status.get(f.name)
       const base: Record<string, unknown> =
@@ -82,7 +85,7 @@ define({
     const f = ctx.doc.features.find((x) => x.name === a.name)
     if (!f) throw new Error(`no feature "${a.name}"; features are: ${ctx.doc.features.map((x) => x.name).join(', ') || '(none)'}`)
     const st = (await ctx.kernel.build()).features.find((x) => x.name === a.name)
-    const usedBy = ctx.doc.features.filter((x) => dependsOn(x).includes(a.name)).map((x) => x.name)
+    const usedBy = ctx.doc.features.filter((x) => dependsOn(x, ctx.doc).includes(a.name)).map((x) => x.name)
     return { definition: f, status: st, used_by: usedBy }
   },
 })
@@ -195,33 +198,56 @@ define({
   kind: 'query',
   description:
     'Rebuild and verify the design: every feature must build, and every check (set_checks) must pass. Run it after each group of changes and fix what fails before going on.',
-  args: z.object({}),
-  async run(ctx) {
-    const build = await ctx.kernel.build()
-    const checks = await ctx.kernel.checks()
-    const failedFeatures = build.features.filter((f) => !f.ok).map((f) => ({ name: f.name, error: f.error }))
-    const warnings = build.features.filter((f) => f.warnings?.length).map((f) => ({ name: f.name, warnings: f.warnings }))
-    const failedChecks = checks.filter((c) => !c.ok)
-    const slow = build.features
-      .filter((f) => f.ms)
-      .sort((x, y) => y.ms! - x.ms!)
-      .slice(0, 5)
-      .map((f) => `${f.name} ${(f.ms! / 1000).toFixed(1)} s`)
-    return {
-      ok: build.ok && failedChecks.length === 0 && !ctx.recovery,
-      recovery: ctx.recovery,
-      slow_features: slow.length ? slow : undefined,
-      timing_ms: build.timing,
-      summary: `${build.features.length - failedFeatures.length}/${build.features.length} features built, ${checks.length - failedChecks.length}/${checks.length} checks pass`,
-      parameter_error: build.parameterError,
-      failed_features: failedFeatures.length ? failedFeatures : undefined,
-      warnings: warnings.length ? warnings : undefined,
-      appearance_problems: build.appearance,
-      checks,
-      hint: checks.length === 0 ? 'No checks yet: add the requirements with set_checks so changes can be verified.' : undefined,
+  args: z.object({
+    configurations: z
+      .union([z.literal('all'), z.array(z.string()).min(1)])
+      .optional()
+      .describe('Also verify these configurations ("all": every one), each built on its own; default only the active design'),
+  }),
+  async run(ctx, a) {
+    const report = await checkReport(ctx.kernel, ctx.recovery)
+    if (!a.configurations) return report
+    const names = a.configurations === 'all' ? (ctx.doc.configurations ?? []).map((c) => c.name) : a.configurations
+    if (!names.length) throw new Error('the design has no configurations; add one with set_configuration')
+    const variants: Record<string, unknown>[] = []
+    try {
+      for (const name of names) {
+        const r = await checkReport(configKernel(ctx, withConfiguration(ctx.doc, name)), ctx.recovery)
+        variants.push({ configuration: name, ok: r.ok, summary: r.summary, parameter_error: r.parameter_error, failed_features: r.failed_features, failed_checks: r.checks.filter((c) => !c.ok).map((c) => ({ name: c.name, detail: c.detail })) })
+      }
+    } finally {
+      // Leave the kernel on the active design for whatever runs next.
+      await ctx.kernel.build()
     }
+    return { ...report, ok: report.ok && variants.every((v) => v.ok), active: ctx.doc.configuration ?? '(base parameters)', configurations: variants }
   },
 })
+
+async function checkReport(kernel: KernelAPI, recovery: Ctx['recovery']) {
+  const build = await kernel.build()
+  const checks = await kernel.checks()
+  const failedFeatures = build.features.filter((f) => !f.ok).map((f) => ({ name: f.name, error: f.error }))
+  const warnings = build.features.filter((f) => f.warnings?.length).map((f) => ({ name: f.name, warnings: f.warnings }))
+  const failedChecks = checks.filter((c) => !c.ok)
+  const slow = build.features
+    .filter((f) => f.ms)
+    .sort((x, y) => y.ms! - x.ms!)
+    .slice(0, 5)
+    .map((f) => `${f.name} ${(f.ms! / 1000).toFixed(1)} s`)
+  return {
+    ok: build.ok && failedChecks.length === 0 && !recovery,
+    recovery,
+    slow_features: slow.length ? slow : undefined,
+    timing_ms: build.timing,
+    summary: `${build.features.length - failedFeatures.length}/${build.features.length} features built, ${checks.length - failedChecks.length}/${checks.length} checks pass`,
+    parameter_error: build.parameterError,
+    failed_features: failedFeatures.length ? failedFeatures : undefined,
+    warnings: warnings.length ? warnings : undefined,
+    appearance_problems: build.appearance,
+    checks,
+    hint: checks.length === 0 ? 'No checks yet: add the requirements with set_checks so changes can be verified.' : undefined,
+  }
+}
 
 const VIEWS = ['iso', 'iso_back', 'top', 'bottom', 'front', 'back', 'left', 'right'] as const
 
@@ -305,10 +331,19 @@ define({
     names: z.array(featureRef).optional(),
     filename: z.string().optional(),
     detail: z.enum(['blocks', 'models']).optional().describe('Board parts as blocks (default) or as vendor models (STEP)'),
+    configuration: z.string().optional().describe('Export this configuration instead of the active design'),
   }),
   async run(ctx, a) {
     if (!ctx.download) throw new Error('export is only available in the browser')
     requireHealthyHistory(ctx)
+    if (a.configuration !== undefined && a.configuration !== ctx.doc.configuration) {
+      const doc = withConfiguration(ctx.doc, a.configuration)
+      try {
+        return await command('export')!.run!({ ...ctx, doc, kernel: configKernel(ctx, doc) }, { ...a, configuration: undefined, filename: a.filename ?? `model-${a.configuration}.${a.format}` })
+      } finally {
+        await ctx.kernel.build()
+      }
+    }
     const build = await ctx.kernel.build()
     const names = a.names ?? build.bodies
     const models: Record<string, string> = {}

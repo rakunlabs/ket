@@ -2,8 +2,9 @@
 // last built document, so queries always run against what was built last.
 
 import type { Doc, Selector } from '../engine/doc'
-import type { BuildResult, CheckResult, EdgeInfo, FaceInfo, MeshData, SketchLines } from '../engine/kernel'
-import type { AutorouteOptions, AutorouteResult, KernelAPI, SweepOptions } from '../engine/registry'
+import type { BuildResult, CheckResult, EdgeInfo, FaceInfo, MeshData, SketchFrame, SketchLines } from '../engine/kernel'
+import type { View } from '../engine/drawing'
+import type { AutorouteOptions, AutorouteResult, KernelAPI, ProfileSource, SweepOptions } from '../engine/registry'
 import type { MotionPlan } from '../engine/motion'
 import type { SolvedSketch } from '../engine/sketch'
 import type { BoardState } from '../engine/pcb/state'
@@ -148,6 +149,8 @@ export class KernelClient {
       sweep: (opts: SweepOptions) => query<Record<string, unknown>>({ type: 'sweep', opts }),
       mechanisms: () => query<Record<string, unknown>[]>({ type: 'mechanisms' }),
       autoroute: (opts: AutorouteOptions) => query<AutorouteResult>({ type: 'autoroute', opts }),
+      views: (names: string[], views: string[]) => query<View[]>({ type: 'views', names, views }),
+      profile: (source: ProfileSource) => query<{ loops: [number, number][][]; frame?: SketchFrame }>({ type: 'profile', source }),
     }
   }
 }

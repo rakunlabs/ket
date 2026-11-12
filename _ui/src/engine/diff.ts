@@ -28,6 +28,8 @@ function compare<T>(kind: string, a: T[] | undefined, b: T[] | undefined, key: (
 export function diffDocs(main: Doc, next: Doc): Change[] {
   const out: Change[] = []
   out.push(...compare('parameter', main.parameters, next.parameters, (p) => p.name, (p) => String(p.expr)))
+  out.push(...compare('configuration', main.configurations, next.configurations, (c) => c.name, (c) => Object.entries(c.values).map(([k, v]) => `${k}=${v}`).join(', ')))
+  if ((main.configuration ?? '') !== (next.configuration ?? '')) out.push({ kind: 'changed', what: 'active configuration', detail: `${main.configuration ?? 'base'} → ${next.configuration ?? 'base'}` })
   out.push(...compare('sketch', main.sketches, next.sketches, (s) => s.name))
   out.push(...compare('feature', main.features, next.features, (f) => f.name, (f) => f.type))
   out.push(...compare('check', main.checks, next.checks, (c) => c.name))

@@ -4,10 +4,11 @@ In the workspace's **PCB** view, open **Appearance**.
 
 - Choose a solder-mask color: green, black, white, blue, red, purple or yellow.
 - Choose white or black silkscreen ink. Use contrasting mask/ink colors.
-- Add text, or choose **+ Logo** to import a PNG, JPEG or WebP (up to 5 MiB).
-  SVG is not supported in this version. Image conversion happens locally;
-  dark pixels become ink and transparent areas remain empty. Use Threshold
-  and Invert to inspect a monochrome preview before adding it.
+- Add text, or choose **+ Logo** to import a PNG, JPEG, WebP or SVG (up to
+  5 MiB). Image conversion happens locally; an SVG is drawn by the browser
+  as an image (no scripts, nothing external loads) and needs width/height or
+  a viewBox. Dark pixels become ink and transparent areas remain empty. Use
+  Threshold and Invert to inspect a monochrome preview before adding it.
 - Set the printed width, center X/Y, rotation and face. Dimensions accept
   parameter expressions. The original aspect ratio is preserved. Bottom
   artwork is mirrored automatically so it reads correctly from underneath.

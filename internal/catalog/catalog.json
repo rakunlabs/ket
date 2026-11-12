@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "guide": "# Ket: parametric CAD for agents\n\nKet is a parametric CAD and PCB tool that you drive with\ntools. The design is a JSON document: parameters, an ordered list of named\nfeatures, and checks. Geometry is rebuilt from it by OpenCascade every time\nit changes, so every dimension can be an expression over parameters.\n\n## Coordinates\n- Millimetres and degrees. Z is up. The XY plane at z=0 is the build plate.\n- box is centered on X/Y and sits on z=0 by default; cylinder starts at the\n  origin and grows along +axis.\n\n## Projects and tabs\n- Each open project is a tab in the user's Ket window; several can be open\n  at once. Over MCP, open_project opens one (activate: false keeps the\n  user's current tab), close_project closes it, and commands on a closed\n  project open it in a background tab by themselves.\n\n## Workflow\n1. get_document to see what exists. If the project is new, set_description\n   with the brief.\n2. set_parameters for every dimension that matters (sizes, wall, clearances,\n   hole positions). Derive the rest: case_w = \"board_w + 2*wall + 2*gap\".\n3. set_checks for the requirements (fits, clearances, minimum walls) before\n   modelling, so you can verify instead of guess.\n4. Model with features, in a few calls: primitives and extrusions, then\n   boolean (cut/union), then shell, then fillet/chamfer last.\n5. run_checks after each group of changes. Fix every failed feature and\n   failed check before continuing. Read warnings: a cut that removes nothing\n   is a misplaced tool.\n6. render (iso + another view) to look at the result when it matters, or\n   section to see inside. Compare the picture with the intent.\n7. Summarize for the user in a few lines.\n\n## AI-first diagnose and repair\n- Start with get_document and get_problems. The latter combines history,\n  CAD checks, PCB DRC/connectivity, electrical rules and manufacturing\n  warnings with stable problem IDs, objects, locations and fix guidance.\n- Read get_board/get_copper for exact PCB objects. Diagnose from evidence;\n  never declare a board electrically safe just because geometry passes.\n- Use preview_changes with a small batch before a risky repair. It prepares\n  dependent steps in order, builds the candidate and reports introduced,\n  resolved and remaining problems WITHOUT saving anything. Apply reviewed\n  steps with batch or on a proposal. Preview does not certify the circuit.\n- edit_copper repairs specific numbered tracks/vias without rerouting a\n  whole net. Numbers belong to the current revision; re-read after removals\n  or autoroute. move_component unroute: true remains safer for moved parts.\n- Set pin intent with set_pin_rules from actual datasheets. run_erc checks\n  declared output conflicts, no-connect and required pins; unknown types\n  remain unverified. Do not guess types or weaken checks to get a pass.\n- Re-run get_problems after each repair. Inspect renders and measured fits;\n  focus_problem can show the user the current problem in the viewport.\n- If history replay fails, edits and exports are blocked on the incomplete\n  design. get_history shows the failed operation and last good sequence;\n  use a compatible build or undo to that sequence, never silently skip it.\n- cancel_operation interrupts local kernel work and queued calls, preserves\n  saved operations and rebuilds. It does not stop a server AI conversation.\n- Finish by naming remaining errors, untyped pins and manufacturer/physical\n  checks that still need a human. Never claim upload, payment or DFM approval.\n\n## Sketches\n- For any outline that is not a plain box or cylinder, sketch it: sketch\n  on a plane, then extrude or revolve with sketch: \"<name>\".\n- add_to_sketch shapes (rect, circle, slot, polygon) come fully\n  constrained; loops inside the outer loop become holes.\n- For custom outlines, give points (rough guesses are fine), lines/arcs that\n  share points, and constraints (horizontal, vertical, length, distance,\n  radius, tangent, ...). Drive values with parameters.\n- solve_sketch after editing: aim for status \"solved\" with dof 0. A\n  conflict names the constraint numbers to change.\n- Revolve: draw the half cross-section on XZ on the +X side and revolve\n  about Z.\n- Loft blends between sections on parallel planes (rect base to round top);\n  sweep moves a cross-section along a path of points with rounded corners\n  (bend), for handles, channels and bent rods. Both need single loops: make\n  hollow shapes by lofting/sweeping the inside too and cutting it.\n- Symmetric parts: model one side, then mirror it (XZ for left/right).\n  Repeat around an axis with pattern kind \"polar\" (spokes, bolt circles).\n- Lettering that must exist in the part (raised, engraved): the text\n  feature, then union or cut it.\n\n- Gears: the gear command makes involute spur, helical, herringbone,\n  internal, rack, worm and bevel gears. Place the first one; every other\n  gear uses mesh: { with, angle } (or coaxial for a shared shaft), so\n  centers and tooth phases are solved. Drive the whole train with one\n  parameter in the first gear's rotation and check it with get_gears.\n- Motion: Play advances the driven parameter (a gear train drives itself).\n  set_motion adds joints for other moving bodies and physics for loose\n  ones (balls, loads) that fall and collide; check with get_motion and\n  simulate.\n- Mechanisms: planetary picks tooth counts for a ratio and places sun,\n  planets (they orbit), ring and carrier; cam (lift as an expression of t,\n  follower joint kind \"cam\"), geneva (drive + wheel), belt (pulleys turn\n  together). get_mechanisms for sizes and warnings.\n- sweep_motion steps the motion and reports the first parameter value\n  where moving parts collide; run it before calling a mechanism done.\n\n## Appearance (display only)\n- set_material from a preset (aluminum, brushed_steel, chrome, glass,\n  rubber, wood, screen, ...) and assign_material to bodies. Materials are\n  PBR: base color, metalness, roughness, plus texture maps (albedo, normal,\n  roughness, metallic, ao, displacement) from procedural patterns, laid on\n  with uv (box for any shape, cylindrical for round parts).\n- add_decal / add_decals print text or images onto a body: labels, key\n  legends, logos. Point normal out of the surface at at.\n- Check with render shading: \"realistic\". Problems show as appearance_problems.\n- For printed PCB lettering/logos use add_board_artwork instead of decals:\n  decals are display-only and do not become manufacturing silkscreen.\n\n## PCB\n1. set_board with an outline (rect, or an XY sketch driven by the same\n   parameters as the enclosure). The board becomes body \"board\" and each\n   part \"part_<REF>\" in the 3D model.\n2. find_parts by part number, part_info to see pins, add_component by LCSC\n   number. Prefer JLCPCB basic parts in stock.\n3. connect pins into nets by name (\"U1.VIN\", \"J1.GND\"); set_net_class for\n   power nets (e.g. 0.5 mm).\n4. Place parts with room to route: connectors at the edge, decoupling caps\n   next to their pins. get_board shows sizes; run_drc catches overlaps.\n   Moving a routed part: move_component with unroute: true, then\n   autoroute and stitch_vias again.\n5. autoroute, then run_drc. Fix violations, re-route if needed. To redo\n   part of the board (\"this area again, straighter/wider\"), autoroute with\n   region (or nets): only those nets are replaced. tidy_tracks straightens\n   and widens existing tracks without rerouting (width for \"thicker\").\n6. render_board to look at it; export_fab writes the JLCPCB package.\n   manufacturing_quote is local preflight (not a live price quote);\n   export_manufacturing adds board specs, check results and ordering notes\n   for JLCPCB/PCBWay, without uploading, ordering or paying.\n7. For an enclosure: model around \"board\" / \"part_*\" bodies and verify with\n   checks (inside, no_overlap, min_distance).\n8. Real parts: give board parts a STEP model (add_component model, e.g.\n   KiCad kicad-packages3D or kiswitch for MX switches and hot-swap\n   sockets) and import loose ones (switches, keycaps, dev boards); measure\n   them before placing. Footprint holes (switch pins, pegs) are drilled.\n    GND usually goes in pours on both layers plus stitch_vias.\n9. Board artwork: set_board_style chooses mask (green, black, white, blue,\n   red, purple, yellow) and white/black silkscreen ink. add_board_artwork\n   prints text or a monochrome bitmap (# ink, . empty) on top/bottom;\n   at is its center and width preserves aspect ratio. Bottom printing is\n   mirrored automatically. update_board_artwork moves/resizes it;\n   remove_board_artwork deletes it. get_board lists colors and artwork;\n   render_board and render show it. run_drc checks custom ink against\n   pads, board edges and holes, but fine ink lines/gaps still need DFM\n   review. Gerbers carry the ink shapes; mask/ink colors are order\n   preferences in export_manufacturing and must be selected explicitly\n   with the manufacturer. This is single-color silk, not UV color printing.\n\n## Editing print models (STL, 3MF)\n- Files come from Import model in Ket, or from upload_asset: call it with\n  the file name, then PUT the file to the upload link it returns (curl -T).\n  list_assets gives their url (ket:asset/...) and a 3MF's objects;\n  import url#<id> takes one object, where the slicer placed it.\n- STL and 3MF become triangle-mesh bodies. measure them and section or\n  render to find the walls, pockets and free space before changing them.\n- section (axis, at) reads cuts as numbers: walls, pockets, free space.\n  list_solids shows the separate pieces of a body; solids takes some of\n  them (pick near a point, inBox, index, largest) without consuming the\n  source, and with no pick makes a copy to use as a second input.\n- Edit them with boolean: model the pocket, rib or label as B-rep (box,\n  extrude of a sketch, text) and cut or union it. pattern and mirror\n  repeat meshes; fillet, chamfer, shell and selectors need B-rep.\n- Place a part by its box with transform align (to, anchor) instead of\n  computing offsets: e.g. a piece lying in a pocket, bottom on the floor.\n- Check with no_overlap / min_distance / inside as for any body.\n- A body edited from a slicer project goes back into it with\n  export_slicer_3mf (replace: [{ body, object: <its import> }]): print\n  settings, plates and paint stay; new faces take the paint of nearby\n  faces in the same plane. Say which objects changed and that the user\n  should check the paint and re-slice. export 3mf/stl makes a plain file.\n- arrange lays bodies flat on a plate (default 256 × 256) for printing.\n\n## Enclosures that print and assemble\n- One outline, many offsets: extrude the outline polygon, and its inside\n  with profile inset: \"wall\" (lip: inset \"lip_t\", rebate: inset\n  \"lip_t + lip_c\"). Never hand-offset points.\n- Two shells: split at the board top; the base gets a lip around the\n  outer wall, the top a matching rebate (0.15 mm clearance). Arms and\n  legs locate with flat tongue-and-groove plates, not thin pins.\n- Board screws from inside: pilot holes in bosses in the base; the top\n  presses on the screw heads. Two screws are enough for a small board:\n  give the board tabs (sketch outline) into solid parts of the case, such\n  as arms, and screw there, so the cavity under the board stays free for\n  the battery.\n- Every opening a user looks through or touches gets a closed part: a\n  rounded-rect hole for USB-C sized to the connector shell + 0.2 mm, with\n  the connector mouth flush with the outside wall (measure part_<REF>:\n  a recessed port does not take a plug), closed windows for slide\n  switches (knob + travel), a closed well for keys.\n- Light: a clear cap seated flush in the top of the opening (seat 0.4 mm\n  wider than the opening) with a hood around the LED so light does not\n  bleed; not a solid block down to the board. Status LEDs of a dev board\n  get a clear window in the wall next to them; a clear bezel can frame a\n  port and cover its LEDs as one part. Cut openings after the fillet so\n  their edges stay sharp.\n- It must print: no strip of wall thinner than about 1.2 mm between an\n  opening and an edge or the split (extend the opening to the edge\n  instead); ribs, tongues and blocks join the walls on every side they\n  reach (overlap them 0.3 mm into the wall), never stand free with a gap\n  beside them. A union that leaves separate solids says so: fix it.\n- Openings at the split must be cut from both shells.\n- Check: no_overlap between shells, every part against both shells,\n  min_distance for moving parts (keycaps, buttons). measure_between\n  lists where two bodies clash (boxes of each overlap piece).\n- set_explode for an exploded view; render with explode: 1.\n\n## Rules of thumb\n- Save editable source with export_project (.ket); open it in another empty\n  project with import_project. Prepared footprints/routes travel with it,\n  but remote models/textures still need network access. STEP/STL are\n  geometry backups, not replacements for the editable project.\n- Name features by purpose: case_body, usb_cutout, standoff_pattern.\n- A feature's inputs are consumed: after a cut only the result is a body.\n- To change a feature, use update_feature (a few fields) or the feature\n  command with replace: true; everything downstream rebuilds.\n- Selectors pick faces/edges by meaning (\">Z\" top, \"|Z\" vertical edges).\n  Check them with list_faces / list_edges when unsure.\n- Make cutting tools overlap the material they cut by at least 0.5 mm on\n  each open side, and avoid coplanar faces between tool and target.\n- Prefer one shell over many cuts for enclosures; add clearance (0.2-0.5 mm)\n  for parts that must fit together when 3D printed.\n- If a command fails, read the message: it says what to change.\n",
+  "guide": "# Ket: parametric CAD for agents\n\nKet is a parametric CAD and PCB tool that you drive with\ntools. The design is a JSON document: parameters, an ordered list of named\nfeatures, and checks. Geometry is rebuilt from it by OpenCascade every time\nit changes, so every dimension can be an expression over parameters.\n\n## Coordinates\n- Millimetres and degrees. Z is up. The XY plane at z=0 is the build plate.\n- box is centered on X/Y and sits on z=0 by default; cylinder starts at the\n  origin and grows along +axis.\n\n## Projects and tabs\n- Each open project is a tab in the user's Ket window; several can be open\n  at once. Over MCP, open_project opens one (activate: false keeps the\n  user's current tab), close_project closes it, and commands on a closed\n  project open it in a background tab by themselves.\n\n## Workflow\n1. get_document to see what exists. If the project is new, set_description\n   with the brief.\n2. set_parameters for every dimension that matters (sizes, wall, clearances,\n   hole positions). Derive the rest: case_w = \"board_w + 2*wall + 2*gap\".\n3. set_checks for the requirements (fits, clearances, minimum walls) before\n   modelling, so you can verify instead of guess.\n4. Model with features, in a few calls: primitives and extrusions, then\n   boolean (cut/union), then shell, then fillet/chamfer last.\n5. run_checks after each group of changes. Fix every failed feature and\n   failed check before continuing. Read warnings: a cut that removes nothing\n   is a misplaced tool.\n6. render (iso + another view) to look at the result when it matters, or\n   section to see inside. Compare the picture with the intent.\n7. Summarize for the user in a few lines.\n\n## AI-first diagnose and repair\n- Start with get_document and get_problems. The latter combines history,\n  CAD checks, PCB DRC/connectivity, electrical rules and manufacturing\n  warnings with stable problem IDs, objects, locations and fix guidance.\n- Read get_board/get_copper for exact PCB objects. Diagnose from evidence;\n  never declare a board electrically safe just because geometry passes.\n- Use preview_changes with a small batch before a risky repair. It prepares\n  dependent steps in order, builds the candidate and reports introduced,\n  resolved and remaining problems WITHOUT saving anything. Apply reviewed\n  steps with batch or on a proposal. Preview does not certify the circuit.\n- edit_copper repairs specific numbered tracks/vias without rerouting a\n  whole net. Numbers belong to the current revision; re-read after removals\n  or autoroute. move_component unroute: true remains safer for moved parts.\n- Set pin intent with set_pin_rules from actual datasheets. run_erc checks\n  declared output conflicts, no-connect and required pins; unknown types\n  remain unverified. Do not guess types or weaken checks to get a pass.\n- Re-run get_problems after each repair. Inspect renders and measured fits;\n  focus_problem can show the user the current problem in the viewport.\n- If history replay fails, edits and exports are blocked on the incomplete\n  design. get_history shows the failed operation and last good sequence;\n  use a compatible build or undo to that sequence, never silently skip it.\n- cancel_operation interrupts local kernel work and queued calls, preserves\n  saved operations and rebuilds. It does not stop a server AI conversation.\n- Finish by naming remaining errors, untyped pins and manufacturer/physical\n  checks that still need a human. Never claim upload, payment or DFM approval.\n\n## Sketches\n- For any outline that is not a plain box or cylinder, sketch it: sketch\n  on a plane, then extrude or revolve with sketch: \"<name>\".\n- add_to_sketch shapes (rect, circle, slot, polygon) come fully\n  constrained; loops inside the outer loop become holes.\n- Features on a body (a boss on a lid, a pocket in a wall): sketch with\n  on: { feature, face: { where: \">Z\" } } instead of computing the plane\n  offset; it follows the body when parameters change. Extrude > 0 adds,\n  < 0 makes a tool to cut with boolean. solve_sketch shows the frame.\n- For custom outlines, give points (rough guesses are fine), lines/arcs that\n  share points, and constraints (horizontal, vertical, length, distance,\n  radius, tangent, ...). Drive values with parameters.\n- solve_sketch after editing: aim for status \"solved\" with dof 0. A\n  conflict names the constraint numbers to change.\n- Revolve: draw the half cross-section on XZ on the +X side and revolve\n  about Z.\n- Loft blends between sections on parallel planes (rect base to round top);\n  sweep moves a cross-section along a path of points with rounded corners\n  (bend), for handles, channels and bent rods. Both need single loops: make\n  hollow shapes by lofting/sweeping the inside too and cutting it.\n- Symmetric parts: model one side, then mirror it (XZ for left/right).\n  Repeat around an axis with pattern kind \"polar\" (spokes, bolt circles).\n- Lettering that must exist in the part (raised, engraved): the text\n  feature, then union or cut it.\n\n- Gears: the gear command makes involute spur, helical, herringbone,\n  internal, rack, worm and bevel gears. Place the first one; every other\n  gear uses mesh: { with, angle } (or coaxial for a shared shaft), so\n  centers and tooth phases are solved. Drive the whole train with one\n  parameter in the first gear's rotation and check it with get_gears.\n- Motion: Play advances the driven parameter (a gear train drives itself).\n  set_motion adds joints for other moving bodies and physics for loose\n  ones (balls, loads) that fall and collide; check with get_motion and\n  simulate.\n- Mechanisms: planetary picks tooth counts for a ratio and places sun,\n  planets (they orbit), ring and carrier; cam (lift as an expression of t,\n  follower joint kind \"cam\"), geneva (drive + wheel), belt (pulleys turn\n  together). get_mechanisms for sizes and warnings.\n- sweep_motion steps the motion and reports the first parameter value\n  where moving parts collide; run it before calling a mechanism done.\n\n## Appearance (display only)\n- set_material from a preset (aluminum, brushed_steel, chrome, glass,\n  rubber, wood, screen, ...) and assign_material to bodies. Materials are\n  PBR: base color, metalness, roughness, plus texture maps (albedo, normal,\n  roughness, metallic, ao, displacement) from procedural patterns, laid on\n  with uv (box for any shape, cylindrical for round parts).\n- add_decal / add_decals print text or images onto a body: labels, key\n  legends, logos. Point normal out of the surface at at.\n- Check with render shading: \"realistic\". Problems show as appearance_problems.\n- For printed PCB lettering/logos use add_board_artwork instead of decals:\n  decals are display-only and do not become manufacturing silkscreen.\n\n## PCB\n1. set_board with an outline (rect, or an XY sketch driven by the same\n   parameters as the enclosure). The board becomes body \"board\" and each\n   part \"part_<REF>\" in the 3D model.\n2. find_parts by part number, part_info to see pins, add_component by LCSC\n   number. Prefer JLCPCB basic parts in stock.\n3. connect pins into nets by name (\"U1.VIN\", \"J1.GND\"); set_net_class for\n   power nets (e.g. 0.5 mm).\n4. Place parts with room to route: connectors at the edge, decoupling caps\n   next to their pins. get_board shows sizes; run_drc catches overlaps.\n   Moving a routed part: move_component with unroute: true, then\n   autoroute and stitch_vias again.\n5. autoroute, then run_drc. Fix violations, re-route if needed. To redo\n   part of the board (\"this area again, straighter/wider\"), autoroute with\n   region (or nets): only those nets are replaced. tidy_tracks straightens\n   and widens existing tracks without rerouting (width for \"thicker\").\n6. render_board to look at it; export_fab writes the JLCPCB package.\n   manufacturing_quote is local preflight (not a live price quote);\n   export_manufacturing adds board specs, check results and ordering notes\n   for JLCPCB/PCBWay, without uploading, ordering or paying.\n7. For an enclosure: model around \"board\" / \"part_*\" bodies and verify with\n   checks (inside, no_overlap, min_distance).\n8. Real parts: give board parts a STEP model (add_component model, e.g.\n   KiCad kicad-packages3D or kiswitch for MX switches and hot-swap\n   sockets) and import loose ones (switches, keycaps, dev boards); measure\n   them before placing. Footprint holes (switch pins, pegs) are drilled.\n    GND usually goes in pours on both layers plus stitch_vias.\n9. Board artwork: set_board_style chooses mask (green, black, white, blue,\n   red, purple, yellow) and white/black silkscreen ink. add_board_artwork\n   prints text or a monochrome bitmap (# ink, . empty) on top/bottom;\n   at is its center and width preserves aspect ratio. Bottom printing is\n   mirrored automatically. update_board_artwork moves/resizes it;\n   remove_board_artwork deletes it. get_board lists colors and artwork;\n   render_board and render show it. run_drc checks custom ink against\n   pads, board edges and holes, but fine ink lines/gaps still need DFM\n   review. Gerbers carry the ink shapes; mask/ink colors are order\n   preferences in export_manufacturing and must be selected explicitly\n   with the manufacturer. This is single-color silk, not UV color printing.\n\n## Editing print models (STL, 3MF)\n- Files come from Import model in Ket, or from upload_asset: call it with\n  the file name, then PUT the file to the upload link it returns (curl -T).\n  list_assets gives their url (ket:asset/...) and a 3MF's objects;\n  import url#<id> takes one object, where the slicer placed it.\n- STL and 3MF become triangle-mesh bodies. measure them and section or\n  render to find the walls, pockets and free space before changing them.\n- section (axis, at) reads cuts as numbers: walls, pockets, free space.\n  list_solids shows the separate pieces of a body; solids takes some of\n  them (pick near a point, inBox, index, largest) without consuming the\n  source, and with no pick makes a copy to use as a second input.\n- Edit them with boolean: model the pocket, rib or label as B-rep (box,\n  extrude of a sketch, text) and cut or union it. pattern and mirror\n  repeat meshes; fillet, chamfer, shell and selectors need B-rep.\n- Place a part by its box with transform align (to, anchor) instead of\n  computing offsets: e.g. a piece lying in a pocket, bottom on the floor.\n- Check with no_overlap / min_distance / inside as for any body.\n- A body edited from a slicer project goes back into it with\n  export_slicer_3mf (replace: [{ body, object: <its import> }]): print\n  settings, plates and paint stay; new faces take the paint of nearby\n  faces in the same plane. Say which objects changed and that the user\n  should check the paint and re-slice. export 3mf/stl makes a plain file.\n- arrange lays bodies flat on a plate (default 256 × 256) for printing.\n\n## Enclosures that print and assemble\n- One outline, many offsets: extrude the outline polygon, and its inside\n  with profile inset: \"wall\" (lip: inset \"lip_t\", rebate: inset\n  \"lip_t + lip_c\"). Never hand-offset points.\n- Two shells: split at the board top; the base gets a lip around the\n  outer wall, the top a matching rebate (0.15 mm clearance). Arms and\n  legs locate with flat tongue-and-groove plates, not thin pins.\n- Board screws from inside: pilot holes in bosses in the base; the top\n  presses on the screw heads.\n- Screws and inserts by size, not by hand-made cylinders: hole (plain,\n  counterbore, countersink, tapped; size M2..M6, clearance 0.15 for\n  printing) and insert_boss (heat-set inserts M2..M5) on a face picked by\n  selector. thread only for M5 and up; smaller threads: tapped hole or\n  insert. snap_fit hook + window for tool-free lids; draft for molded or\n  cast parts. Two screws are enough for a small board:\n  give the board tabs (sketch outline) into solid parts of the case, such\n  as arms, and screw there, so the cavity under the board stays free for\n  the battery.\n- Every opening a user looks through or touches gets a closed part: a\n  rounded-rect hole for USB-C sized to the connector shell + 0.2 mm, with\n  the connector mouth flush with the outside wall (measure part_<REF>:\n  a recessed port does not take a plug), closed windows for slide\n  switches (knob + travel), a closed well for keys.\n- Light: a clear cap seated flush in the top of the opening (seat 0.4 mm\n  wider than the opening) with a hood around the LED so light does not\n  bleed; not a solid block down to the board. Status LEDs of a dev board\n  get a clear window in the wall next to them; a clear bezel can frame a\n  port and cover its LEDs as one part. Cut openings after the fillet so\n  their edges stay sharp.\n- It must print: no strip of wall thinner than about 1.2 mm between an\n  opening and an edge or the split (extend the opening to the edge\n  instead); ribs, tongues and blocks join the walls on every side they\n  reach (overlap them 0.3 mm into the wall), never stand free with a gap\n  beside them. A union that leaves separate solids says so: fix it.\n  Make it a check: min_wall (min 1.2) on each printed shell, and overhang\n  (angle 45, axis = how it lies on the plate) so supports are a decision,\n  not a surprise; min_wall samples, so read it as a strong hint.\n- Openings at the split must be cut from both shells.\n- Check: no_overlap between shells, every part against both shells,\n  min_distance for moving parts (keycaps, buttons). measure_between\n  lists where two bodies clash (boxes of each overlap piece).\n- set_explode for an exploded view; render with explode: 1.\n- The same part more than once (feet, hinges, two identical shells):\n  model it once, then instance it with translate/rotate. Each instance is\n  its own body (checks, explode, joints, STEP product) and follows the\n  source. pattern instead when the copies should be one merged body.\n\n## Rules of thumb\n- Save editable source with export_project (.ket); open it in another empty\n  project with import_project. Prepared footprints/routes travel with it,\n  but remote models/textures still need network access. STEP/STL are\n  geometry backups, not replacements for the editable project.\n- Name features by purpose: case_body, usb_cutout, standoff_pattern.\n- A feature's inputs are consumed: after a cut only the result is a body.\n- To change a feature, use update_feature (a few fields) or the feature\n  command with replace: true; everything downstream rebuilds.\n- Selectors pick faces/edges by meaning (\">Z\" top, \"|Z\" vertical edges).\n  Check them with list_faces / list_edges when unsure.\n- Make cutting tools overlap the material they cut by at least 0.5 mm on\n  each open side, and avoid coplanar faces between tool and target.\n- Prefer one shell over many cuts for enclosures; add clearance (0.2-0.5 mm)\n  for parts that must fit together when 3D printed.\n- Variants of one design (board sizes, a bigger battery): keep one model\n  and add set_configuration per variant with the parameter values that\n  differ; use_configuration switches the built design, run_checks\n  configurations: \"all\" verifies every variant, export / export_fab take\n  configuration. Do not copy features per variant.\n- Drawings for a workshop or a datasheet: drawing (front, top, right, iso\n  with hidden lines and overall dimensions; SVG, PDF or DXF). Flat parts\n  for a laser: export_dxf of the sketch, or of a body's face.\n- If a command fails, read the message: it says what to change.\n",
   "commands": [
     {
       "name": "set_parameters",
@@ -70,6 +70,92 @@
       "group": "params",
       "kind": "mutate",
       "description": "Delete parameters. Fails while a parameter, feature or check still uses one of them.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "names"
+        ]
+      }
+    },
+    {
+      "name": "set_configuration",
+      "group": "params",
+      "kind": "mutate",
+      "description": "Create or update a configuration: a named variant of the design whose values replace those of the base parameters (e.g. \"esp32s3\" with board_w 52, \"esp32c3\" with board_w 40). Only existing parameters can be overridden; values are numbers or expressions like any parameter. Merges into an existing configuration with this name (pass replace: true to start it over). The design keeps building with the base parameters until use_configuration picks one. Verify every variant with run_checks configurations: \"all\".",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "values": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+              "type": [
+                "number",
+                "string"
+              ]
+            },
+            "description": "Parameter name → value in this configuration"
+          },
+          "note": {
+            "type": "string"
+          },
+          "replace": {
+            "description": "Replace the configuration instead of merging into it",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "values"
+        ]
+      },
+      "examples": [
+        {
+          "name": "large",
+          "values": {
+            "board_w": 80,
+            "wall": 2.4
+          },
+          "note": "Bigger board, thicker walls"
+        }
+      ]
+    },
+    {
+      "name": "use_configuration",
+      "group": "params",
+      "kind": "mutate",
+      "description": "Build the design with a configuration (its values replace the base parameters), or with the base parameters when name is omitted. Everything rebuilds: features, the board, checks. Exports use it too.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Configuration name; omit for the base parameters",
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "delete_configurations",
+      "group": "params",
+      "kind": "mutate",
+      "description": "Delete configurations. When the active one goes, the design builds with the base parameters again.",
       "schema": {
         "type": "object",
         "properties": {
@@ -3352,6 +3438,1062 @@
       ]
     },
     {
+      "name": "hole",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Drill screw holes into a face of a body: plain (clearance hole, ISO 273 normal fit by default), counterbore (room for a socket head cap screw, ISO 4762), countersink (90° for a flat head, ISO 10642) or tapped (tap drill for a thread cut later or a self-tapping screw in plastic). size (M2..M6) sets the diameters; d overrides the hole diameter. Through the whole body unless depth is given. clearance adds to every diameter for 3D printing (0.1..0.2 mm). The face is found by selector on every rebuild.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string",
+            "description": "Name of an existing feature"
+          },
+          "face": {
+            "type": "object",
+            "properties": {
+              "where": {
+                "description": "CadQuery-style terms joined with \" and \": \">Z\" farthest along +Z (top), \"<Z\" bottom, \"+Z\"/\"-Z\" faces facing +Z/-Z, \"|Z\" parallel to Z (edges) or normal ∥ Z (faces), \"#Z\" perpendicular to Z, \"all\", \"not >Z\". Any axis X, Y, Z.",
+                "type": "string"
+              },
+              "type": {
+                "description": "Faces: plane, cylinder, cone, sphere, torus. Edges: line, circle, ellipse, bspline.",
+                "type": "string"
+              },
+              "inBox": {
+                "description": "Only elements whose center is in the box [[x0,y0,z0],[x1,y1,z1]]",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "[x, y, z]"
+                  },
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "[x, y, z]"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "near": {
+                "description": "Only elements touching this point",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              }
+            },
+            "description": "One flat face of target the holes start from, e.g. { where: \">Z\" } for the top; they go in along its normal. Positions at are (u, v) on that face from its center, as for a sketch on a face"
+          },
+          "at": {
+            "minItems": 1,
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                {
+                  "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "[x, y]"
+            },
+            "description": "Hole centers [u, v] on the face"
+          },
+          "kind": {
+            "description": "Default plain",
+            "type": "string",
+            "enum": [
+              "plain",
+              "counterbore",
+              "countersink",
+              "tapped"
+            ]
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "M2",
+              "M2.5",
+              "M3",
+              "M4",
+              "M5",
+              "M6"
+            ]
+          },
+          "d": {
+            "description": "Hole diameter, mm (overrides the size)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "fit": {
+            "description": "Clearance fit for plain/counterbore/countersink (default normal)",
+            "type": "string",
+            "enum": [
+              "close",
+              "normal"
+            ]
+          },
+          "depth": {
+            "description": "Depth below the face, mm (default through)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "clearance": {
+            "description": "Added to every diameter, mm (default 0)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "target",
+          "face",
+          "at"
+        ]
+      },
+      "examples": [
+        {
+          "name": "lid_screws",
+          "target": "lid",
+          "face": {
+            "where": ">Z"
+          },
+          "at": [
+            [
+              -16,
+              -10
+            ],
+            [
+              16,
+              -10
+            ],
+            [
+              -16,
+              10
+            ],
+            [
+              16,
+              10
+            ]
+          ],
+          "kind": "countersink",
+          "size": "M3",
+          "clearance": 0.15
+        }
+      ]
+    },
+    {
+      "name": "insert_boss",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Add bosses with holes for brass heat-set inserts (M2..M5, common short inserts) on a face of a body, or (height 0) holes straight into the face. The hole is the insert's melt diameter and its length + 0.5 mm deep; the boss is hole + 2 × wall unless d is given. Bosses overlap the face 0.3 mm so they fuse with it. Warns when the wall is thin or the hole goes through the part.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string",
+            "description": "Name of an existing feature"
+          },
+          "face": {
+            "type": "object",
+            "properties": {
+              "where": {
+                "description": "CadQuery-style terms joined with \" and \": \">Z\" farthest along +Z (top), \"<Z\" bottom, \"+Z\"/\"-Z\" faces facing +Z/-Z, \"|Z\" parallel to Z (edges) or normal ∥ Z (faces), \"#Z\" perpendicular to Z, \"all\", \"not >Z\". Any axis X, Y, Z.",
+                "type": "string"
+              },
+              "type": {
+                "description": "Faces: plane, cylinder, cone, sphere, torus. Edges: line, circle, ellipse, bspline.",
+                "type": "string"
+              },
+              "inBox": {
+                "description": "Only elements whose center is in the box [[x0,y0,z0],[x1,y1,z1]]",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "[x, y, z]"
+                  },
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "[x, y, z]"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "near": {
+                "description": "Only elements touching this point",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              }
+            },
+            "description": "One flat face of target the holes start from, e.g. { where: \">Z\" } for the top; they go in along its normal. Positions at are (u, v) on that face from its center, as for a sketch on a face"
+          },
+          "at": {
+            "minItems": 1,
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                {
+                  "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "[x, y]"
+            },
+            "description": "Boss centers [u, v] on the face"
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "M2",
+              "M2.5",
+              "M3",
+              "M4",
+              "M5"
+            ]
+          },
+          "height": {
+            "description": "Boss height above the face, mm (default 0: holes in the face)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "d": {
+            "description": "Boss outer diameter, mm",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "target",
+          "face",
+          "at",
+          "size"
+        ]
+      },
+      "examples": [
+        {
+          "name": "base_bosses",
+          "target": "base_shell",
+          "face": {
+            "where": "<Z",
+            "near": [
+              0,
+              0,
+              2
+            ]
+          },
+          "at": [
+            [
+              -20,
+              -12
+            ],
+            [
+              20,
+              12
+            ]
+          ],
+          "size": "M3",
+          "height": 4
+        }
+      ]
+    },
+    {
+      "name": "thread",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Make a metric thread (ISO 60° profile) as a solid along +axis (default Z) from the origin: external is the threaded rod; internal is a tool to cut a threaded hole with boolean. size (M2..M6) gives d and coarse pitch, or set d and pitch. clearance opens printed threads (default 0.15 mm radial for internal). Threads under M3 rarely print well: use a tapped hole or a heat-set insert. Heavy geometry: use few threads per part.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "external",
+              "internal"
+            ]
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "M2",
+              "M2.5",
+              "M3",
+              "M4",
+              "M5",
+              "M6"
+            ]
+          },
+          "d": {
+            "description": "Major diameter, mm",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "pitch": {
+            "description": "Thread pitch, mm",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "length": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "clearance": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "axis": {
+            "type": "string",
+            "enum": [
+              "X",
+              "Y",
+              "Z"
+            ]
+          },
+          "translate": {
+            "description": "Move by [x, y, z] after rotating",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "rotate": {
+            "description": "Rotate by [rx, ry, rz] degrees about the origin, X then Y then Z",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "length"
+        ]
+      },
+      "examples": [
+        {
+          "name": "knob_thread",
+          "kind": "external",
+          "size": "M6",
+          "length": 12,
+          "translate": [
+            0,
+            0,
+            5
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Taper faces by an angle (degrees) from a neutral plane, for molded or cast parts and for walls that release from a print bed or a mold. The faces keep their place where they cross the neutral plane (default XY at z = 0) and lean in as they go away from it along the plane normal (+Z for XY), so a part standing on the plane narrows upward and pulls out of a mold; a negative angle widens it. Select side walls, e.g. { where: \"#Z\" }. Apply before fillets and shells.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string",
+            "description": "Name of an existing feature"
+          },
+          "faces": {
+            "type": "object",
+            "properties": {
+              "where": {
+                "description": "CadQuery-style terms joined with \" and \": \">Z\" farthest along +Z (top), \"<Z\" bottom, \"+Z\"/\"-Z\" faces facing +Z/-Z, \"|Z\" parallel to Z (edges) or normal ∥ Z (faces), \"#Z\" perpendicular to Z, \"all\", \"not >Z\". Any axis X, Y, Z.",
+                "type": "string"
+              },
+              "type": {
+                "description": "Faces: plane, cylinder, cone, sphere, torus. Edges: line, circle, ellipse, bspline.",
+                "type": "string"
+              },
+              "inBox": {
+                "description": "Only elements whose center is in the box [[x0,y0,z0],[x1,y1,z1]]",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "[x, y, z]"
+                  },
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "[x, y, z]"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "near": {
+                "description": "Only elements touching this point",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              }
+            },
+            "description": "Picks faces or edges by meaning; check the result with list_faces / list_edges"
+          },
+          "angle": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "XY",
+              "XZ",
+              "YZ"
+            ],
+            "description": "Sketch plane: XY extrudes along +Z, XZ along +Y, YZ along +X"
+          },
+          "offset": {
+            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "target",
+          "faces",
+          "angle"
+        ]
+      },
+      "examples": [
+        {
+          "name": "case_draft",
+          "target": "case_body",
+          "faces": {
+            "where": "#Z"
+          },
+          "angle": 2
+        }
+      ]
+    },
+    {
+      "name": "snap_fit",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "A cantilever snap-fit: part hook is a beam standing on z = 0 (thickness along X from 0, width along Y centered, length up +Z) with a catch on +X at the top (flat underside that holds, 30° lead-in on top); place it with translate/rotate and union it with its part. part window (hook: the hook feature) is the matching opening, placed where the catch latches, to cut from the mating wall with boolean; it follows the hook's placement. Warns when the bending strain is above what PLA takes (about 3%).",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "part": {
+            "type": "string",
+            "enum": [
+              "hook",
+              "window"
+            ]
+          },
+          "hook": {
+            "description": "window: the snap_fit hook it takes",
+            "type": "string"
+          },
+          "length": {
+            "description": "hook: beam length, mm (default 10)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "width": {
+            "description": "hook: beam width (default 6)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "thickness": {
+            "description": "hook: beam thickness (default 1.6)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "catch": {
+            "description": "hook: catch overhang (default 1)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "catch_length": {
+            "description": "hook: catch height along the beam (default 2)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "clearance": {
+            "description": "window: gap around the catch (default 0.3)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "wall": {
+            "description": "window: thickness of the wall it cuts through (default 2)",
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "translate": {
+            "description": "Move by [x, y, z] after rotating",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "rotate": {
+            "description": "Rotate by [rx, ry, rz] degrees about the origin, X then Y then Z",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "part"
+        ]
+      },
+      "examples": [
+        {
+          "name": "lid_hook",
+          "part": "hook",
+          "length": 8,
+          "thickness": 1.2,
+          "catch": 0.8,
+          "translate": [
+            20,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "base_window",
+          "part": "window",
+          "hook": "lid_hook"
+        }
+      ]
+    },
+    {
       "name": "transform",
       "group": "cad",
       "kind": "mutate",
@@ -3557,6 +4699,123 @@
               "floor_z + 0.2"
             ]
           }
+        }
+      ]
+    },
+    {
+      "name": "instance",
+      "group": "cad",
+      "kind": "mutate",
+      "description": "Place another copy of a body without consuming it: the second (third, ...) of the same part in an assembly, e.g. four identical feet, two hinges. The source stays a body where it is; the instance follows it whenever it changes (edit the source once). Each instance is its own body for checks, measure, explode, motion joints and export (STEP writes one named product per instance). For a pattern that becomes one merged body, use pattern instead.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Unique feature name, e.g. \"case_body\", \"usb_cutout\""
+          },
+          "note": {
+            "description": "Why this feature exists (helps later edits)",
+            "type": "string"
+          },
+          "color": {
+            "description": "CSS color for the viewport, e.g. \"#4a90d9\". Display only: use it to tell parts apart (case, lid, buttons, light pipe)",
+            "type": "string"
+          },
+          "opacity": {
+            "description": "Viewport opacity 0.05..1 (default 1); e.g. 0.3 for a see-through case. Display only",
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1
+          },
+          "hidden": {
+            "description": "Hide the body (it can still be used as a tool)",
+            "type": "boolean"
+          },
+          "of": {
+            "type": "string",
+            "description": "The body to place again"
+          },
+          "translate": {
+            "description": "Move by [x, y, z] after rotating",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "rotate": {
+            "description": "Rotate by [rx, ry, rz] degrees about the origin, X then Y then Z",
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              },
+              {
+                "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            ],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "replace": {
+            "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "of"
+        ]
+      },
+      "examples": [
+        {
+          "name": "foot_2",
+          "of": "foot",
+          "translate": [
+            60,
+            0,
+            0
+          ]
         }
       ]
     },
@@ -4361,7 +5620,7 @@
       "name": "set_checks",
       "group": "checks",
       "kind": "mutate",
-      "description": "Add or replace (by name) design checks: requirements that run_checks verifies after every change. Write the requirements first, then model, then run_checks. Kinds: expr (boolean over parameters), min_distance (clearance between two bodies), no_overlap, inside (inner fits in outer with margin), volume (min/max).",
+      "description": "Add or replace (by name) design checks: requirements that run_checks verifies after every change. Write the requirements first, then model, then run_checks. Kinds: expr (boolean over parameters), min_distance (clearance between two bodies), no_overlap, inside (inner fits in outer with margin), volume (min/max), overhang (surface steeper than angle from vertical for the print direction, which needs support) and min_wall (walls thinner than min, found by sampling: approximate).",
       "schema": {
         "type": "object",
         "properties": {
@@ -4542,6 +5801,90 @@
                     "name",
                     "kind",
                     "target"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "overhang"
+                    },
+                    "target": {
+                      "type": "string",
+                      "description": "Name of an existing feature"
+                    },
+                    "angle": {
+                      "description": "Steepest printable overhang, degrees from vertical (default 45)",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "axis": {
+                      "description": "Print direction: the way up on the printer (default +Z, the body as modelled)",
+                      "type": "string",
+                      "enum": [
+                        "+Z",
+                        "-Z",
+                        "+X",
+                        "-X",
+                        "+Y",
+                        "-Y"
+                      ]
+                    },
+                    "max_area": {
+                      "description": "Overhang area allowed, mm² (default 0: any overhang fails); bridges and small chamfers may be fine",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "note": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "kind",
+                    "target"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "min_wall"
+                    },
+                    "target": {
+                      "type": "string",
+                      "description": "Name of an existing feature"
+                    },
+                    "min": {
+                      "description": "Thinnest wall the printer makes reliably, mm (e.g. 1.2 for a 0.4 mm nozzle)",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "note": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "kind",
+                    "target",
+                    "min"
                   ]
                 }
               ],
@@ -4805,7 +6148,7 @@
       "name": "sketch",
       "group": "sketch",
       "kind": "mutate",
-      "description": "Create (or with replace: true redefine) a constrained 2D sketch on a plane. Plane coordinates (u, v): XY → (x, y) at z = offset, XZ → (x, z) at y = offset, YZ → (y, z) at x = offset. Points are starting guesses; constraints hold the intent and the solver moves the points. Lines and arcs that share points form closed outlines; loops inside loops become holes. Use parameters in values so the sketch follows the design. Shortcuts: add_to_sketch with rect/circle/slot/polygon. Then extrude or revolve it with sketch: \"<name>\".",
+      "description": "Create (or with replace: true redefine) a constrained 2D sketch on a plane, or on a flat face of a built feature (on: { feature, face: selector }, e.g. the top of a case: face { where: \">Z\" }). Plane coordinates (u, v): XY → (x, y) at z = offset, XZ → (x, z) at y = offset, YZ → (y, z) at x = offset. On a face: origin at the face center, offset along its outward normal, u along world X (Y for faces facing ±X), v = normal × u; extrude it with a positive distance to add a boss, negative to cut a pocket with boolean. The face selector must pick exactly one flat face; it is re-evaluated on every rebuild. get_feature / solve_sketch report the resolved face frame. Points are starting guesses; constraints hold the intent and the solver moves the points. Lines and arcs that share points form closed outlines; loops inside loops become holes. Use parameters in values so the sketch follows the design. Shortcuts: add_to_sketch with rect/circle/slot/polygon. Then extrude or revolve it with sketch: \"<name>\".",
       "schema": {
         "type": "object",
         "properties": {
@@ -4815,19 +6158,146 @@
             "description": "Sketch name, e.g. \"outline\", \"profile\""
           },
           "plane": {
+            "description": "Sketch plane (XY, XZ, YZ); with on, it is taken from the face",
             "type": "string",
             "enum": [
               "XY",
               "XZ",
               "YZ"
-            ],
-            "description": "Sketch plane: XY extrudes along +Z, XZ along +Y, YZ along +X"
+            ]
           },
           "offset": {
             "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
             "type": [
               "number",
               "string"
+            ]
+          },
+          "on": {
+            "description": "Sketch on a flat face of this feature instead of a plane",
+            "type": "object",
+            "properties": {
+              "feature": {
+                "type": "string",
+                "description": "Name of an existing feature"
+              },
+              "face": {
+                "type": "object",
+                "properties": {
+                  "where": {
+                    "description": "CadQuery-style terms joined with \" and \": \">Z\" farthest along +Z (top), \"<Z\" bottom, \"+Z\"/\"-Z\" faces facing +Z/-Z, \"|Z\" parallel to Z (edges) or normal ∥ Z (faces), \"#Z\" perpendicular to Z, \"all\", \"not >Z\". Any axis X, Y, Z.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "description": "Faces: plane, cylinder, cone, sphere, torus. Edges: line, circle, ellipse, bspline.",
+                    "type": "string"
+                  },
+                  "inBox": {
+                    "description": "Only elements whose center is in the box [[x0,y0,z0],[x1,y1,z1]]",
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          {
+                            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          {
+                            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          }
+                        ],
+                        "items": false,
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "description": "[x, y, z]"
+                      },
+                      {
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          {
+                            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          {
+                            "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          }
+                        ],
+                        "items": false,
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "description": "[x, y, z]"
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "near": {
+                    "description": "Only elements touching this point",
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3
+                  }
+                },
+                "description": "Picks one flat face, e.g. { where: \">Z\" }"
+              }
+            },
+            "required": [
+              "feature",
+              "face"
             ]
           },
           "points": {
@@ -5067,8 +6537,7 @@
           }
         },
         "required": [
-          "name",
-          "plane"
+          "name"
         ]
       },
       "examples": [
@@ -7664,7 +9133,7 @@
       "name": "belt",
       "group": "cad",
       "kind": "mutate",
-      "description": "Add a belt or chain loop around pulleys in a plane (plane coordinates as in sketch, offset = the plane's mid-belt position). Each pulley: at (center), d (pitch diameter) or teeth with the belt pitch (d = pitch / sin(180°/teeth), GT2 pitch 2, #25 chain 6.35). The belt runs around the outside of every pulley. Pulleys with body: \"<feature>\" turn with it: when one of them turns (a gear, a joint), the others follow at the diameter ratio, same direction. get_mechanisms gives the length and, with pitch, the number of links (make it whole).",
+      "description": "Add a belt or chain loop around pulleys in a plane (plane coordinates as in sketch, offset = the plane's mid-belt position). Each pulley: at (center), d (pitch diameter) or teeth with the belt pitch (d = pitch / sin(180°/teeth), GT2 pitch 2, #25 chain 6.35). The belt runs around the outside of every pulley, except back idlers (back: true): a tensioner outside the loop that the belt runs over with its back, bending a run inward; the pulleys are taken in order around their middle. Pulleys with body: \"<feature>\" turn with it: when one of them turns (a gear, a joint), the others follow at the diameter ratio, same direction (back idlers the other way). get_mechanisms gives the length and, with pitch, the number of links (make it whole).",
       "schema": {
         "type": "object",
         "properties": {
@@ -7753,6 +9222,10 @@
                 "body": {
                   "description": "The pulley body, which turns with the belt",
                   "type": "string"
+                },
+                "back": {
+                  "description": "The belt runs over this pulley with its back: an idler or tensioner outside the loop, close enough to bend a run inward. It turns the other way. Default false",
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -9461,6 +10934,10 @@
           },
           "filename": {
             "type": "string"
+          },
+          "configuration": {
+            "description": "Write the board of this configuration instead of the active design",
+            "type": "string"
           }
         }
       }
@@ -10531,7 +12008,24 @@
       "description": "Rebuild and verify the design: every feature must build, and every check (set_checks) must pass. Run it after each group of changes and fix what fails before going on.",
       "schema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "configurations": {
+            "description": "Also verify these configurations (\"all\": every one), each built on its own; default only the active design",
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "all"
+              },
+              {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        }
       }
     },
     {
@@ -10658,6 +12152,10 @@
               "blocks",
               "models"
             ]
+          },
+          "configuration": {
+            "description": "Export this configuration instead of the active design",
+            "type": "string"
           }
         },
         "required": [
@@ -10712,6 +12210,207 @@
           ]
         }
       ]
+    },
+    {
+      "name": "drawing",
+      "group": "query",
+      "kind": "query",
+      "description": "Make a 2D technical drawing of bodies: hidden-line views (default front, top, right and iso; third-angle projection: top above front, right beside it), visible edges solid and hidden edges dashed, overall dimensions, a standard scale that fits the paper, and a title block. Returns the scale, view sizes and dimensions to check, and downloads the sheet as SVG, PDF or DXF (format). Default bodies: every visible B-rep body except the board parts. For a cut-away use section; for a laser-cut outline use export_dxf.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "description": "Bodies to draw (default: all visible bodies except board parts)",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Name of an existing feature"
+            }
+          },
+          "views": {
+            "minItems": 1,
+            "maxItems": 7,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "front",
+                "top",
+                "right",
+                "left",
+                "back",
+                "bottom",
+                "iso"
+              ]
+            }
+          },
+          "format": {
+            "description": "File to download (default svg); without a browser only the summary is returned",
+            "type": "string",
+            "enum": [
+              "svg",
+              "pdf",
+              "dxf"
+            ]
+          },
+          "paper": {
+            "description": "Sheet size, landscape (default A4)",
+            "type": "string",
+            "enum": [
+              "A4",
+              "A3",
+              "A2"
+            ]
+          },
+          "scale": {
+            "description": "Sheet mm per model mm, e.g. 0.5 for 1:2 (default: the largest standard scale that fits)",
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "filename": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "export_dxf",
+      "group": "query",
+      "kind": "query",
+      "description": "Download a flat outline as DXF (R12, mm) for laser, waterjet or CNC cutting: a sketch (its closed loops, holes included), or one flat face of a body picked by selector (its outer edge and holes, in the face's own (u, v) as for a sketch on a face). Returns the loop count, size and area so the result can be checked.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "sketch": {
+            "description": "A sketch to export",
+            "type": "string"
+          },
+          "feature": {
+            "description": "A body whose face to export",
+            "type": "string"
+          },
+          "face": {
+            "description": "With feature: picks one flat face, e.g. { where: \">Z\" }",
+            "type": "object",
+            "properties": {
+              "where": {
+                "description": "CadQuery-style terms joined with \" and \": \">Z\" farthest along +Z (top), \"<Z\" bottom, \"+Z\"/\"-Z\" faces facing +Z/-Z, \"|Z\" parallel to Z (edges) or normal ∥ Z (faces), \"#Z\" perpendicular to Z, \"all\", \"not >Z\". Any axis X, Y, Z.",
+                "type": "string"
+              },
+              "type": {
+                "description": "Faces: plane, cylinder, cone, sphere, torus. Edges: line, circle, ellipse, bspline.",
+                "type": "string"
+              },
+              "inBox": {
+                "description": "Only elements whose center is in the box [[x0,y0,z0],[x1,y1,z1]]",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "[x, y, z]"
+                  },
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      {
+                        "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "[x, y, z]"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "near": {
+                "description": "Only elements touching this point",
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  },
+                  {
+                    "description": "Number in mm (or degrees), or an expression over parameters such as \"wall*2 + 0.2\"",
+                    "type": [
+                      "number",
+                      "string"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              }
+            }
+          },
+          "filename": {
+            "type": "string"
+          }
+        }
+      }
     },
     {
       "name": "cancel_operation",

@@ -51,3 +51,48 @@ jobs:
         run: git diff --exit-code -- internal/catalog/catalog.json
       - run: go vet ./...
       - run: go test -race -count=1 ./...
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: ket
+          POSTGRES_PASSWORD: ket
+          POSTGRES_DB: ket_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ket -d ket_e2e"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      KET_E2E_DSN: postgres://ket:ket@localhost:5432/ket_e2e?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: _ui/pnpm-lock.yaml
+      - run: make build
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: _ui
+      - run: pnpm run e2e
+        working-directory: _ui
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            _ui/playwright-report
+            _ui/test-results
+            _ui/e2e-logs

@@ -91,6 +91,16 @@ export class Session {
 
   /** Switch to a branch (or main) and reconnect. */
   async switchBranch(branch: string | undefined) {
+    // Accept (or a proposal frame) and the server's branch event can both switch at once:
+    // run switches one after the other, so only one socket is ever open.
+    const run = this.switching.then(() => this.doSwitch(branch))
+    this.switching = run.catch(() => {})
+    return run
+  }
+
+  private switching: Promise<void> = Promise.resolve()
+
+  private async doSwitch(branch: string | undefined) {
     if (branch === this.branch && this.ws) return
     this.branch = branch
     const old = this.ws
@@ -171,6 +181,10 @@ export class Session {
 
   private connect() {
     if (this.closed) return
+    // Never two sockets: the server would route calls to one this tab no longer reads.
+    const old = this.ws
+    this.ws = undefined
+    old?.close()
     const ws = new WebSocket(wsURL(this.projectID, this.branch))
     this.ws = ws
     ws.onopen = () => {
@@ -179,6 +193,8 @@ export class Session {
     }
     ws.onmessage = (ev) => {
       if (this.ws === ws) void this.onFrame(JSON.parse(ev.data as string) as Frame)
+      // A socket this tab replaced: close it so the server stops sending to it.
+      else ws.close()
     }
     ws.onclose = () => {
       if (this.ws !== ws) return

@@ -7,7 +7,7 @@ import { z } from 'zod'
 
 import type { Doc, Sketch, SketchConstraint, SketchEntity, SketchPoint } from './doc'
 import { define } from './registry'
-import { expr, ident, plane, vec2 } from './schema'
+import { expr, featureRef, ident, plane, selector, vec2 } from './schema'
 import { CONSTRAINT_KINDS, summarizeConstraint } from './sketch'
 
 const sid = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'use letters, digits and _, e.g. "p1", "top"')
@@ -127,11 +127,15 @@ define({
   group: 'sketch',
   kind: 'mutate',
   description:
-    'Create (or with replace: true redefine) a constrained 2D sketch on a plane. Plane coordinates (u, v): XY → (x, y) at z = offset, XZ → (x, z) at y = offset, YZ → (y, z) at x = offset. Points are starting guesses; constraints hold the intent and the solver moves the points. Lines and arcs that share points form closed outlines; loops inside loops become holes. Use parameters in values so the sketch follows the design. Shortcuts: add_to_sketch with rect/circle/slot/polygon. Then extrude or revolve it with sketch: "<name>".',
+    'Create (or with replace: true redefine) a constrained 2D sketch on a plane, or on a flat face of a built feature (on: { feature, face: selector }, e.g. the top of a case: face { where: ">Z" }). Plane coordinates (u, v): XY → (x, y) at z = offset, XZ → (x, z) at y = offset, YZ → (y, z) at x = offset. On a face: origin at the face center, offset along its outward normal, u along world X (Y for faces facing ±X), v = normal × u; extrude it with a positive distance to add a boss, negative to cut a pocket with boolean. The face selector must pick exactly one flat face; it is re-evaluated on every rebuild. get_feature / solve_sketch report the resolved face frame. Points are starting guesses; constraints hold the intent and the solver moves the points. Lines and arcs that share points form closed outlines; loops inside loops become holes. Use parameters in values so the sketch follows the design. Shortcuts: add_to_sketch with rect/circle/slot/polygon. Then extrude or revolve it with sketch: "<name>".',
   args: z.object({
     name: ident.describe('Sketch name, e.g. "outline", "profile"'),
-    plane,
+    plane: plane.optional().describe('Sketch plane (XY, XZ, YZ); with on, it is taken from the face'),
     offset: expr.optional(),
+    on: z
+      .object({ feature: featureRef, face: selector.describe('Picks one flat face, e.g. { where: ">Z" }') })
+      .optional()
+      .describe('Sketch on a flat face of this feature instead of a plane'),
     points: z.array(point).optional(),
     entities: z.array(entity).optional(),
     constraints: z.array(constraint).optional(),
@@ -174,10 +178,13 @@ define({
   ],
   apply(doc, a) {
     const next = clone(doc)
+    if (!a.plane && !a.on) throw new Error('give a plane (XY, XZ or YZ) or on: { feature, face } to sketch on a face')
+    if (a.on && !next.features.some((f) => f.name === a.on!.feature)) throw new Error(`on.feature: no feature "${a.on.feature}"; features are: ${next.features.map((f) => f.name).join(', ') || '(none yet)'}`)
     const s: Sketch = {
       name: a.name,
-      plane: a.plane,
+      plane: a.plane ?? 'XY',
       ...(a.offset !== undefined ? { offset: a.offset } : {}),
+      ...(a.on ? { on: a.on } : {}),
       points: (a.points ?? []) as SketchPoint[],
       entities: (a.entities ?? []) as SketchEntity[],
       constraints: (a.constraints ?? []).map(toConstraint),
@@ -191,7 +198,7 @@ define({
       return { doc: next, summary: `replaced sketch ${a.name}` }
     }
     next.sketches.push(s)
-    return { doc: next, summary: `added sketch ${a.name} on ${a.plane} (${s.points.length} points, ${s.entities.length} entities, ${s.constraints.length} constraints)` }
+    return { doc: next, summary: `added sketch ${a.name} on ${a.on ? `a face of ${a.on.feature}` : a.plane} (${s.points.length} points, ${s.entities.length} entities, ${s.constraints.length} constraints)` }
   },
 })
 
@@ -429,7 +436,10 @@ define({
     const sk = await ctx.kernel.sketch(a.name)
     return {
       name: s.name,
-      plane: s.plane,
+      plane: s.on ? undefined : s.plane,
+      on: s.on,
+      frame: s.on ? sk.frame : undefined,
+      frame_error: sk.frame_error,
       status: sk.status,
       ok: sk.ok,
       dof: sk.dof,
