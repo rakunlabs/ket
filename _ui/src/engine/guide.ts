@@ -171,7 +171,9 @@ it changes, so every dimension can be an expression over parameters.
    call too) and committed as add_track/add_via in one batch.
 13. A second opinion: export_kicad writes a .kicad_pcb (KiCad 8/9) to run
    KiCad's DRC on or to continue there; read its notes for what is not
-   carried over (net classes, teardrops, own 3D models).
+   carried over (net classes, teardrops, own 3D models). import_kicad opens
+   a KiCad board (the user gives the file text); its summary lists what was
+   lost: tell the user, then re-add net classes, stackup and silk text.
 
 ## Editing print models (STL, 3MF)
 - Files come from Import model in Ket, or from upload_asset: call it with

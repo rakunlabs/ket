@@ -10,6 +10,7 @@ import { boardStyle } from './artwork'
 import { boardDrills } from './drills'
 import { fabFiles } from './fab'
 import { writeKicadPcb } from './kicad'
+import { readKicadPcb } from './kicad-read'
 import { schematic } from './schematic'
 import { clone, comp, pcbOf } from './shared'
 
@@ -299,5 +300,31 @@ define({
       else delete c.sch
     }
     return { doc: next, summary: `placed symbols ${a.moves.map((m) => m.ref).join(', ')}` }
+  },
+})
+
+define({
+  name: 'import_kicad',
+  group: 'pcb',
+  kind: 'mutate',
+  description:
+    'Open a KiCad board (.kicad_pcb text, KiCad 6 to 9) as this project\'s PCB: the Edge.Cuts outline (as an XY sketch "board_outline", cut-outs included), footprints with pads, silk lines, courtyard box, pin functions, values and LCSC numbers, nets, tracks (arcs become polylines), vias (blind/buried kept), zones and keep-out rule areas, mounting holes. Coordinates move so the outline\'s centre is Ket\'s origin (y up). Returns losses: everything that was not carried over or changed. Refuses to replace an existing board unless replace: true. Undo restores the previous design.',
+  args: z.object({
+    data: z.string().max(40_000_000).describe('The whole .kicad_pcb file text'),
+    replace: z.boolean().optional(),
+  }),
+  apply(doc, a) {
+    if (doc.pcb && !a.replace) throw new Error('this project has a board: open a new project, or pass replace: true (undo restores it)')
+    const r = readKicadPcb(a.data)
+    const next = clone(doc)
+    // The outline as a fully fixed sketch: every corner a fixed point, so it solves as drawn.
+    const name = 'board_outline'
+    const loops = [r.outline, ...r.cutouts]
+    const points = loops.flatMap((l, li) => l.map((p, i) => ({ id: `o${li}_p${i}`, x: p[0], y: p[1], fixed: true })))
+    const entities = loops.flatMap((l, li) => l.map((_, i) => ({ id: `o${li}_l${i}`, kind: 'line' as const, a: `o${li}_p${i}`, b: `o${li}_p${(i + 1) % l.length}` })))
+    next.sketches = [...next.sketches.filter((s) => s.name !== name), { name, plane: 'XY', points, entities, constraints: [], note: 'Imported from KiCad' }]
+    next.pcb = { ...r.pcb, outline: { sketch: name } }
+    const c = r.counts
+    return { doc: next, summary: `imported KiCad board: ${c.footprints} parts, ${c.nets} nets, ${c.tracks} tracks, ${c.vias} vias${r.losses.length ? `; not carried over: ${r.losses.join('; ')}` : ''}` }
   },
 })

@@ -79,6 +79,15 @@ jobs:
           done
       - run: pnpm exec tsx scripts/kicad-check.ts kicad-out/example.drc.json kicad-out/six-layer.drc.json
         working-directory: _ui
+      - name: Import KiCad's demo boards
+        run: |
+          mkdir -p _ui/kicad-demos
+          for f in pic_programmer/pic_programmer ecc83/ecc83-pp custom_pads_test/custom_pads_test microwave/microwave interf_u/interf_u; do
+            docker run --rm --entrypoint cat kicad/kicad:9.0 /usr/share/kicad/demos/$f.kicad_pcb > _ui/kicad-demos/$(basename $f).kicad_pcb
+          done
+          docker run --rm --entrypoint cat kicad/kicad:9.0 /usr/share/kicad/template/Arduino_Nano/Arduino_Nano.kicad_pcb > _ui/kicad-demos/arduino_nano.kicad_pcb
+      - run: pnpm exec tsx scripts/kicad-import-check.ts kicad-demos
+        working-directory: _ui
 
   e2e:
     runs-on: ubuntu-latest

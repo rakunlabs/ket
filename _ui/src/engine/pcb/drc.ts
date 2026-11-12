@@ -301,10 +301,30 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: T
 
   const seen = new Set<string>()
   const refOf = (c: Cu) => (c.kind === 'pad' ? c.id.slice(0, c.id.indexOf('.')) : '')
-  for (let i = 0; i < cu.length; i++)
-    for (let j = i + 1; j < cu.length; j++) {
-      const x = cu[i]
-      const y = cu[j]
+  // Boxes, and a sort along x: a pair whose boxes are further apart than any clearance cannot clash.
+  const reach = Math.max(R.minClearance, ...[...b.classes.values()].map((c) => c.clearance)) + 0.01
+  const boxOf = (c: Cu): [number, number, number, number] => {
+    if (c.poly) {
+      const xs = c.poly.map((q) => q.x)
+      const ys = c.poly.map((q) => q.y)
+      return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
+    }
+    if (c.seg) {
+      const r = c.w! / 2
+      return [Math.min(c.seg[0].x, c.seg[1].x) - r, Math.min(c.seg[0].y, c.seg[1].y) - r, Math.max(c.seg[0].x, c.seg[1].x) + r, Math.max(c.seg[0].y, c.seg[1].y) + r]
+    }
+    return [c.c!.x - c.r!, c.c!.y - c.r!, c.c!.x + c.r!, c.c!.y + c.r!]
+  }
+  const boxes = cu.map(boxOf)
+  const order = cu.map((_, i) => i).sort((p, q) => boxes[p][0] - boxes[q][0])
+  for (let oi = 0; oi < order.length; oi++)
+    for (let oj = oi + 1; oj < order.length; oj++) {
+      const [i, j] = [order[oi], order[oj]]
+      // Sorted by left edge: once the next one starts past this one's right edge plus reach, so do all after it.
+      if (boxes[j][0] > boxes[i][2] + reach) break
+      if (boxes[j][1] > boxes[i][3] + reach || boxes[i][1] > boxes[j][3] + reach) continue
+      const x = cu[Math.min(i, j)]
+      const y = cu[Math.max(i, j)]
       if (x.net && x.net === y.net) continue
       // Pads within one footprint are spaced by the manufacturer's land
       // pattern; checking them against the board default only adds noise.
@@ -338,11 +358,52 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: T
     const material = [b.outline, ...b.cutouts.map((c) => area(c) > 0 ? [...c].reverse() : c)]
     if (rings.length && difference(rings, offset(material, -R.copperToEdge)).some((r) => Math.abs(area(r)) > 1e-6))
       out.push({ rule: 'copper_to_edge', message: `zone ${z.index + 1} (${z.net}) leaves the board or is within ${R.copperToEdge} mm of an edge/cutout; increase its edge clearance`, objects: [`zone ${z.index + 1}`], required: R.copperToEdge })
-    for (const copper of cu) {
+    // The pour's edges in a grid of cells: copper only looks at the edges in the cells it covers.
+    const cell = 1
+    const grid = new Map<string, [Poly[number], Poly[number]][]>()
+    for (const reg of z.regions)
+      for (const ring of reg)
+        for (let k = 0; k < ring.length; k++) {
+          const [e0, e1] = [ring[k], ring[(k + 1) % ring.length]]
+          for (let gx = Math.floor(Math.min(e0.x, e1.x) / cell); gx <= Math.floor(Math.max(e0.x, e1.x) / cell); gx++)
+            for (let gy = Math.floor(Math.min(e0.y, e1.y) / cell); gy <= Math.floor(Math.max(e0.y, e1.y) / cell); gy++) {
+              const key = `${gx},${gy}`
+              if (!grid.has(key)) grid.set(key, [])
+              grid.get(key)!.push([e0, e1])
+            }
+        }
+    const regionBoxes = z.regions.map((reg) => {
+      const xs = reg[0].map((q) => q.x)
+      const ys = reg[0].map((q) => q.y)
+      return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] as [number, number, number, number]
+    })
+    for (const [ci, copper] of cu.entries()) {
       if (copper.net === z.net || !copper.layers.includes(z.layer) || !rings.length) continue
-      const poly = copper.poly ? [copper.poly] : stroke(copper.seg ?? [copper.c!], copper.w ?? copper.r! * 2)
       const need = Math.max(b.netClass.get(z.net)?.clearance ?? R.minClearance, b.netClass.get(copper.net ?? '')?.clearance ?? R.minClearance, R.minClearance)
-      if (intersect(rings, offset(poly, need - 0.005)).some((r) => Math.abs(area(r)) > 1e-6))
+      const cb = boxes[ci]
+      const near = z.regions.filter((_, ri) => {
+        const rb = regionBoxes[ri]
+        return !(rb[0] > cb[2] + need || cb[0] > rb[2] + need || rb[1] > cb[3] + need || cb[1] > rb[3] + need)
+      })
+      if (!near.length) continue
+      // Inside the pour's material (inside an outline, outside its holes): a clash.
+      const probe = copper.poly ? copper.poly[0] : copper.seg ? copper.seg[0] : copper.c!
+      let gap = near.some((reg) => inside(probe, reg[0]) && !reg.slice(1).some((h) => inside(probe, h))) ? 0 : Infinity
+      if (gap > 0) {
+        // Else the distance to the nearest pour edge within reach.
+        const pts = copper.poly ?? (copper.seg ? [copper.seg[0], copper.seg[1]] : [copper.c!])
+        const r = copper.poly ? 0 : copper.seg ? copper.w! / 2 : copper.r!
+        const segs = pts.length === 1 ? [[pts[0], pts[0]]] : copper.poly ? pts.map((q, k) => [q, pts[(k + 1) % pts.length]]) : [[pts[0], pts[1]]]
+        const seen = new Set<[Poly[number], Poly[number]]>()
+        for (let gx = Math.floor((cb[0] - need) / cell); gx <= Math.floor((cb[2] + need) / cell); gx++)
+          for (let gy = Math.floor((cb[1] - need) / cell); gy <= Math.floor((cb[3] + need) / cell); gy++)
+            for (const e of grid.get(`${gx},${gy}`) ?? []) {
+              if (seen.has(e)) continue
+              seen.add(e)
+              for (const [s0, s1] of segs) gap = Math.min(gap, distSegSeg(s0, s1, e[0], e[1]) - r)
+            }
+      }
+      if (gap < need - 0.005)
         out.push({ rule: 'clearance', message: `zone ${z.index + 1} (${z.net}) is too close to ${copper.id} (${copper.net ?? 'no net'}); keep ${f(need)} mm`, objects: [`zone ${z.index + 1}`, copper.id], required: need, at: pt(copper.poly?.[0] ?? copper.seg?.[0] ?? copper.c!) })
     }
   }

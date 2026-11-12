@@ -142,6 +142,7 @@
   }
 
   let projectInput: HTMLInputElement
+  let kicadInput: HTMLInputElement
   let fileBusy = $state(false)
   let manufacturer = $state<'jlcpcb' | 'pcbway'>('jlcpcb')
   let quantity = $state(5)
@@ -164,6 +165,19 @@
       if (file.size > 25 * 1024 * 1024) throw new Error('This .ket file is larger than 25 MiB.')
       await session.run('import_project', { data: await file.text() })
     }, 'Project imported. Remote models may need network access on first open.')
+  }
+
+  async function openKicadFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    await fileAction(async () => {
+      if (file.size > 40 * 1024 * 1024) throw new Error('This .kicad_pcb file is larger than 40 MiB.')
+      const replace = !!session.doc.pcb && confirm('Replace this project\'s board with the KiCad board? Undo brings the current one back.')
+      if (session.doc.pcb && !replace) throw new Error('Kept the current board.')
+      await session.run('import_kicad', { data: await file.text(), ...(replace ? { replace: true } : {}) })
+    }, 'KiCad board imported. Its history entry lists what was not carried over.')
   }
 
   const failed = $derived(session.build?.features.filter((f) => !f.ok).length ?? 0)
@@ -219,6 +233,10 @@
           <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => fileAction(() => session.run('export_project', { filename: `${project?.name ?? 'project'}.ket` }), 'Project file downloaded.')}><Download size={14} /> Save Ket project</button>
           {#if access.canEdit}
             <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => projectInput.click()}><Upload size={14} /> Import Ket into empty project</button>
+            <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => kicadInput.click()}><Upload size={14} /> Open KiCad board (.kicad_pcb)</button>
+          {/if}
+          {#if session.doc.pcb}
+            <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => fileAction(() => session.run('export_kicad', { filename: `${project?.name ?? 'board'}.kicad_pcb` }), 'KiCad board downloaded.')}><Download size={14} /> Save board for KiCad</button>
           {/if}
         </div>
       </details>
@@ -263,6 +281,7 @@
     </div>
   {/if}
   <input bind:this={projectInput} class="hidden" type="file" accept=".ket,application/json" onchange={openProjectFile} aria-label="Import Ket project file" />
+  <input bind:this={kicadInput} class="hidden" type="file" accept=".kicad_pcb" onchange={openKicadFile} aria-label="Open KiCad board file" />
 
   {#if loadError}
     <div class="note danger m-6">{loadError}</div>

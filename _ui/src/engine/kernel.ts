@@ -457,12 +457,17 @@ export class Kernel {
         try {
           let d = polyDrawing(b.outline)
           for (const c of b.cutouts) d = d.cut(polyDrawing(c))
-          for (const h of drills) {
-            const length = Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y)
-            const hole = length < 1e-9 ? R.drawCircle(h.d / 2) : R.drawRoundedRectangle(length + h.d, h.d, h.d / 2 - 1e-6).rotate(Math.atan2(h.to.y - h.from.y, h.to.x - h.from.x) * 180 / Math.PI)
-            d = d.cut(hole.translate((h.from.x + h.to.x) / 2, (h.from.y + h.to.y) / 2))
+          let solid = (d.sketchOnPlane('XY', b.z) as R.Sketch).extrude(b.thickness) as Shape3D
+          // Holes as one compound of cylinders (and slot prisms) cut in a single pass: a 2D cut per
+          // hole is quadratic and runs out of memory on boards with hundreds of drills.
+          if (drills.length) {
+            const tools: Shape3D[] = drills.map((h) => {
+              const length = Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y)
+              const prof = length < 1e-9 ? R.drawCircle(h.d / 2) : R.drawRoundedRectangle(length + h.d, h.d, h.d / 2 - 1e-6).rotate((Math.atan2(h.to.y - h.from.y, h.to.x - h.from.x) * 180) / Math.PI)
+              return (prof.translate((h.from.x + h.to.x) / 2, (h.from.y + h.to.y) / 2).sketchOnPlane('XY', b.z - 0.1) as R.Sketch).extrude(b.thickness + 0.2) as Shape3D
+            })
+            solid = solid.cut(tools.length === 1 ? tools[0] : (R.makeCompound(tools) as Shape3D))
           }
-          const solid = (d.sketchOnPlane('XY', b.z) as R.Sketch).extrude(b.thickness) as Shape3D
           this.cache.set(BOARD, { key, shape: solid, status: this.describe({ name: BOARD, type: 'extrude' } as Feature, solid, []) })
         } catch (e) {
           result.ok = false
