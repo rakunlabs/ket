@@ -343,7 +343,7 @@
       <Sidebar {session} onrepair={canChat ? requestRepair : undefined} />
       <main class="relative min-w-0 flex-1">
         <div class={['absolute inset-0', mode !== '3d' && 'invisible']}><Viewport bind:this={viewport} {session} /></div>
-        <div class={['absolute inset-0', mode !== 'pcb' && 'invisible']}><BoardView bind:this={boardView} {session} /></div>
+        <div class={['absolute inset-0', mode !== 'pcb' && 'invisible']}><BoardView bind:this={boardView} {session} active={mode === 'pcb'} /></div>
         <div class={['absolute inset-0', mode !== 'sch' && 'invisible']}><SchematicView bind:this={schView} {session} /></div>
       </main>
       {#if showChat && canChat}

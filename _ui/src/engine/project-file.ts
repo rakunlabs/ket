@@ -70,7 +70,7 @@ define({
     if (!ctx.projectOps) throw new Error('project export requires an open Ket browser tab')
     requireHealthyHistory(ctx)
     const data = writeProjectFile(ctx.projectOps)
-    if (a.as_text) return { ok: true, format: 'ket-project', version: 1, bytes: data.length, data }
+    if (a.as_text) return { ok: true, format: 'ket-project', version: 1, bytes: new TextEncoder().encode(data).length, data }
     if (!ctx.download) throw new Error('project export requires an open Ket browser tab')
     const file = a.filename ?? 'project.ket'
     const blob = new Blob([data], { type: 'application/json' })

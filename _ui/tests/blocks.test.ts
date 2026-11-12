@@ -68,6 +68,42 @@ describe('insert_block', () => {
     expect(k.checks(doc).every((c) => c.ok)).toBe(true)
   }, 60_000)
 
+  it('renames only expressions, keeps meshes and part bodies right when moved', async () => {
+    const { ops } = await build([
+      ['set_parameters', { parameters: [{ name: 'length', expr: 20 }, { name: 'k', expr: 2 }] }],
+      ['sketch', { name: 's', plane: 'XY' }],
+      ['add_to_sketch', { sketch: 's', shapes: [{ kind: 'rect', prefix: 'r', w: 'length', h: 'k * 4' }] }],
+      ['extrude', { name: 'plate', sketch: 's', distance: 'k' }],
+      ['text', { name: 'label', text: 'length k', size: 3, depth: 0.5, plane: 'XY', offset: 'k' }],
+      ['gear', { name: 'g1', kind: 'spur', module: 1, teeth: 12, width: 'k' }],
+      ['gear', { name: 'g2', kind: 'spur', module: 1, teeth: 18, width: 'k', mesh: { with: 'g1', angle: 0 } }],
+      ['set_board', { outline: { rect: { w: 20, h: 10 } } }],
+      ['add_component', { footprint_name: '0603', ref: 'R1', at: [0, 0], value: '10k' }],
+      ['set_checks', { checks: [{ name: 'fits', kind: 'no_overlap', a: 'plate', b: 'part_R1' }] }],
+    ])
+    const data = writeProjectFile(ops)
+    let { doc } = await build([['set_board', { outline: { rect: { w: 80, h: 60 } } }]])
+    doc = applyOp(doc, await prepared(doc, 'insert_block', { data, prefix: 'm', offset: [30, 0, 0] })).doc
+    const sk = doc.sketches.find((s) => s.name === 'm_s')!
+    // Constraint kinds named like a parameter stay what they are.
+    expect(sk.constraints.filter((c) => c.kind === 'length').length).toBeGreaterThan(0)
+    expect(JSON.stringify(sk.constraints)).toContain('m_length')
+    expect(sk.constraints.every((c) => !String(c.kind).startsWith('m_'))).toBe(true)
+    const label = doc.features.find((f) => f.name === 'm_label_at') as any
+    expect(label.text).toBe('length k')
+    expect(label.offset).toBe('m_k')
+    expect(doc.pcb!.components.find((c) => c.ref === 'MR1')!.value).toBe('10k')
+    expect(doc.checks.find((c) => c.name === 'm_fits')).toMatchObject({ a: 'm_plate', b: 'part_MR1' })
+    const g2 = doc.features.find((f) => f.name === 'm_g2_at') as any
+    expect(g2.mesh.with).toBe('m_g1_at')
+    const k = new Kernel()
+    const b = k.build(doc)
+    expect(b.features.filter((f) => !f.ok)).toEqual([])
+    // Moved once, not twice: g1 centred at x = 30.
+    const g1 = b.features.find((f) => f.name === 'm_g1')!
+    expect((g1.bbox![0][0] + g1.bbox![1][0]) / 2).toBeCloseTo(30, 1)
+  }, 60_000)
+
   it('refuses a clash and says to pick another prefix', async () => {
     const data = await bossBlock()
     let { doc } = await build([['set_board', { outline: { rect: { w: 60, h: 40 } } }]])

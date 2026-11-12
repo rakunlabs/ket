@@ -449,6 +449,8 @@ export class Kernel {
       drills,
       b.components.map((c) => [c.ref, c.at, c.rotation, c.side, c.courtyard, c.height, c.model, c.model && this.imported.get(c.model.url) instanceof Error]),
       [...new Set(b.components.flatMap((c) => (c.model ? [c.model.url] : [])))].map((u) => this.imported.has(u)),
+      // Model placement may be expressions: the values they take now.
+      b.components.some((c) => c.model) ? [...this.params] : 0,
     ])
     if (key !== this.boardKey) {
       this.boardKey = key
@@ -526,7 +528,9 @@ export class Kernel {
 
   boardState(doc: Doc, opts?: { drc?: boolean }): BoardState | undefined {
     if (!doc.pcb || !this.board) return undefined
-    const key = JSON.stringify([doc.pcb.zones, doc.pcb.tracks, doc.pcb.vias, this.boardKey, doc.pcb.nets, doc.pcb.classes, doc.pcb.keepouts, doc.pcb.teardrops])
+    // Everything a fill depends on: the copper, and the resolved pads and layer count (a swapped footprint
+    // keeps its place and courtyard but not its pads).
+    const key = JSON.stringify([doc.pcb.zones, doc.pcb.tracks, doc.pcb.vias, this.boardKey, doc.pcb.nets, doc.pcb.classes, doc.pcb.keepouts, doc.pcb.teardrops, this.board.layers, this.board.pads.map((p) => [p.outline, p.layers, p.net])])
     if (this.zoneCache?.key !== key) this.zoneCache = { key, fills: fillZones(doc.pcb, this.board) }
     const zones = this.zoneCache.fills
     const drops = teardrops(doc.pcb, this.board)

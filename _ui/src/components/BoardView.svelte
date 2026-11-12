@@ -10,7 +10,7 @@
   import { projectAccess } from '../lib/access.svelte'
   import { toasts } from '../lib/toasts'
 
-  let { session }: { session: Session } = $props()
+  let { session, active = true }: { session: Session; active?: boolean } = $props()
 
   let canvas = $state<HTMLCanvasElement>()!
   let host: HTMLDivElement
@@ -28,7 +28,7 @@
   // commit as one batch, Esc to drop it. Nothing is saved until it is committed.
   type Leg = { layer: string; points: [number, number][] }
   let routing = $state(false)
-  let wire = $state<{ net: string; layer: string; width: number; legs: Leg[]; vias: [number, number][]; at: [number, number]; busy: boolean; note?: string }>()
+  let wire = $state<{ net: string; layer: string; width: number; legs: Leg[]; vias: [number, number][]; at: [number, number]; busy: boolean; note?: string; starts: { at: [number, number]; layer: string; vias: number }[] }>()
   let preview = $state<Leg>()
   let previewTimer: ReturnType<typeof setTimeout> | undefined
   const layers = $derived(session.doc.pcb ? (session.doc.pcb.layers === 6 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'In3.Cu', 'In4.Cu', 'B.Cu'] : session.doc.pcb.layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu']) : [])
@@ -48,15 +48,18 @@
     return st.board.pads.find((p) => p.net && inside(p.outline) && p.layers.includes(want)) ?? st.board.pads.find((p) => p.net && inside(p.outline))
   }
 
+  // Each plan belongs to the wire and layer it started on: a late answer for a dropped
+  // or changed route is thrown away.
+  let generation = 0
   async function plan(to: [number, number]): Promise<Leg | undefined> {
-    if (!wire) return undefined
-    const r = (await session.run('route_leg', { net: wire.net, layer: wire.layer, a: wire.at, b: to, width: wire.width })) as { ok: boolean; points?: [number, number][]; note?: string }
-    if (!r.ok || !r.points) {
-      wire.note = r.note
-      return undefined
-    }
-    wire.note = undefined
-    return { layer: wire.layer, points: r.points }
+    const w = wire
+    if (!w) return undefined
+    const { layer, at } = w
+    const gen = generation
+    const r = (await session.run('route_leg', { net: w.net, layer, a: at, b: to, width: w.width })) as { ok: boolean; points?: [number, number][]; note?: string }
+    if (wire !== w || gen !== generation || w.layer !== layer || w.at !== at) return undefined
+    w.note = r.ok ? undefined : r.note
+    return r.ok && r.points ? { layer, points: r.points } : undefined
   }
 
   function schedulePreview(to: [number, number]) {
@@ -68,6 +71,12 @@
     }, 120)
   }
 
+  // Clicks are handled one after the other, so a finishing click waits for the leg before it.
+  let pending: Promise<void> = Promise.resolve()
+  function queue(f: () => Promise<unknown>) {
+    pending = pending.then(f, f).then(() => undefined)
+  }
+
   async function routeClick(at: [number, number]) {
     if (!session.doc.pcb) return
     if (!wire) {
@@ -75,19 +84,23 @@
       if (!pad?.net) return toasts.show('Start on a pad that has a net', 'error')
       const layer = pad.layers.includes(side === 'bottom' ? 'B.Cu' : 'F.Cu') ? (side === 'bottom' ? 'B.Cu' : 'F.Cu') : pad.layers[0]
       const cls = session.doc.pcb.classes.find((c) => c.name === session.doc.pcb!.nets.find((n) => n.name === pad.net)?.class)
-      wire = { net: pad.net, layer, width: cls?.track ?? 0.25, legs: [], vias: [], at: [pad.center.x, pad.center.y], busy: false }
+      const at0: [number, number] = [pad.center.x, pad.center.y]
+      wire = { net: pad.net, layer, width: cls?.track ?? 0.25, legs: [], vias: [], at: at0, busy: false, starts: [{ at: at0, layer, vias: 0 }] }
       return
     }
     // Ending on a pad of the net: snap to its centre and finish.
     const pad = padAt(at[0], at[1])
     const end: [number, number] = pad && pad.net === wire.net ? [pad.center.x, pad.center.y] : at
-    wire.busy = true
+    const w = wire
+    w.busy = true
+    clearTimeout(previewTimer)
+    generation++
     const leg = await plan(end).catch((e) => (toasts.show((e as Error).message, 'error'), undefined))
-    if (!wire) return
-    wire.busy = false
-    if (!leg) return
-    wire.legs = [...wire.legs, leg]
-    wire.at = leg.points[leg.points.length - 1]
+    w.busy = false
+    if (wire !== w || !leg) return
+    w.legs = [...w.legs, leg]
+    w.at = leg.points[leg.points.length - 1]
+    w.starts = [...w.starts, { at: w.at, layer: w.layer, vias: w.vias.length }]
     preview = undefined
     if (pad && pad.net === wire.net) await commit()
   }
@@ -105,6 +118,8 @@
     const w = wire
     wire = undefined
     preview = undefined
+    generation++
+    clearTimeout(previewTimer)
     if (!w || !w.legs.length) return
     // Consecutive legs on one layer join into one track.
     const tracks: Leg[] = []
@@ -127,11 +142,15 @@
   function cancelRoute() {
     wire = undefined
     preview = undefined
+    generation++
     clearTimeout(previewTimer)
   }
 
   function onKey(e: KeyboardEvent) {
+    // Only the board view on screen takes keys (every tab and view stays mounted).
+    if (!active || !session.visible) return
     if ((e.target as HTMLElement)?.closest('input, textarea, select, [contenteditable]')) return
+    if (e.metaKey || e.ctrlKey || e.altKey || (e.shiftKey && e.key !== 'Escape')) return
     if (e.key === 'Escape') {
       placing = ''
       if (wire) cancelRoute()
@@ -139,15 +158,23 @@
       return
     }
     if (!access.canEdit || !session.doc.pcb) return
-    if (e.key === 'r' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (e.key === 'r') {
       routing = !routing
       cancelRoute()
-    } else if (routing && wire && (e.key === 'v' || e.key === 'V')) addVia()
-    else if (routing && wire && e.key === 'Enter') void commit()
+    } else if (routing && wire && e.key === 'v') addVia()
+    else if (routing && wire && e.key === 'Enter') queue(commit)
     else if (routing && wire && e.key === 'Backspace') {
-      const legs = wire.legs.slice(0, -1)
-      wire.legs = legs
-      wire.at = legs.length ? legs[legs.length - 1].points[legs[legs.length - 1].points.length - 1] : wire.at
+      // Back to where the last leg started: its point, layer and the vias before it.
+      if (wire.legs.length) {
+        wire.legs = wire.legs.slice(0, -1)
+        wire.starts = wire.starts.slice(0, -1)
+      }
+      const s = wire.starts[wire.starts.length - 1]
+      wire.at = s.at
+      wire.layer = s.layer
+      wire.vias = wire.vias.slice(0, s.vias)
+      generation++
+      preview = undefined
       e.preventDefault()
     }
   }
@@ -269,8 +296,8 @@
     if (drag && !drag.moved && routing && cursor && access.canEdit) {
       drag = undefined
       canvas.releasePointerCapture(e.pointerId)
-      if (e.detail >= 2 && wire) void commit()
-      else void routeClick(cursor)
+      const at = cursor
+      queue(() => routeClick(at))
       return
     }
     if (drag && !drag.moved && cursor && session.board) {
@@ -308,6 +335,7 @@
       onpointerdown={onDown}
       onpointermove={onMove}
       onpointerup={onUp}
+      ondblclick={() => { if (routing && wire) queue(commit) }}
     ></canvas>
     <div class="theme-dark absolute top-2 left-2 flex gap-2 bg-transparent">
       <div class="seg" role="radiogroup" aria-label="Side">
