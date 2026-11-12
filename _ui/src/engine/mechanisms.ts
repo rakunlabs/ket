@@ -31,12 +31,6 @@ function placeLocal(s: Shape3D, frame: Frame, center: V3, rot: number): Shape3D 
   return s
 }
 
-function polyline(pts: P2[]): R.Drawing {
-  let pen = R.draw(pts[0])
-  for (const p of pts.slice(1)) pen = pen.lineTo(p)
-  return pen.close()
-}
-
 // ── Cam ─────────────────────────────────────────────────────────────────
 
 type CamFeature = Extract<Feature, { type: 'cam' }>

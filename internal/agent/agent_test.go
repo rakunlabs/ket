@@ -273,17 +273,23 @@ func TestTurnLeaseAcrossServers(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- one.Run(ctx, conv, "", "first", false, func(Event) {}) }()
-	// Wait until the first turn holds the lease (a probe owner cannot take it then).
-	deadline := time.Now().Add(5 * time.Second)
+	// Wait until the first turn holds the lease. Only looked at, never taken:
+	// a probe that takes the lease for a moment can make the first turn find
+	// the conversation busy.
+	deadline := time.Now().Add(10 * time.Second)
 	for {
-		ok, err := st.AcquireTurn(ctx, conv.ID, "probe", time.Millisecond)
+		_, lost, err := st.TurnStop(ctx, conv.ID, one.id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !ok {
+		if !lost {
 			break
 		}
-		_ = st.ReleaseTurn(ctx, conv.ID, "probe")
+		select {
+		case err := <-done:
+			t.Fatalf("the first turn ended before it took the lease: %v", err)
+		default:
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("the first turn never took the lease")
 		}

@@ -6,7 +6,7 @@
 // optimistically, then committed; when the server refuses (someone else
 // committed first), the session reloads and re-applies the op on top.
 
-import { type Doc, type Op, applyOp, command, emptyDoc, normalizeDoc, parseArgs, prepareOperation, replayOperations } from '../engine'
+import { type Doc, type Op, applyOp, command, emptyDoc, parseArgs, prepareOperation, replayOperations } from '../engine'
 import type { BuildResult, MeshData, SketchLines } from '../engine/kernel'
 import type { BoardRenderOptions, RenderOptions, Services } from '../engine/registry'
 import type { BoardState } from '../engine/pcb/state'

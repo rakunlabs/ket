@@ -14,5 +14,8 @@
   from tool schemas). `apply` never does I/O.
 - replicad operations consume their inputs: work on `kernel.shape(name)`
   (a clone), never on cached shapes.
-- Verify: `go vet ./...`, `go test ./...`, `cd _ui && pnpm check && pnpm test`.
-  Store tests need `KET_TEST_DSN` (see `make env`).
+- Verify: `make lint` (golangci-lint, goreleaser check, svelte-check),
+  `go test ./...`, `cd _ui && pnpm test`. Store tests need `KET_TEST_DSN`
+  (see `make env`).
+- Node.js and pnpm are pinned in `_ui/package.json`: run tools with
+  `pnpm exec` (`pnpm exec tsx ...`), not `npx`, which refuses another Node.
