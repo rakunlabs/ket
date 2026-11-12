@@ -3,7 +3,7 @@
 // X/Y in mm with y up; a bottom-side part is mirrored in x before rotating.
 
 import { type Component, type Footprint, type LayerCount, type Pad, type P, copperLayersOf } from '../doc'
-import { insideXY } from './geom2d'
+import { distPointSegXY, insideXY } from './geom2d'
 
 export type Poly = P[]
 
@@ -130,12 +130,7 @@ export function courtyard(c: Placed): Poly {
 // ── Distances ─────────────────────────────────────────────────────────
 
 export function distPointSeg(p: P, a: P, b: P): number {
-  const dx = b.x - a.x
-  const dy = b.y - a.y
-  const l2 = dx * dx + dy * dy
-  let t = l2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2 : 0
-  t = Math.max(0, Math.min(1, t))
-  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+  return distPointSegXY(p.x, p.y, a.x, a.y, b.x, b.y)
 }
 
 function segsIntersect(a: P, b: P, c: P, d: P): boolean {

@@ -12,7 +12,6 @@ import { routeBoard } from './router'
 import { tuneLength } from './tune'
 import { type XY, joinPieces } from './geom2d'
 
-
 export interface PairRoute {
   pair: string
   tracks: Track[]
@@ -22,7 +21,6 @@ export interface PairRoute {
 }
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000
-
 
 /** The polyline offset by d to its left (miter joins). */
 function offsetPath(path: XY[], d: number): XY[] {

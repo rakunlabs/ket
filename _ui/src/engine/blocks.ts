@@ -251,7 +251,7 @@ define({
   // The block is replayed once here; the op keeps only the design it makes
   // (compact JSON, no op log), so replays do not run the block's history again.
   async prepare(_ctx, a) {
-    if (a.block_doc || a.data === undefined) return a
+    if (a.data === undefined) return a
     const { data: _drop, ...rest } = a
     return { ...rest, block_doc: readProjectFile(a.data).doc as unknown as Record<string, unknown> }
   },

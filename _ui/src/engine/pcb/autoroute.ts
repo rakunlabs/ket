@@ -10,11 +10,10 @@ import type { Violation } from './drc'
 import { octilinear } from './octilinear'
 import { routeBoard } from './router'
 import { routePair } from './pairroute'
-import { type XY, distPS, distSS, insidePoly } from './geom2d'
+import { type XY, distPS, distSS, distSegEdges, insidePoly } from './geom2d'
 
-
-
-
+/** Whether a via has copper on a layer: blind and buried ones only on their span. */
+const onVia = (v: Via, layer: string, layers: LayerCount) => !v.span || viaLayers(v, layers).includes(layer as never)
 
 /**
  * Brings tracks to their net class width, segment by segment, as wide as
@@ -22,9 +21,6 @@ import { type XY, distPS, distSS, insidePoly } from './geom2d'
  * pad, via, hole and other net's track. A segment that cannot get wider
  * stays as it is (a neck between fine-pitch pads).
  */
-/** Whether a via has copper on a layer: blind and buried ones only on their span. */
-const onVia = (v: Via, layer: string, layers: LayerCount) => !v.span || viaLayers(v, layers).includes(layer as never)
-
 export function widenTracks(tracks: Track[], b: ResolvedBoard, existing: Track[] = [], vias: Via[] = []): Track[] {
   const def = b.classes.get('default') ?? DEFAULT_CLASS
   type Seg = { a: [number, number]; b: [number, number]; w: number; layer: string; net: string }
@@ -34,10 +30,7 @@ export function widenTracks(tracks: Track[], b: ResolvedBoard, existing: Track[]
   for (const poly of [b.outline, ...b.cutouts]) for (let i = 0; i < poly.length; i++) edges.push([[poly[i].x, poly[i].y], [poly[(i + 1) % poly.length].x, poly[(i + 1) % poly.length].y]])
   const edgeGap = Math.max(0.3, def.clearance)
   const padDist = (s: Seg, pad: ResolvedBoard['pads'][number]) => {
-    const o = pad.outline
-    let d = Infinity
-    for (let i = 0; i < o.length; i++) d = Math.min(d, distSS(s.a, s.b, [o[i].x, o[i].y], [o[(i + 1) % o.length].x, o[(i + 1) % o.length].y]))
-    return d
+    return distSegEdges(s.a, s.b, pad.outline)
   }
   const out: Track[] = []
   for (const t of tracks) {
@@ -63,8 +56,7 @@ export function widenTracks(tracks: Track[], b: ResolvedBoard, existing: Track[]
       for (const [e0, e1] of edges) if (distSS(s.a, s.b, e0, e1) < w / 2 + edgeGap - 1e-6) return false
       for (const k of b.keepouts ?? []) {
         if (!k.forbid.has('tracks') || !k.layers.includes(t.layer)) continue
-        const o = k.polygon
-        for (let i = 0; i < o.length; i++) if (distSS(s.a, s.b, [o[i].x, o[i].y], [o[(i + 1) % o.length].x, o[(i + 1) % o.length].y]) < w / 2 + cls.clearance - 1e-6) return false
+        if (distSegEdges(s.a, s.b, k.polygon) < w / 2 + cls.clearance - 1e-6) return false
       }
       for (const o of segs) {
         if (o.net === t.net || o.layer !== t.layer) continue
@@ -149,7 +141,7 @@ export function clearance(b: ResolvedBoard, others: Track[], vias: Via[]) {
       if (p.net === net || !p.layers.includes(layer)) continue
       const o = p.outline
       if (insidePoly(a, o) || insidePoly(c, o)) return false
-      for (let i = 0; i < o.length; i++) if (distSS(a, c, [o[i].x, o[i].y], [o[(i + 1) % o.length].x, o[(i + 1) % o.length].y]) < half + cls.clearance - 1e-6) return false
+      if (distSegEdges(a, c, o) < half + cls.clearance - 1e-6) return false
     }
     for (const p of b.pads) if (p.drill && p.net !== net && distPS([p.center.x, p.center.y], a, c) < half + p.drill / 2 + cls.clearance) return false
     for (const v of vias) if (v.net !== net && onVia(v, layer, b.layers) && distPS(v.at, a, c) < half + v.diameter / 2 + cls.clearance - 1e-6) return false
@@ -159,7 +151,7 @@ export function clearance(b: ResolvedBoard, others: Track[], vias: Via[]) {
       if (!k.forbid.has('tracks') || !k.layers.includes(layer)) continue
       const o = k.polygon
       if (insidePoly(a, o) || insidePoly(c, o)) return false
-      for (let i = 0; i < o.length; i++) if (distSS(a, c, [o[i].x, o[i].y], [o[(i + 1) % o.length].x, o[(i + 1) % o.length].y]) < half + cls.clearance - 1e-6) return false
+      if (distSegEdges(a, c, o) < half + cls.clearance - 1e-6) return false
     }
     for (const o of others) {
       if (o === skipTrack || o.net === net || o.layer !== layer) continue

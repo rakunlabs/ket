@@ -9,6 +9,7 @@
   import BoardArtworkPanel from './BoardArtworkPanel.svelte'
   import { projectAccess } from '../lib/access.svelte'
   import { toasts } from '../lib/toasts'
+  import { insideXY } from '../engine/pcb/geom2d'
 
   let { session, active = true }: { session: Session; active?: boolean } = $props()
 
@@ -36,14 +37,7 @@
   function padAt(x: number, y: number) {
     const st = session.board
     if (!st) return undefined
-    const inside = (poly: { x: number; y: number }[]) => {
-      let ok = false
-      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const [a, c] = [poly[i], poly[j]]
-        if (a.y > y !== c.y > y && x < ((c.x - a.x) * (y - a.y)) / (c.y - a.y) + a.x) ok = !ok
-      }
-      return ok
-    }
+    const inside = (poly: { x: number; y: number }[]) => insideXY(x, y, poly)
     const want = side === 'bottom' ? 'B.Cu' : 'F.Cu'
     return st.board.pads.find((p) => p.net && inside(p.outline) && p.layers.includes(want)) ?? st.board.pads.find((p) => p.net && inside(p.outline))
   }

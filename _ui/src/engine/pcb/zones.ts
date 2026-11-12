@@ -27,7 +27,6 @@ export interface ZoneFill {
   dropped: number
 }
 
-
 export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
   // Higher priority first: later zones keep clear of the earlier ones' fill, so the higher one wins (as in KiCad).
   const zones = (pcb.zones ?? []).map((z, i) => ({ z, i })).sort((a, c) => (c.z.priority ?? 0) - (a.z.priority ?? 0))

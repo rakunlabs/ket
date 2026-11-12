@@ -21,9 +21,7 @@ import type { NetClass } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS } from './board'
 import type { WorldPad } from './geometry'
-import { distPointSegXY, distPolyXY, insideXY } from './geom2d'
-
-type XY = [number, number]
+import { type XY, distPointSegXY, distPolyXY, insideXY } from './geom2d'
 
 // Directions: 0 E, 1 NE, 2 N, 3 NW, 4 W, 5 SW, 6 S, 7 SE.
 const DX = [1, 1, 0, -1, -1, -1, 0, 1]
@@ -53,10 +51,6 @@ export interface RouterResult {
   unrouted: string[]
   iterations: number
 }
-
-
-
-
 
 /** Binary min-heap of state ids keyed by f. */
 class Heap {
@@ -511,7 +505,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
 
   // A via needs room for its diameter on every layer.
   const viaOffs = new Map<NetClass, number[]>()
-  const spanVias = pcb.vias.filter((v) => v.span)
+  const spanVias = pcb.vias.filter((v) => v.span && !routedNets.has(v.net))
   const viaFits = (net: Conn, cell: number, id: number) => {
     let offs = viaOffs.get(net.cls)
     if (!offs) {

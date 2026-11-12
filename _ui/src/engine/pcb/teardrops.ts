@@ -4,7 +4,7 @@
 // every track edit, and drawn as plain copper regions everywhere else
 // (Gerber, 3D, the board view, DRC).
 
-import type { Pcb } from '../doc'
+import { type Pcb, viaLayers } from '../doc'
 import type { ResolvedBoard } from './board'
 import type { Poly } from './geometry'
 import { distPolyXY, insideXY } from './geom2d'
@@ -81,7 +81,7 @@ export function teardrops(pcb: Pcb, b: ResolvedBoard): Teardrop[] {
     ]
     for (const [end, toward] of ends) {
       // A via at the end.
-      const vi = pcb.vias.findIndex((v) => v.net === t.net && Math.hypot(v.at[0] - end.x, v.at[1] - end.y) < v.diameter / 2)
+      const vi = pcb.vias.findIndex((v) => v.net === t.net && viaLayers(v, b.layers).includes(t.layer as never) && Math.hypot(v.at[0] - end.x, v.at[1] - end.y) < v.diameter / 2)
       if (vi >= 0) {
         const v = pcb.vias[vi]
         const poly = drop(toward, { x: v.at[0], y: v.at[1] }, v.diameter, t.width, o)

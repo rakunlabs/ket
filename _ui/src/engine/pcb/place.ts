@@ -11,7 +11,7 @@
 
 import type { Pcb } from '../doc'
 import type { ResolvedBoard } from './board'
-import { insideXY } from './geom2d'
+import { distPointSegXY, insideXY } from './geom2d'
 
 type P = { x: number; y: number }
 
@@ -57,17 +57,12 @@ function rotBox(b: [number, number, number, number], deg: number): [number, numb
   return [Math.min(...cs.map((c) => c.x)), Math.min(...cs.map((c) => c.y)), Math.max(...cs.map((c) => c.x)), Math.max(...cs.map((c) => c.y))]
 }
 
-
 function distEdge(x: number, y: number, poly: P[]): number {
   let d = Infinity
   for (let i = 0; i < poly.length; i++) {
     const a = poly[i]
     const b = poly[(i + 1) % poly.length]
-    const dx = b.x - a.x
-    const dy = b.y - a.y
-    const l2 = dx * dx + dy * dy
-    const t = l2 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / l2)) : 0
-    d = Math.min(d, Math.hypot(x - a.x - t * dx, y - a.y - t * dy))
+    d = Math.min(d, distPointSegXY(x, y, a.x, a.y, b.x, b.y))
   }
   return d
 }

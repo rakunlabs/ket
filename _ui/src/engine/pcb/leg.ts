@@ -11,7 +11,6 @@ import { octilinear } from './octilinear'
 import { routeBoard } from './router'
 import { type XY, insidePoly, joinPieces } from './geom2d'
 
-
 export interface LegResult {
   points: XY[]
   layer: string
@@ -59,5 +58,4 @@ export function routeLeg(pcb: Pcb, b: ResolvedBoard, net: string, layer: string,
   const tidy = octilinear(pts, (p, q) => ok(net, layer, w, p, q))
   return { points: tidy, layer, width: w, straight: false }
 }
-
 

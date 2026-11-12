@@ -111,6 +111,20 @@ describe('stackup and layers', () => {
     expect((files['board-B_Cu.gbl'].match(/D03\*/g) ?? []).length).toBe(1)
   })
 
+  it('a track gets no teardrop at a via that has no copper on its layer', async () => {
+    const k = new Kernel()
+    let doc = await run(emptyDoc(), k, 'set_board', { outline: { rect: { w: 30, h: 12 } }, layers: 4, teardrops: true })
+    doc = await run(doc, k, 'add_component', { footprint_name: '0603', ref: 'R1', at: [-8, 0] })
+    doc = await run(doc, k, 'add_component', { footprint_name: '0603', ref: 'R2', at: [8, 0] })
+    doc = await run(doc, k, 'connect', { nets: [{ name: 'A', pins: ['R1.2', 'R2.1'] }] })
+    doc = await run(doc, k, 'add_via', { net: 'A', at: [0, 3], span: ['In1.Cu', 'In2.Cu'] })
+    doc = await run(doc, k, 'add_track', { net: 'A', layer: 'F.Cu', width: 0.25, points: [[-4, 3], [0, 3]] })
+    doc = await run(doc, k, 'add_track', { net: 'A', layer: 'In1.Cu', width: 0.25, points: [[4, 3], [0, 3]] })
+    k.build(doc)
+    const drops = k.boardState(doc)!.teardrops
+    expect(drops.map((d) => d.layer)).toEqual(['In1.Cu'])
+  }, 60_000)
+
   it('the autorouter crosses a buried via on the layers it does not reach', async () => {
     const k = new Kernel()
     let doc = await run(emptyDoc(), k, 'set_board', { outline: { rect: { w: 30, h: 12 } }, layers: 4 })
