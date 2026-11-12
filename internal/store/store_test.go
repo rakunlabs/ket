@@ -425,3 +425,52 @@ func TestGroups(t *testing.T) {
 		t.Fatalf("project groups: %v", list)
 	}
 }
+
+func TestUploads(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	p, err := st.CreateProject(ctx, "uploads test", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteProject(ctx, p.ID) })
+
+	objs := json.RawMessage(`[{"id":"2","name":"Cover"}]`)
+	u, err := st.SaveUpload(ctx, p.ID, "set.3mf", "abc", []byte("PK data"), objs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same file again is the same upload.
+	again, err := st.SaveUpload(ctx, p.ID, "set.3mf", "abc", []byte("PK data"), objs, "")
+	if err != nil || again.ID != u.ID {
+		t.Fatalf("again: %v %v", again, err)
+	}
+	list, err := st.Uploads(ctx, p.ID)
+	if err != nil || len(list) != 1 || string(list[0].Objects) == "" {
+		t.Fatalf("list: %+v %v", list, err)
+	}
+	if data, err := st.UploadData(ctx, u.ID); err != nil || string(data) != "PK data" {
+		t.Fatalf("data: %q %v", data, err)
+	}
+
+	// Imported by the history: it stays.
+	op := json.RawMessage(`{"cmd":"import","args":{"name":"cover","url":"ket:asset/` + u.ID + `/set.3mf#2"}}`)
+	if _, err := st.AppendOp(ctx, p.MainBranch, 0, op, "user", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteUpload(ctx, p.ID, u.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("delete of a used file: want conflict, got %v", err)
+	}
+
+	other, err := st.SaveUpload(ctx, p.ID, "spare.stl", "def", []byte("solid x"), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteUpload(ctx, p.ID, other.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := st.UploadInfo(ctx, other.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted upload still there: %v", err)
+	}
+}

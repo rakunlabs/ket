@@ -101,6 +101,7 @@
       error = `${up.name} is used by an import feature; delete that feature first.`
       return
     }
+    // The server also keeps files that undone steps or proposals import, and says so.
     try {
       await api.deleteUpload(projectID, up.id)
       uploads = uploads.filter((u) => u.id !== up.id)
@@ -132,7 +133,7 @@
               <div class="flex items-center gap-2">
                 <Box size={13} class="shrink-0 text-ink-3" />
                 <span class="min-w-0 flex-1 truncate font-medium" title={up.name}>{up.name}</span>
-                <span class="num shrink-0 text-ink-3">{size(up.size)}</span>
+                <span class="num shrink-0 text-ink-3">{size(up.bytes)}</span>
                 {#if canEdit && !up.objects?.length}
                   <button class="btn py-0.5 text-xs" disabled={!!busy} onclick={() => importAs([{ name: featureName(up.name), url: up.url }])}>Import</button>
                 {/if}

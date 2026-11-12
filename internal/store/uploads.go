@@ -115,8 +115,19 @@ func (s *Store) UploadData(ctx context.Context, id string) ([]byte, error) {
 	return data, nil
 }
 
-// DeleteUpload removes a project's file.
+// DeleteUpload removes a project's file. A file that the project's history
+// still imports (in any branch, also undone steps) stays: replaying the
+// history needs it.
 func (s *Store) DeleteUpload(ctx context.Context, projectID, id string) error {
+	var used bool
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM ops o JOIN branches b ON b.id = o.branch_id
+		WHERE b.project_id = $1 AND strpos(o.op::text, $2) > 0)`, projectID, "ket:asset/"+id+"/").Scan(&used); err != nil {
+		return notFound(err, "upload "+id)
+	}
+	if used {
+		return fmt.Errorf("upload %s is imported by the project's history (an import feature, maybe undone or on a proposal); it stays so the design can be rebuilt; %w", id, ErrConflict)
+	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM uploads WHERE id = $1 AND project_id = $2`, id, projectID)
 	if err != nil {
 		return notFound(err, "upload "+id)

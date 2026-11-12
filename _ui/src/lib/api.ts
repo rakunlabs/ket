@@ -176,7 +176,7 @@ export function toLogin(): Promise<never> {
 export interface Upload {
   id: string
   name: string
-  size: number
+  bytes: number
   url: string
   /** A 3MF's objects: import one with url#<id>. */
   objects?: { id: string; name: string; triangles?: number }[]
