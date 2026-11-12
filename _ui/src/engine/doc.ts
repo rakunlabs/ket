@@ -742,7 +742,7 @@ export interface Zone {
   /** Distance kept from the board edge. */
   edge?: number
   thermal?: { gap: number; spoke: number } | false
-  /** Lower priority zones are filled first and give way to higher ones. */
+  /** Higher priority zones are filled first; lower ones give way to them (as in KiCad). */
   priority?: number
 }
 

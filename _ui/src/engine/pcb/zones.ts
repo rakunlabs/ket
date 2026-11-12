@@ -30,7 +30,8 @@ export interface ZoneFill {
 const allCopper = (layers: number) => copperLayersOf(layers as LayerCount)
 
 export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
-  const zones = (pcb.zones ?? []).map((z, i) => ({ z, i })).sort((a, c) => (a.z.priority ?? 0) - (c.z.priority ?? 0))
+  // Higher priority first: later zones keep clear of the earlier ones' fill, so the higher one wins (as in KiCad).
+  const zones = (pcb.zones ?? []).map((z, i) => ({ z, i })).sort((a, c) => (c.z.priority ?? 0) - (a.z.priority ?? 0))
   const fills: ZoneFill[] = []
   if (b.outline.length < 3) return fills
 

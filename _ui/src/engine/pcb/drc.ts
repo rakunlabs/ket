@@ -435,6 +435,7 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: T
       })
     if (k.forbid.has('vias'))
       pcb.vias.forEach((v, vi) => {
+        if (!viaLayers(v, b.layers).some((l) => k.layers.includes(l))) return
         if (overlaps([circle({ x: v.at[0], y: v.at[1] }, v.diameter / 2)], ring)) out.push({ rule: 'keepout', message: `via ${vi + 1} (${v.net}) is inside ${id}, which forbids vias; move it out`, at: v.at, objects: [`via ${vi + 1}`, id], fix: 'Move the via out of the keep-out.' })
       })
     if (k.forbid.has('pours'))

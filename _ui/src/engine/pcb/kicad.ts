@@ -103,7 +103,9 @@ export function writeKicadPcb(doc: Doc, b: ResolvedBoard, fills: ZoneFill[] = []
       const npth = th && pad.drill && !pad.drill.plated
       const type = npth ? 'np_thru_hole' : th ? 'thru_hole' : 'smd'
       const shape = pad.shape === 'polygon' ? 'custom' : pad.shape === 'circle' ? 'circle' : pad.shape === 'oval' ? 'oval' : 'roundrect'
-      const padLayers = th ? '"*.Cu" "*.Mask"' : `${q(`${F}.Cu`)} ${q(`${F}.Paste`)} ${q(`${F}.Mask`)}`
+      // An SMD pad on the part's far side (edge-connector fingers) is on the other outer layer.
+      const PS = (pad.layer === 'bottom') !== bottom ? 'B' : 'F'
+      const padLayers = th ? '"*.Cu" "*.Mask"' : `${q(`${PS}.Cu`)} ${q(`${PS}.Paste`)} ${q(`${PS}.Mask`)}`
       // Pad angle is absolute in KiCad (footprint rotation included); a bottom pad is mirrored, so its own turn reverses.
       const angle = bottom ? c.rotation - pad.rotation : pad.rotation + c.rotation
       let drill = ''

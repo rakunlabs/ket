@@ -102,7 +102,8 @@ export function readKicadPcb(text: string): KicadImport {
   const netOf = (l: S[] | undefined): string | undefined => {
     const x = kid(l, 'net')
     if (!x) return undefined
-    const name = x[2] !== undefined ? str(x[2]) : netName.get(num(x[1])) ?? ''
+    // (net 3 "GND"), (net 3), or a name alone (net "GND").
+    const name = x[2] !== undefined ? str(x[2]) : Number.isNaN(Number(x[1])) ? str(x[1]) : netName.get(num(x[1])) ?? ''
     return name || undefined
   }
 
@@ -370,6 +371,9 @@ export function readKicadPcb(text: string): KicadImport {
 
   // Tracks: consecutive segments of a net on a layer at one width become one polyline when they chain.
   const tracks: Track[] = []
+  // Open track ends by net, layer and width, so chaining segments stays linear on big boards.
+  const ends = new Map<string, Track>()
+  const endKey = (net: string, layer: string, w: number, p: [number, number]) => `${net}|${layer}|${w}|${Math.round(p[0] * 100)},${Math.round(p[1] * 100)}`
   let arcs = 0
   for (const s of [...kids(root, 'segment'), ...kids(root, 'arc')]) {
     const layer = cu(str(kid(s, 'layer')?.[1]))
@@ -381,9 +385,17 @@ export function readKicadPcb(text: string): KicadImport {
       arcs++
       pts = arcPts(P(kid(s, 'start')), P(kid(s, 'mid')), P(kid(s, 'end'))).map(toKet)
     } else pts = [toKet(P(kid(s, 'start'))), toKet(P(kid(s, 'end')))]
-    const last = tracks.find((t) => t.net === net && t.layer === layer && t.width === w && near(t.points[t.points.length - 1], pts[0]))
-    if (last) last.points.push(...pts.slice(1))
-    else tracks.push({ net, layer, width: w, points: pts })
+    const k0 = endKey(net, layer, w, pts[0])
+    const last = ends.get(k0)
+    if (last && near(last.points[last.points.length - 1], pts[0])) {
+      ends.delete(k0)
+      last.points.push(...pts.slice(1))
+      ends.set(endKey(net, layer, w, pts[pts.length - 1]), last)
+    } else {
+      const t: Track = { net, layer, width: w, points: pts }
+      tracks.push(t)
+      ends.set(endKey(net, layer, w, pts[pts.length - 1]), t)
+    }
   }
   if (arcs) lose(`${arcs} arc track(s) are polylines (Ket tracks are straight segments)`)
   pcb.tracks = tracks
@@ -393,7 +405,9 @@ export function readKicadPcb(text: string): KicadImport {
     const net = netOf(v)
     if (!net || !known.has(net)) continue
     const ls = (kid(v, 'layers') ?? []).slice(1).map((l) => cu(str(l)))
-    const span = ls[0] && ls[1] && !(ls[0] === 'F.Cu' && ls[1] === 'B.Cu') ? ([ls[0], ls[1]] as [CopperLayer, CopperLayer]) : undefined
+    // Top first; a span over every layer is a through via, however KiCad orders it.
+    const idx = ls.filter(Boolean).map((l) => layers.indexOf(l!)).sort((a, c) => a - c)
+    const span = idx.length === 2 && !(idx[0] === 0 && idx[1] === layers.length - 1) ? ([layers[idx[0]], layers[idx[1]]] as [CopperLayer, CopperLayer]) : undefined
     if (v[1] === 'micro') lose('microvias (they become blind vias)')
     vias.push({ net, at: toKet(P(kid(v, 'at'))), drill: r4(num(kid(v, 'drill')?.[1], 0.3)), diameter: r4(num(kid(v, 'size')?.[1], 0.6)), ...(span ? { span } : {}) })
   }
@@ -415,7 +429,10 @@ export function readKicadPcb(text: string): KicadImport {
       if (no('copperpour')) forbid.push('pours')
       if (no('footprints')) forbid.push('parts')
       if (no('pads')) lose('keep-outs that forbid pads (Ket keeps tracks, vias, pours and parts out)')
-      if (forbid.length) keepouts.push({ name: (str(kid(z, 'name')?.[1]) || `keepout${keepouts.length + 1}`).replace(/[^A-Za-z0-9_]/g, '_').replace(/^([^A-Za-z_])/, '_$1'), polygon: poly, ...(zlayers.length === layers.length ? {} : { layers: zlayers }), forbid })
+      let kname = (str(kid(z, 'name')?.[1]) || `keepout${keepouts.length + 1}`).replace(/[^A-Za-z0-9_]/g, '_').replace(/^([^A-Za-z_])/, '_$1')
+      // Ket names keep-outs uniquely; KiCad does not have to.
+      for (let n = 2; keepouts.some((k) => k.name === kname); n++) kname = `${kname.replace(/_\d+$/, '')}_${n}`
+      if (forbid.length) keepouts.push({ name: kname, polygon: poly, ...(zlayers.length === layers.length ? {} : { layers: zlayers }), forbid })
       continue
     }
     const net = netOf(z)

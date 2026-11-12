@@ -51,6 +51,10 @@ export function widenTracks(tracks: Track[], b: ResolvedBoard, existing: Track[]
   const def = b.classes.get('default') ?? DEFAULT_CLASS
   type Seg = { a: [number, number]; b: [number, number]; w: number; layer: string; net: string }
   const segs: Seg[] = [...existing, ...tracks].flatMap((t) => t.points.slice(1).map((p, i) => ({ a: t.points[i], b: p, w: t.width, layer: t.layer, net: t.net })))
+  // Board edge and keep-outs: widening must not push copper into either.
+  const edges: [[number, number], [number, number]][] = []
+  for (const poly of [b.outline, ...b.cutouts]) for (let i = 0; i < poly.length; i++) edges.push([[poly[i].x, poly[i].y], [poly[(i + 1) % poly.length].x, poly[(i + 1) % poly.length].y]])
+  const edgeGap = Math.max(0.3, def.clearance)
   const padDist = (s: Seg, pad: ResolvedBoard['pads'][number]) => {
     const o = pad.outline
     let d = Infinity
@@ -78,6 +82,12 @@ export function widenTracks(tracks: Track[], b: ResolvedBoard, existing: Track[]
       }
       for (const v of vias) if (v.net !== t.net && distPS(v.at, s.a, s.b) < w / 2 + v.diameter / 2 + cls.clearance) return false
       for (const h of b.holes) if (distPS([h.at.x, h.at.y], s.a, s.b) < w / 2 + h.d / 2 + cls.clearance) return false
+      for (const [e0, e1] of edges) if (distSS(s.a, s.b, e0, e1) < w / 2 + edgeGap - 1e-6) return false
+      for (const k of b.keepouts ?? []) {
+        if (!k.forbid.has('tracks') || !k.layers.includes(t.layer)) continue
+        const o = k.polygon
+        for (let i = 0; i < o.length; i++) if (distSS(s.a, s.b, [o[i].x, o[i].y], [o[(i + 1) % o.length].x, o[(i + 1) % o.length].y]) < w / 2 + cls.clearance - 1e-6) return false
+      }
       for (const o of segs) {
         if (o.net === t.net || o.layer !== t.layer) continue
         const c = Math.max(cls.clearance, (b.netClass.get(o.net) ?? def).clearance)

@@ -61,6 +61,33 @@ describe('import_kicad', () => {
     expect(b2.outline.map((p) => [p.x, p.y]).sort()).toEqual(b.outline.map((p) => [p.x, p.y]).sort())
   }, 60_000)
 
+  it('keeps edge fingers on B.Cu, normalizes via spans and unique keep-out names', async () => {
+    const text = `(kicad_pcb (version 20241229) (general (thickness 1.6))
+      (layers (0 "F.Cu" signal) (2 "B.Cu" signal) (25 "Edge.Cuts" user))
+      (net 0 "") (net 1 "A")
+      (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts"))
+      (footprint "x:EDGE" (layer "F.Cu") (at 10 10) (property "Reference" "J1")
+        (pad "1" smd rect (at 0 0) (size 1 3) (layers "F.Cu") (net 1 "A"))
+        (pad "2" connect rect (at 2 0) (size 1 3) (layers "B.Cu") (net "A")))
+      (via (at 20 10) (size 0.6) (drill 0.3) (layers "B.Cu" "F.Cu") (net 1))
+      (zone (net 0) (layer "F.Cu") (name "ant") (keepout (tracks not_allowed)) (polygon (pts (xy 1 1) (xy 3 1) (xy 3 3))))
+      (zone (net 0) (layer "F.Cu") (name "ant") (keepout (vias not_allowed)) (polygon (pts (xy 5 1) (xy 7 1) (xy 7 3)))))`
+    const r = readKicadPcb(text)
+    const j1 = r.pcb.components[0]
+    expect(j1.footprint.pads.map((p) => p.layer)).toEqual(['top', 'bottom'])
+    // A net given by name alone still connects.
+    expect(r.pcb.nets[0].pins.sort()).toEqual(['J1.1', 'J1.2'])
+    expect(r.pcb.vias[0].span).toBeUndefined()
+    expect(r.pcb.keepouts!.map((k) => k.name)).toEqual(['ant', 'ant_2'])
+    // Back out: the finger stays on B.Cu, the via is a through via.
+    const k = new Kernel()
+    const doc = await run(emptyDoc(), k, 'import_kicad', { data: text })
+    k.build(doc)
+    const out = writeKicadPcb(doc, k.boardState(doc)!.board).text
+    expect(out).toMatch(/\(pad "2" smd roundrect [^\n]*\(layers "B\.Cu" "B\.Paste" "B\.Mask"\)/)
+    expect(out).not.toMatch(/via blind/)
+  })
+
   it('names what it does not carry over, and refuses to overwrite a board', async () => {
     const k = new Kernel()
     const text = `(kicad_pcb (version 20241229) (general (thickness 1.6))

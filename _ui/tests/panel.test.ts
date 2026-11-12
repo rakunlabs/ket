@@ -54,13 +54,25 @@ describe('panelize', () => {
     const doc = await small(k)
     const st = k.boardState(doc)!
     const p = panelize(doc.pcb!, st.board, st.zones, st.teardrops, { nx: 2, ny: 1, method: 'mousebite', gap: 2 })
-    expect([p.width, p.height]).toEqual([42, 20])
+    // Rails top and bottom with a milling gap to the boards: 2 × (5 + 2) + 10.
+    expect([p.width, p.height]).toEqual([42, 24])
+    // Every tab hole is inside the panel and clear of both boards.
+    const boards = p.board.components.filter((c) => c.ref.startsWith('R1_')).map((c) => c.at.x)
+    expect(boards.length).toBe(2)
+    for (const h of p.board.holes.filter((x) => x.d === 0.5)) {
+      expect(h.at.x).toBeGreaterThan(0)
+      expect(h.at.x).toBeLessThan(42)
+      expect(h.at.y).toBeGreaterThan(5)
+      expect(h.at.y).toBeLessThan(19)
+      const inBoard = (x0: number) => h.at.x > x0 && h.at.x < x0 + 20 && h.at.y > 7 && h.at.y < 17
+      expect(inBoard(0) || inBoard(22)).toBe(false)
+    }
     const files = fabFiles(p.pcb, p.board, p.zones, p.teardrops)
     // Panel outline plus both boards'.
     expect((files['board-Edge_Cuts.gm1'].match(/D02\*/g) ?? []).length).toBe(3)
     expect(files['board-V_Cut.gm2']).toBeUndefined()
-    // 4 sides × 5 bites × 2 boards + 4 tooling + 2 board holes.
-    expect(files['board-NPTH.drl'].match(/^X/gm)!.length).toBe(40 + 4 + 2)
+    // Tab rows: 2 to the rails per board, 1 between the boards = 5 rows × 5 bites, + 4 tooling + 2 board holes.
+    expect(files['board-NPTH.drl'].match(/^X/gm)!.length).toBe(25 + 4 + 2)
   }, 60_000)
 
   it('refuses what does not fit the method', async () => {

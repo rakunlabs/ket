@@ -53,13 +53,15 @@ export function panelize(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[], drops: T
   const railsOn = o.railsOn ?? 'x'
   const rx = railsOn === 'y' || railsOn === 'both' ? rails : 0
   const ry = railsOn === 'x' || railsOn === 'both' ? rails : 0
-  // Board copies: lower-left corner of copy (i, j) at (rx + i (w + gap), ry + j (h + gap)).
-  const offsets: [number, number][] = []
-  for (let j = 0; j < o.ny; j++) for (let i = 0; i < o.nx; i++) offsets.push([rx + i * (w + gap) - x0, ry + j * (h + gap) - y0])
-  const W = 2 * rx + o.nx * w + (o.nx - 1) * gap
-  const H = 2 * ry + o.ny * h + (o.ny - 1) * gap
+  // Mouse bites need the milling gap between a board and a rail too.
+  const mx = rx ? rx + gap : 0
+  const my = ry ? ry + gap : 0
+  // Board copies: lower-left corner of copy (i, j) at (mx + i (w + gap), my + j (h + gap)).
+  const copies: { dx: number; dy: number; k: number; i: number; j: number }[] = []
+  for (let j = 0; j < o.ny; j++) for (let i = 0; i < o.nx; i++) copies.push({ dx: mx + i * (w + gap) - x0, dy: my + j * (h + gap) - y0, k: copies.length, i, j })
+  const W = 2 * mx + o.nx * w + (o.nx - 1) * gap
+  const H = 2 * my + o.ny * h + (o.ny - 1) * gap
 
-  const copies = offsets.map(([dx, dy], k) => ({ dx, dy, k }))
   const tag = (s: string, k: number) => `${s}_${k + 1}`
   const board: ResolvedBoard = {
     ...b,
@@ -86,14 +88,16 @@ export function panelize(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[], drops: T
       const mid = { x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 }
       for (let k = -2; k <= 2; k++) board.holes.push({ at: { x: r3(mid.x + u.x * k * 0.8), y: r3(mid.y + u.y * k * 0.8) }, d: 0.5 })
     }
-    for (const { dx, dy } of copies) {
-      // Tabs sit in the gap, gap/2 out from the board edge.
+    for (const { dx, dy, i, j } of copies) {
+      // Tabs sit in the gap, gap/2 out from the board edge, on sides that face another board or a rail
+      // (each gap between two boards gets one row, from the lower/left board).
       const g = gap / 2
-      bite({ x: x0 + dx, y: y0 + dy - g }, { x: x1 + dx, y: y0 + dy - g })
-      bite({ x: x0 + dx, y: y1 + dy + g }, { x: x1 + dx, y: y1 + dy + g })
-      bite({ x: x0 + dx - g, y: y0 + dy }, { x: x0 + dx - g, y: y1 + dy })
-      bite({ x: x1 + dx + g, y: y0 + dy }, { x: x1 + dx + g, y: y1 + dy })
+      if (j === 0 && ry) bite({ x: x0 + dx, y: y0 + dy - g }, { x: x1 + dx, y: y0 + dy - g })
+      if (j < o.ny - 1 || ry) bite({ x: x0 + dx, y: y1 + dy + g }, { x: x1 + dx, y: y1 + dy + g })
+      if (i === 0 && rx) bite({ x: x0 + dx - g, y: y0 + dy }, { x: x0 + dx - g, y: y1 + dy })
+      if (i < o.nx - 1 || rx) bite({ x: x1 + dx + g, y: y0 + dy }, { x: x1 + dx + g, y: y1 + dy })
     }
+    if (!rx && !ry && copies.length === 1) notes.push('One board and no rails: nothing to hold it, so no tabs')
     notes.push('Mouse-bite tabs: 5 holes of 0.5 mm per side in the gap; the board outlines are milled. Check tab places against parts near the edge')
   } else {
     // V-scores: straight lines across the whole panel between rows and columns and at the rails.
