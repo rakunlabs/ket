@@ -70,6 +70,7 @@
   let canvas: HTMLCanvasElement
   let host: HTMLDivElement
   let scene = $state<Scene3D>()
+  $effect(() => { if (session.focusTarget?.view === '3d') scene?.frame(undefined, session.focusTarget.objects) })
   let hover = $state<Pick>()
   let ro: ResizeObserver | undefined
 

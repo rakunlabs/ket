@@ -103,7 +103,7 @@ describe('pcb', () => {
 
     const files = fabFiles(doc.pcb!, k.boardState(doc)!.board)
     expect(Object.keys(files).sort()).toEqual(
-      ['board-B_Cu.gbl', 'board-B_Mask.gbs', 'board-B_Silkscreen.gbo', 'board-Edge_Cuts.gm1', 'board-F_Cu.gtl', 'board-F_Mask.gts', 'board-F_Silkscreen.gto', 'board.drl', 'bom.csv', 'cpl.csv'].sort(),
+      ['board-B_Cu.gbl', 'board-B_Mask.gbs', 'board-B_Silkscreen.gbo', 'board-Edge_Cuts.gm1', 'board-F_Cu.gtl', 'board-F_Mask.gts', 'board-F_Silkscreen.gto', 'board-PTH.drl', 'board-NPTH.drl', 'bom.csv', 'cpl.csv'].sort(),
     )
     expect(files['board-F_Cu.gtl']).toMatch(/%FSLAX46Y46\*%[\s\S]*G36\*[\s\S]*M02\*/)
     expect(files['bom.csv']).toContain('"AMS1117-3.3","U1"')
@@ -270,7 +270,7 @@ describe('pcb', () => {
       [-3.81, 2.54, 3, 'K1'],
       [2.54, 5.08, 3, 'K1'],
     ])
-    expect(fabFiles(doc.pcb!, st.board)['board.drl'].match(/X-3\.810Y2\.540/g)).toHaveLength(1)
+    expect(fabFiles(doc.pcb!, st.board)['board-NPTH.drl'].match(/X-3\.8100Y2\.5400/g)).toHaveLength(1)
     expect((await query(doc, k, 'run_drc')).violations).toEqual([])
   }, 60_000)
 

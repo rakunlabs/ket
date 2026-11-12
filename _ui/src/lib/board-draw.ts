@@ -2,6 +2,8 @@
 
 import type { Pcb } from '../engine/doc'
 import type { BoardState } from '../engine/pcb/state'
+import { boardStyle } from '../engine/pcb/artwork'
+import { drillRing } from '../engine/pcb/drills'
 
 export interface View {
   /** px per mm */
@@ -55,6 +57,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, w: number, h: number, p
   const X = (x: number) => w / 2 + (x - view.cx) * view.scale * flip
   const Y = (y: number) => h / 2 - (y - view.cy) * view.scale
   const s = view.scale
+  const style = boardStyle(pcb)
 
   ctx.save()
   ctx.fillStyle = COLORS.bg
@@ -69,7 +72,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, w: number, h: number, p
   const b = st.board
   if (b.outline.length) {
     path(b.outline)
-    ctx.fillStyle = COLORS.board
+    ctx.fillStyle = style.maskColor
     ctx.fill()
     for (const c of b.cutouts) {
       path(c)
@@ -137,8 +140,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, w: number, h: number, p
       ctx.fillStyle = hl.has(p.ref) || (p.net && hl.has(p.net)) ? COLORS.hl : layer === 'F.Cu' ? COLORS.padTop : COLORS.padBottom
       ctx.fill()
       if (p.drill) {
-        ctx.beginPath()
-        ctx.arc(X(p.center.x), Y(p.center.y), (p.drill / 2) * s, 0, Math.PI * 2)
+        path(drillRing({ from: p.drillSlot?.[0] ?? p.center, to: p.drillSlot?.[1] ?? p.center, d: p.drill }))
         ctx.fillStyle = COLORS.hole
         ctx.fill()
       }
@@ -170,13 +172,13 @@ export function drawBoard(ctx: CanvasRenderingContext2D, w: number, h: number, p
   for (const c of b.components) {
     if (c.side !== o.side) continue
     const selected = o.selected === c.ref || hl.has(c.ref)
-    ctx.strokeStyle = selected ? COLORS.hl : COLORS.silk + '99'
+    ctx.strokeStyle = selected ? COLORS.hl : style.silkColor + '99'
     ctx.lineWidth = selected ? 2 : 1
     path(c.courtyard)
     ctx.setLineDash([3, 3])
     ctx.stroke()
     ctx.setLineDash([])
-    ctx.strokeStyle = COLORS.silk
+    ctx.strokeStyle = style.silkColor
     ctx.lineWidth = Math.max(1, 0.12 * s)
     for (const [x1, y1, x2, y2] of c.footprint.silk) {
       const a = (c.rotation * Math.PI) / 180
@@ -193,10 +195,23 @@ export function drawBoard(ctx: CanvasRenderingContext2D, w: number, h: number, p
     }
     const fs = Math.max(10, Math.min(16, 1.2 * s))
     ctx.font = `600 ${fs}px ui-monospace, monospace`
-    ctx.fillStyle = selected ? COLORS.hl : '#e8e8e4'
+    ctx.fillStyle = selected ? COLORS.hl : style.silkColor
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(c.ref, X(c.at.x), Y(c.at.y))
+  }
+
+  ctx.fillStyle = style.silkColor
+  for (const art of b.artwork ?? []) {
+    if (art.side !== o.side) continue
+    for (const region of art.regions) {
+      ctx.beginPath()
+      for (const ring of region) {
+        ring.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))))
+        ctx.closePath()
+      }
+      ctx.fill('evenodd')
+    }
   }
 
   if (b.outline.length) {

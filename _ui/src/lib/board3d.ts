@@ -9,6 +9,8 @@ import * as THREE from 'three'
 
 import type { Pcb } from '../engine/doc'
 import type { BoardState } from '../engine/pcb/state'
+import { boardStyle } from '../engine/pcb/artwork'
+import { boardDrills, drillRing } from '../engine/pcb/drills'
 
 type P = { x: number; y: number }
 
@@ -26,6 +28,25 @@ const MAT = {
 
 const CU = 0.035
 const LIFT = 0.002
+const materials = new Map<string, typeof MAT>()
+
+function boardMaterials(pcb: Pcb): typeof MAT {
+  const style = boardStyle(pcb)
+  const key = `${style.mask}/${style.silk}`
+  let mat = materials.get(key)
+  if (!mat) {
+    // A bounded palette cache, not mutable shared colors: several project
+    // tabs (and exports) can show different boards at the same time.
+    const tint = (amount: number) => new THREE.Color(style.maskColor).lerp(new THREE.Color('#ffffff'), amount)
+    mat = { ...MAT, trace: MAT.trace.clone(), pour: MAT.pour.clone(), via: MAT.via.clone(), silk: MAT.silk.clone() }
+    mat.trace.color.copy(tint(0.12))
+    mat.pour.color.copy(tint(0.05))
+    mat.via.color.copy(tint(0.16))
+    mat.silk.color.set(style.silkColor)
+    materials.set(key, mat)
+  }
+  return mat
+}
 
 function ring(at: P, r: number, n = 20): P[] {
   return Array.from({ length: n }, (_, i) => ({ x: at.x + r * Math.cos((i / n) * 2 * Math.PI), y: at.y + r * Math.sin((i / n) * 2 * Math.PI) }))
@@ -65,6 +86,7 @@ function plates(shapes: THREE.Shape[], z0: number, d: number, mat: THREE.Materia
 
 /** The board's copper (and via barrels) as a group; z: board bottom, t: thickness. */
 export function boardCopper(pcb: Pcb, st: BoardState): THREE.Group {
+  const mat = boardMaterials(pcb)
   const g = new THREE.Group()
   g.userData.name = 'board'
   const b = st.board
@@ -77,34 +99,38 @@ export function boardCopper(pcb: Pcb, st: BoardState): THREE.Group {
     // Pours first, under the tracks.
     const pours: THREE.Shape[] = []
     for (const z of st.zones) if (z.layer === layer) for (const reg of z.regions) if (reg[0]?.length >= 3) pours.push(shape(reg[0], reg.slice(1).filter((h) => h.length >= 3)))
-    const pm = plates(pours, pos.z, pos.d * 0.8, MAT.pour)
+    const pm = plates(pours, pos.z, pos.d * 0.8, mat.pour)
     if (pm) g.add(pm)
     const tracks: THREE.Shape[] = []
     for (const t of pcb.tracks) {
       if (t.layer !== layer) continue
       for (let i = 1; i < t.points.length; i++) tracks.push(shape(capsule({ x: t.points[i - 1][0], y: t.points[i - 1][1] }, { x: t.points[i][0], y: t.points[i][1] }, t.width)))
     }
-    const tm = plates(tracks, pos.z, pos.d, MAT.trace)
+    const tm = plates(tracks, pos.z, pos.d, mat.trace)
     if (tm) g.add(tm)
     const pads: THREE.Shape[] = []
     for (const p of b.pads) {
       if (!p.layers.includes(layer) || p.outline.length < 3) continue
-      pads.push(shape(p.outline, p.drill ? [ring(p.center, p.drill / 2)] : []))
+      pads.push(shape(p.outline, p.drill ? [drillRing({ from: p.drillSlot?.[0] ?? p.center, to: p.drillSlot?.[1] ?? p.center, d: p.drill })] : []))
     }
     // Pads stand a little proud of the mask.
     const pd = plates(pads, layer === 'F.Cu' ? pos.z : pos.z - 0.02, pos.d + 0.02, MAT.gold)
     if (pd) g.add(pd)
     const vias: THREE.Shape[] = []
     for (const v of pcb.vias) vias.push(shape(ring({ x: v.at[0], y: v.at[1] }, v.diameter / 2), [ring({ x: v.at[0], y: v.at[1] }, v.drill / 2, 12)]))
-    const vm = plates(vias, layer === 'F.Cu' ? pos.z : pos.z - 0.01, pos.d + 0.01, MAT.via)
+    const vm = plates(vias, layer === 'F.Cu' ? pos.z : pos.z - 0.01, pos.d + 0.01, mat.via)
     if (vm) g.add(vm)
   }
 
   // Plated barrels through drilled pads and vias.
   const barrels: { at: P; r: number }[] = [
-    ...b.pads.filter((p) => p.drill).map((p) => ({ at: p.center, r: p.drill! / 2 })),
+    ...b.pads.filter((p) => p.drill && !p.drillSlot && p.drillPlated !== false).map((p) => ({ at: p.center, r: p.drill! / 2 })),
     ...pcb.vias.map((v) => ({ at: { x: v.at[0], y: v.at[1] }, r: v.drill / 2 })),
   ]
+  for (const h of boardDrills(pcb, b).filter((h) => h.plated && Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y) > 1e-9)) {
+    const barrel = plates([shape(drillRing({ ...h, d: h.d + 0.04 }), [drillRing(h)])], z0 - CU, b.thickness + 2 * CU, MAT.barrel)
+    if (barrel) g.add(barrel)
+  }
   if (barrels.length) {
     const geo = new THREE.CylinderGeometry(1, 1, 1, 16, 1, true)
     geo.rotateX(Math.PI / 2)
@@ -129,9 +155,12 @@ export function boardCopper(pcb: Pcb, st: BoardState): THREE.Group {
     }
     for (const [x1, y1, x2, y2, w] of c.footprint.silk) silk[side].push(shape(capsule(tf(x1, y1), tf(x2, y2), Math.max(w, 0.12))))
   }
-  const st1 = plates(silk.top, top + LIFT + CU + 0.004, 0.01, MAT.silk)
+  for (const art of b.artwork ?? []) {
+    for (const region of art.regions) silk[art.side].push(shape(region[0], region.slice(1)))
+  }
+  const st1 = plates(silk.top, top + LIFT + CU + 0.004, 0.01, mat.silk)
   if (st1) g.add(st1)
-  const sb = plates(silk.bottom, z0 - LIFT - CU - 0.014, 0.01, MAT.silk)
+  const sb = plates(silk.bottom, z0 - LIFT - CU - 0.014, 0.01, mat.silk)
   if (sb) g.add(sb)
 
   g.traverse((o) => {

@@ -9,6 +9,7 @@ import type { BuildResult } from './kernel'
 import { explodeOffset } from './explode'
 import { define } from './registry'
 import { featureRef, selector } from './schema'
+import { requireHealthyHistory } from './operations'
 
 /** Compact, readable view of the document and its build state. */
 export function summarize(doc: Doc, build: BuildResult, detail: 'summary' | 'full' = 'summary') {
@@ -54,6 +55,7 @@ export function summarize(doc: Doc, build: BuildResult, detail: 'summary' | 'ful
       : undefined,
     decals: doc.decals?.length ? (detail === 'full' ? doc.decals : `${doc.decals.length} on ${[...new Set(doc.decals.map((d) => d.target))].join(', ')}`) : undefined,
     appearance_problems: build.appearance,
+    pcb: doc.pcb ? { components: doc.pcb.components.length, nets: doc.pcb.nets.length, tracks: doc.pcb.tracks.length, vias: doc.pcb.vias.length, artwork: doc.pcb.artwork?.length ?? 0, hint: 'Use get_board, get_copper and get_problems for PCB definitions, electrical coverage and diagnostics.' } : undefined,
   }
 }
 
@@ -65,7 +67,7 @@ define({
     'Read the design: parameters (with resolved values), features in order with their inputs, bounding boxes, volumes, errors and warnings, the checks and the visible bodies. Start every task with it. detail "full" includes every field of every feature.',
   args: z.object({ detail: z.enum(['summary', 'full']).optional() }),
   async run(ctx, a) {
-    return summarize(ctx.doc, await ctx.kernel.build(), a.detail ?? 'summary')
+    return { ...summarize(ctx.doc, await ctx.kernel.build(), a.detail ?? 'summary'), ...(ctx.recovery ? { ok: false, recovery: ctx.recovery } : {}), ...(ctx.revision !== undefined ? { revision: ctx.revision } : {}) }
   },
 })
 
@@ -171,7 +173,8 @@ define({
       .slice(0, 5)
       .map((f) => `${f.name} ${(f.ms! / 1000).toFixed(1)} s`)
     return {
-      ok: build.ok && failedChecks.length === 0,
+      ok: build.ok && failedChecks.length === 0 && !ctx.recovery,
+      recovery: ctx.recovery,
       slow_features: slow.length ? slow : undefined,
       timing_ms: build.timing,
       summary: `${build.features.length - failedFeatures.length}/${build.features.length} features built, ${checks.length - failedChecks.length}/${checks.length} checks pass`,
@@ -270,6 +273,7 @@ define({
   }),
   async run(ctx, a) {
     if (!ctx.download) throw new Error('export is only available in the browser')
+    requireHealthyHistory(ctx)
     const build = await ctx.kernel.build()
     const names = a.names ?? build.bodies
     const models: Record<string, string> = {}

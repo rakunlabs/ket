@@ -430,7 +430,7 @@ export interface Pad {
   h: number
   /** Polygon outline relative to at, unrotated. */
   polygon?: P[]
-  drill?: { d: number; slot?: number; plated: boolean }
+  drill?: { d: number; slot?: number; plated: boolean; /** Slot centerline ends relative to the pad center, before pad rotation. */ ends?: [P, P] }
   layer: 'top' | 'bottom' | 'through'
 }
 
@@ -494,6 +494,8 @@ export interface Component {
   note?: string
   height?: Expr
   footprint: Footprint
+  /** Explicit electrical intent, keyed by canonical pad number (never guessed from pin names). */
+  pin_rules?: Record<string, { type: PinType; required?: boolean }>
   /** Not assembled: bare copper (solder pads, test points) or a part fitted by hand. Left out of the BOM and CPL. */
   dnp?: boolean
   /**
@@ -503,6 +505,8 @@ export interface Component {
    */
   model?: PartModel
 }
+
+export type PinType = 'input' | 'output' | 'bidirectional' | 'passive' | 'power_in' | 'power_out' | 'open_drain' | 'no_connect'
 
 export interface PartModel {
   url: string
@@ -562,6 +566,21 @@ export interface Zone {
   priority?: number
 }
 
+export type MaskColor = 'green' | 'black' | 'white' | 'blue' | 'red' | 'purple' | 'yellow'
+export type SilkColor = 'white' | 'black'
+
+/** Prepared, normalized ink polygons: width 1 mm, centered at the origin. */
+export interface BoardArtwork {
+  name: string
+  kind: 'text' | 'image'
+  text?: string
+  at: Vec2E
+  width: Expr
+  rotation?: Expr
+  side: 'top' | 'bottom'
+  regions: P[][][]
+}
+
 export interface Pcb {
   /** Board outline: a closed XY sketch (inner circles become holes) or a rect. */
   outline: { sketch: string } | { rect: { w: Expr; h: Expr; r?: Expr; center?: Vec2E } }
@@ -578,6 +597,8 @@ export interface Pcb {
   /** Schematic wires between pins of the same net (drawing only; the netlist decides connectivity). */
   wires?: Wire[]
   holes: { at: Vec2E; d: Expr }[]
+  style?: { mask: MaskColor; silk: SilkColor }
+  artwork?: BoardArtwork[]
 }
 
 /** A schematic wire from pin a to pin b ("R1.2"), with optional bend points (symbol units). */

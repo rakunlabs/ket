@@ -448,8 +448,10 @@ export class Scene3D {
   }
 
   /** Points the camera at the whole model. */
-  frame(dir: THREE.Vector3 = new THREE.Vector3(0.8, -1, 0.75)) {
-    const box = new THREE.Box3().setFromObject(this.model)
+  frame(dir: THREE.Vector3 = new THREE.Vector3(0.8, -1, 0.75), names?: string[]) {
+    const box = new THREE.Box3()
+    if (names?.length) for (const object of this.model.children) if (names.includes(object.userData.name)) box.expandByObject(object)
+    if (box.isEmpty()) box.setFromObject(this.model)
     if (box.isEmpty()) box.set(new THREE.Vector3(-50, -50, 0), new THREE.Vector3(50, 50, 30))
     const center = box.getCenter(new THREE.Vector3())
     const size = box.getSize(new THREE.Vector3()).length()

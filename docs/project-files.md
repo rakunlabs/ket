@@ -54,6 +54,11 @@ antenna keepouts, switch travel, solderability or manufacturer DFM. Parts withou
 real 3D models are listed as proxies. Review these before payment, inspect all
 Gerbers and confirm assembly side/rotation; PCBWay may need BOM/CPL column mapping.
 
+PCB mask and ink choices are recorded in the handoff, and custom text/logos
+are included in the Gerber legend layers. Colors must still be selected on the
+manufacturer order form. See [board artwork](board-artwork.md) for supported
+formats, print-clearance checks and single-color printing limitations.
+
 Direct API integrations are possible but not configured by this feature:
 
 - [JLCPCB API access application](https://jlcpcb.com/help/article/jlcpcb-online-api-available-now)

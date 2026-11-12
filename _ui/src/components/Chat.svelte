@@ -32,6 +32,14 @@
   let propose = $state(false)
 
   $effect(() => {
+    const request = session.assistantRequest
+    if (!request) return
+    input = input.trim() ? `${input}\n\n${request.prompt}` : request.prompt
+    propose = true
+    session.assistantRequest = undefined
+  })
+
+  $effect(() => {
     if (!provider && providers[0]) provider = providers[0].name
   })
 

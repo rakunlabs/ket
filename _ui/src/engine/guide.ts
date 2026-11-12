@@ -35,6 +35,32 @@ it changes, so every dimension can be an expression over parameters.
    section to see inside. Compare the picture with the intent.
 7. Summarize for the user in a few lines.
 
+## AI-first diagnose and repair
+- Start with get_document and get_problems. The latter combines history,
+  CAD checks, PCB DRC/connectivity, electrical rules and manufacturing
+  warnings with stable problem IDs, objects, locations and fix guidance.
+- Read get_board/get_copper for exact PCB objects. Diagnose from evidence;
+  never declare a board electrically safe just because geometry passes.
+- Use preview_changes with a small batch before a risky repair. It prepares
+  dependent steps in order, builds the candidate and reports introduced,
+  resolved and remaining problems WITHOUT saving anything. Apply reviewed
+  steps with batch or on a proposal. Preview does not certify the circuit.
+- edit_copper repairs specific numbered tracks/vias without rerouting a
+  whole net. Numbers belong to the current revision; re-read after removals
+  or autoroute. move_component unroute: true remains safer for moved parts.
+- Set pin intent with set_pin_rules from actual datasheets. run_erc checks
+  declared output conflicts, no-connect and required pins; unknown types
+  remain unverified. Do not guess types or weaken checks to get a pass.
+- Re-run get_problems after each repair. Inspect renders and measured fits;
+  focus_problem can show the user the current problem in the viewport.
+- If history replay fails, edits and exports are blocked on the incomplete
+  design. get_history shows the failed operation and last good sequence;
+  use a compatible build or undo to that sequence, never silently skip it.
+- cancel_operation interrupts local kernel work and queued calls, preserves
+  saved operations and rebuilds. It does not stop a server AI conversation.
+- Finish by naming remaining errors, untyped pins and manufacturer/physical
+  checks that still need a human. Never claim upload, payment or DFM approval.
+
 ## Sketches
 - For any outline that is not a plain box or cylinder, sketch it: sketch
   on a plane, then extrude or revolve with sketch: "<name>".
@@ -81,6 +107,8 @@ it changes, so every dimension can be an expression over parameters.
 - add_decal / add_decals print text or images onto a body: labels, key
   legends, logos. Point normal out of the surface at at.
 - Check with render shading: "realistic". Problems show as appearance_problems.
+- For printed PCB lettering/logos use add_board_artwork instead of decals:
+  decals are display-only and do not become manufacturing silkscreen.
 
 ## PCB
 1. set_board with an outline (rect, or an XY sketch driven by the same
@@ -108,7 +136,18 @@ it changes, so every dimension can be an expression over parameters.
    KiCad kicad-packages3D or kiswitch for MX switches and hot-swap
    sockets) and import loose ones (switches, keycaps, dev boards); measure
    them before placing. Footprint holes (switch pins, pegs) are drilled.
-   GND usually goes in pours on both layers plus stitch_vias.
+    GND usually goes in pours on both layers plus stitch_vias.
+9. Board artwork: set_board_style chooses mask (green, black, white, blue,
+   red, purple, yellow) and white/black silkscreen ink. add_board_artwork
+   prints text or a monochrome bitmap (# ink, . empty) on top/bottom;
+   at is its center and width preserves aspect ratio. Bottom printing is
+   mirrored automatically. update_board_artwork moves/resizes it;
+   remove_board_artwork deletes it. get_board lists colors and artwork;
+   render_board and render show it. run_drc checks custom ink against
+   pads, board edges and holes, but fine ink lines/gaps still need DFM
+   review. Gerbers carry the ink shapes; mask/ink colors are order
+   preferences in export_manufacturing and must be selected explicitly
+   with the manufacturer. This is single-color silk, not UV color printing.
 
 ## Enclosures that print and assemble
 - One outline, many offsets: extrude the outline polygon, and its inside

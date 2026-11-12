@@ -1,3 +1,5 @@
+<img align="right" height="72" src="internal/server/brand/mark.svg">
+
 # Ket
 
 Parametric CAD and PCB design in one document, built to be driven by AI.
@@ -47,6 +49,12 @@ claude mcp add --transport http ket http://localhost:8080/mcp
 ```
 
 ## How it works
+
+**AI-first repair:** `get_problems` gives shared CAD/PCB/ERC diagnostics with
+stable IDs, affected objects and fix guidance. `preview_changes` dry-runs atomic
+batches before saving; `get_copper` / `edit_copper` make focused PCB repairs.
+The workspace's **Problems** tab uses the same report and can draft an AI repair
+proposal. See [AI verification and recovery](docs/ai-workflow.md).
 
 **Project files and production handoff:** save/reopen editable `.ket` projects
 from **Project file** in the workspace. **Manufacture** produces a checked
@@ -102,6 +110,11 @@ chat panel ─┘  (ada, hub, agent)      └─ kernel worker (OpenCascade WASM
 - **Copper pours** (Clipper2): clearance to other nets, thermal spokes to
   same-net pads, floating islands dropped; the ratsnest and DRC count pour
   connectivity, Gerber writes them with clear polarity for holes.
+- **PCB appearance**: choose solder-mask and silkscreen colors in
+  **PCB → Appearance**, then add text or import a PNG/JPEG/WebP logo as
+  single-color silkscreen. Artwork appears in 2D/3D and exports to Gerber;
+  DRC checks its clearance to pads, edges and holes. Colors are ordering
+  preferences, not encoded in Gerber. See [board artwork](docs/board-artwork.md).
 - **Real part models**: EasyEDA 3D models (OBJ) fetched and cached by the
   server, placed on the board in the viewport and in renders; their height
   feeds the `part_*` blocks used for enclosure checks.

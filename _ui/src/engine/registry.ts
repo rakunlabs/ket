@@ -11,6 +11,7 @@ import type { Doc, Selector, Track, Via } from './doc'
 import type { BuildResult, CheckResult, EdgeInfo, FaceInfo, Kernel, MeshData } from './kernel'
 import type { MotionPlan } from './motion'
 import type { BoardState } from './pcb/state'
+import type { ReplayFailure } from './operations'
 import type { SolvedSketch } from './sketch'
 
 export type Kind = 'mutate' | 'query'
@@ -101,6 +102,14 @@ export interface Ctx {
   doc: Doc
   /** Applied, prepared operations at the current head, without user/server metadata. */
   projectOps?: Op[]
+  /** The document is the last good prefix, not the full stored history. */
+  recovery?: ReplayFailure
+  focus?(target: FocusTarget): void
+  /** Isolated document context for dry runs; never commits or updates the UI. */
+  kernelFor?(doc: Doc): KernelAPI
+  revision?: number
+  /** Interrupts only the local executor; saved operations are never undone. */
+  interrupt?(): Promise<BuildResult | undefined>
   kernel: KernelAPI
   /** Renders views of the current model; only in the browser. */
   render?(opts: RenderOptions): Promise<{ images: { mime: string; data: string }[]; views: string[] }>
@@ -112,6 +121,13 @@ export interface Ctx {
   download?(name: string, blob: Blob): Promise<string>
   /** Server services (parts catalog, autorouter). */
   services?: Services
+}
+
+export interface FocusTarget {
+  view: '3d' | 'pcb' | 'sch'
+  objects: string[]
+  at?: [number, number]
+  side?: 'top' | 'bottom'
 }
 
 export interface Services {

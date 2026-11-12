@@ -730,7 +730,7 @@ define({
   group: 'project',
   kind: 'mutate',
   description:
-    'Apply several changes atomically as one step (one undo): if any step fails, nothing changes and the error names the step. Use it to build a whole part in one call. Steps are change commands only (no queries).',
+    'Apply up to 256 changes atomically as one undo step. Each step is prepared against the previous step\'s document, so later steps can use earlier parts, nets and parameters. If any step fails, nothing is committed and the error names the step. Change commands only (no queries or nested batches).',
   args: z.object({
     steps: z
       .array(
@@ -739,7 +739,7 @@ define({
           args: z.record(z.string(), z.unknown()).describe('Its arguments, as when calling it directly'),
         }),
       )
-      .min(1),
+      .min(1).max(256),
   }),
   examples: [
     {

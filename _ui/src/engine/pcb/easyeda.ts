@@ -140,6 +140,12 @@ export function parsePart(raw: unknown): { footprint: Footprint; info: PartInfo 
           if (holeR > 0 && 2 * holeR * UNIT >= 0.05 && layerId === LAYER_MULTI) {
             pad.drill = { d: r4(2 * holeR * UNIT), plated: (f[15] ?? 'Y').trim().toUpperCase() !== 'N' }
             if (n(f[13]) > 0) pad.drill.slot = r4(n(f[13]) * UNIT)
+            const ends = pairs(f[14] ?? '')
+            if (ends.length === 2) pad.drill.ends = ends.map(([x, y]) => {
+              const p = conv(x, y)
+              const q = rotate({ x: p.x - at.x, y: p.y - at.y }, -pad.rotation)
+              return { x: r4(q.x), y: r4(q.y) }
+            }) as [P, P]
           }
           pads.push(pad)
           break

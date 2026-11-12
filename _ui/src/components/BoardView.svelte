@@ -1,10 +1,14 @@
 <script lang="ts">
   let showBom = $state(false)
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, untrack } from 'svelte'
+  import { Palette } from '@lucide/svelte'
 
   import { type View, drawBoard, fitView, renderBoardPNG, toBoard } from '../lib/board-draw'
   import type { Session } from '../lib/session.svelte'
   import BomPanel from './BomPanel.svelte'
+  import BoardArtworkPanel from './BoardArtworkPanel.svelte'
+  import { projectAccess } from '../lib/access.svelte'
+  import { toasts } from '../lib/toasts'
 
   let { session }: { session: Session } = $props()
 
@@ -15,6 +19,15 @@
   let cursor = $state<[number, number]>()
   let size = $state({ w: 0, h: 0 })
   let ro: ResizeObserver | undefined
+  let showAppearance = $state(false)
+  let placing = $state('')
+  const access = projectAccess()
+  $effect(() => {
+    const target = session.focusTarget
+    if (target?.view !== 'pcb') return
+    if (target.side) side = target.side
+    if (target.at) view = { scale: Math.max(untrack(() => view?.scale) ?? 10, 20), cx: target.at[0], cy: target.at[1] }
+  })
 
   onMount(() => {
     ro = new ResizeObserver(() => {
@@ -52,7 +65,7 @@
     if (!view) view = fitView(st, size.w, size.h)
     const ctx = canvas.getContext('2d')!
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    drawBoard(ctx, size.w, size.h, pcb, st, view, { side, ratsnest: true, selected: session.selected, highlight: new Set(session.selected ? [session.selected] : []) })
+    drawBoard(ctx, size.w, size.h, pcb, st, view, { side, ratsnest: true, selected: session.selected, highlight: new Set([...(session.selected ? [session.selected] : []), ...(session.focusTarget?.objects ?? [])]), violations: session.focusTarget?.view === 'pcb' && session.focusTarget.at ? [{ at: session.focusTarget.at }] : [] })
   })
 
   function onWheel(e: WheelEvent) {
@@ -87,6 +100,15 @@
   }
 
   function onUp(e: PointerEvent) {
+    if (drag && !drag.moved && placing && view && access.canEdit) {
+      const r = canvas.getBoundingClientRect()
+      const at = toBoard(view, size.w, size.h, e.clientX - r.left, e.clientY - r.top, side)
+      void session.run('update_board_artwork', { name: placing, at }).catch((error) => toasts.show((error as Error).message, 'error'))
+      placing = ''
+      drag = undefined
+      canvas.releasePointerCapture(e.pointerId)
+      return
+    }
     if (drag && !drag.moved && cursor && session.board) {
       const [x, y] = cursor
       const hit = session.board.board.components.find((c) => {
@@ -102,6 +124,8 @@
 
   const r = $derived(session.board?.ratsnest)
 </script>
+
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape') placing = '' }} />
 
 <div bind:this={host} class="absolute inset-0 bg-[var(--board-bg)]">
   {#if !session.doc.pcb}
@@ -128,11 +152,14 @@
         {/each}
       </div>
       {#if session.doc.pcb.components.length}
-        <button class={['btn py-[3px] text-xs', showBom && 'on']} aria-pressed={showBom} onclick={() => (showBom = !showBom)}>BOM</button>
+        <button class={['btn py-[3px] text-xs', showBom && 'on']} aria-pressed={showBom} onclick={() => { showBom = !showBom; showAppearance = false }}>BOM</button>
       {/if}
+      <button class={['btn py-[3px] text-xs', showAppearance && 'on']} aria-pressed={showAppearance} onclick={() => { showAppearance = !showAppearance; showBom = false; placing = '' }}><Palette size={13} /> Appearance</button>
     </div>
+    {#if showAppearance}<BoardArtworkPanel {session} {side} onclose={() => { showAppearance = false; placing = '' }} onplace={(name) => { placing = name; side = session.doc.pcb?.artwork?.find((art) => art.name === name)?.side ?? side; showAppearance = false }} />{/if}
     {#if showBom && session.doc.pcb.components.length}<BomPanel {session} onclose={() => (showBom = false)} />{/if}
     <div class="theme-dark num pointer-events-none absolute bottom-2 left-2 border border-line bg-surface/90 px-2 py-0.5 font-mono text-[11px] text-ink-2">
+      {#if placing}<span class="text-ink">Click board to place {placing} · Esc cancels · </span>{/if}
       {#if cursor}[{cursor[0].toFixed(2)}, {cursor[1].toFixed(2)}] ·{/if}
       {#if r}routed {r.routed}/{r.total}{/if}
       · {session.doc.pcb.tracks.length} tracks · {session.doc.pcb.vias.length} vias

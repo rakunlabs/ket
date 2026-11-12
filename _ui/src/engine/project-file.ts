@@ -5,6 +5,7 @@ import { z } from 'zod'
 
 import { emptyDoc, type Doc } from './doc'
 import { applyOp, command, define, parseArgs, type Op } from './registry'
+import { requireHealthyHistory } from './operations'
 
 export const PROJECT_FILE_LIMIT = 25 * 1024 * 1024
 const MAX_OPS = 20_000
@@ -67,6 +68,7 @@ define({
   args: z.object({ filename: z.string().optional() }),
   async run(ctx, a) {
     if (!ctx.projectOps || !ctx.download) throw new Error('project export requires an open Ket browser tab')
+    requireHealthyHistory(ctx)
     const data = writeProjectFile(ctx.projectOps)
     const file = a.filename ?? 'project.ket'
     const blob = new Blob([data], { type: 'application/json' })

@@ -5,11 +5,13 @@
   import type { CheckResult } from '../engine/kernel'
   import { projectAccess } from '../lib/access.svelte'
   import type { Session } from '../lib/session.svelte'
+  import type { DesignProblem } from '../engine/problems'
+  import ProblemsPanel from './ProblemsPanel.svelte'
 
-  let { session }: { session: Session } = $props()
+  let { session, onrepair }: { session: Session; onrepair?: (problem: DesignProblem) => void } = $props()
   const access = projectAccess()
 
-  let tab = $state<'model' | 'history'>('model')
+  let tab = $state<'model' | 'history' | 'problems'>('model')
   let checks = $state<CheckResult[]>()
   let checking = $state(false)
   let editing = $state<string>()
@@ -62,7 +64,7 @@
 
 <aside class="flex w-72 shrink-0 flex-col border-r border-line-strong bg-sidebar">
   <div class="flex border-b border-line-strong bg-surface-2 px-1">
-    {#each [['model', 'Model', Layers], ['history', 'History', History]] as const as [id, label, Icon] (id)}
+    {#each [['model', 'Model', Layers], ['problems', 'Problems', AlertTriangle], ['history', 'History', History]] as const as [id, label, Icon] (id)}
       <button
         class={['-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-1.5 font-medium', tab === id ? 'border-sel-ink bg-sel text-sel-ink' : 'border-transparent text-ink-2 hover:text-ink']}
         onclick={() => (tab = id)}
@@ -243,6 +245,8 @@
           </li>
         {/each}
       </ul>
+    {:else if tab === 'problems'}
+      <ProblemsPanel {session} {onrepair} />
     {:else}
       <ul class="py-1">
         {#each [...session.log].reverse() as e (e.seq)}

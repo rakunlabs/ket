@@ -13,6 +13,8 @@ import { type Check, type Decal, type Doc, type Expr, type Feature, type Materia
 import { namesIn, num, resolveParameters } from './expr'
 import { explodeOffset } from './explode'
 import { fontMetrics } from './fonts'
+import { boardStyle } from './pcb/artwork'
+import { boardDrills } from './pcb/drills'
 import { type GearState, GearError, describeGear, gearLocalShape, gearOptions, gearStates, localKey, placeGear } from './gears'
 import { type MotionPlan, motionPlan } from './motion'
 import { type Mechanisms, mechanismReport, mechanismShape, mechanismStates } from './mechanisms'
@@ -860,12 +862,14 @@ export class Kernel {
     }
     const b = resolveBoard(doc, this.params, (n) => this.sketch(n))
     this.board = b
+    const drills = boardDrills(doc.pcb, b)
     const key = JSON.stringify([
       b.outline,
       b.cutouts,
       b.thickness,
       b.z,
       b.holes,
+      drills,
       b.components.map((c) => [c.ref, c.at, c.rotation, c.side, c.courtyard, c.height, c.model, c.model && this.imported.get(c.model.url) instanceof Error]),
       [...new Set(b.components.flatMap((c) => (c.model ? [c.model.url] : [])))].map((u) => this.imported.has(u)),
     ])
@@ -876,7 +880,11 @@ export class Kernel {
         try {
           let d = polyDrawing(b.outline)
           for (const c of b.cutouts) d = d.cut(polyDrawing(c))
-          for (const h of b.holes) d = d.cut(R.drawCircle(h.d / 2).translate(h.at.x, h.at.y))
+          for (const h of drills) {
+            const length = Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y)
+            const hole = length < 1e-9 ? R.drawCircle(h.d / 2) : R.drawRoundedRectangle(length + h.d, h.d, h.d / 2 - 1e-6).rotate(Math.atan2(h.to.y - h.from.y, h.to.x - h.from.x) * 180 / Math.PI)
+            d = d.cut(hole.translate((h.from.x + h.to.x) / 2, (h.from.y + h.to.y) / 2))
+          }
           const solid = (d.sketchOnPlane('XY', b.z) as R.Sketch).extrude(b.thickness) as Shape3D
           this.cache.set(BOARD, { key, shape: solid, status: this.describe({ name: BOARD, type: 'extrude' } as Feature, solid, []) })
         } catch (e) {
@@ -1001,7 +1009,7 @@ export class Kernel {
     const only = opts.nets ? new Set(opts.nets) : undefined
     // Rerouting some nets: their old copper goes, everything else stays as an obstacle.
     const pcb = only ? { ...doc.pcb, tracks: doc.pcb.tracks.filter((t) => !only.has(t.net)), vias: doc.pcb.vias.filter((v) => !only.has(v.net)) } : doc.pcb
-    const rules = new Set(['clearance', 'short', 'hole_to_hole', 'copper_to_edge', 'track_width', 'via'])
+    const rules = new Set(['clearance', 'short', 'hole_to_hole', 'copper_to_edge', 'outside_board', 'track_width', 'via'])
     const before = new Set(drc(pcb, board, fillZones(pcb, board)).map((v) => v.message))
     // Only problems the new copper brings in, and only copper rules (silk, placement are not the router's).
     const check = (r: { tracks: Track[]; vias: Via[] }) => {
@@ -1672,7 +1680,7 @@ export class Kernel {
         this.meshCache.set(key, m)
       }
       const f = this.doc?.features.find((x) => x.name === name)
-      const color = f?.color ?? (name === BOARD ? '#1f5a35' : name.startsWith(PART_PREFIX) ? '#30343b' : undefined)
+      const color = f?.color ?? (name === BOARD && this.doc?.pcb ? boardStyle(this.doc.pcb).maskColor : name.startsWith(PART_PREFIX) ? '#30343b' : undefined)
       const material = f?.material ? this.doc?.materials?.find((x) => x.name === f.material) : undefined
       const decals = this.resolvedDecals(name)
       const explode = this.doc ? explodeOffset(this.doc, this.params, name) : undefined

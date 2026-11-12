@@ -50,6 +50,12 @@ export function diffDocs(main: Doc, next: Doc): Change[] {
       ),
     )
     out.push(...compare('net', mp?.nets, np.nets, (n) => n.name, (n) => `${n.pins.length} pins`))
+    if (JSON.stringify(mp?.style) !== JSON.stringify(np.style)) out.push({ kind: 'changed', what: 'board colors', detail: `${np.style?.mask ?? 'green'} mask, ${np.style?.silk ?? 'white'} silk` })
+    out.push(...compare('board artwork', mp?.artwork, np.artwork, (art) => art.name, (art) => `${art.kind} on ${art.side}`))
+    for (const c of np.components) {
+      const old = mp?.components.find((p) => p.ref === c.ref)
+      if (JSON.stringify(old?.pin_rules) !== JSON.stringify(c.pin_rules)) out.push({ kind: 'changed', what: `electrical pin rules ${c.ref}` })
+    }
     const tr = (np.tracks.length ?? 0) - (mp?.tracks.length ?? 0)
     const vi = (np.vias.length ?? 0) - (mp?.vias.length ?? 0)
     if (tr || vi || JSON.stringify(mp?.tracks) !== JSON.stringify(np.tracks))

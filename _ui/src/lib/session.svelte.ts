@@ -6,7 +6,7 @@
 // optimistically, then committed; when the server refuses (someone else
 // committed first), the session reloads and re-applies the op on top.
 
-import { type Doc, type Op, applyOp, command, emptyDoc, normalizeDoc, parseArgs } from '../engine'
+import { type Doc, type Op, applyOp, command, emptyDoc, normalizeDoc, parseArgs, prepareOperation, replayOperations } from '../engine'
 import type { BuildResult, MeshData, SketchLines } from '../engine/kernel'
 import type { BoardRenderOptions, RenderOptions, Services } from '../engine/registry'
 import type { BoardState } from '../engine/pcb/state'
@@ -42,6 +42,9 @@ type Frame =
   | { t: 'pong' }
 
 export class Session {
+  recovery = $state<import('../engine/operations').ReplayFailure>()
+  focusTarget = $state<import('../engine/registry').FocusTarget>()
+  assistantRequest = $state<{ prompt: string }>()
   doc = $state<Doc>(emptyDoc())
   build = $state<BuildResult | undefined>(undefined)
   meshes = $state.raw<MeshData[]>([])
@@ -74,6 +77,7 @@ export class Session {
   private ops: StoredOp[] = []
   /** Commands run one at a time so ops keep their order. */
   private chain: Promise<unknown> = Promise.resolve()
+  private operationEpoch = 0
   private pingTimer: ReturnType<typeof setInterval> | undefined
 
   /** The branch this session shows; undefined = main. */
@@ -98,15 +102,8 @@ export class Session {
     this.connect()
     if (branch) {
       const main = await api.ops(this.projectID, 0, false)
-      let doc = emptyDoc()
-      for (const o of main.ops) {
-        try {
-          doc = applyOp(doc, o.op as Op).doc
-        } catch {
-          // skipped
-        }
-      }
-      this.mainDoc = doc
+      const replay = replayOperations(main.ops.map((o) => ({ seq: o.seq, op: o.op as Op })), main.head)
+      this.mainDoc = replay.failure ? undefined : replay.doc
     } else {
       this.mainDoc = undefined
     }
@@ -161,22 +158,13 @@ export class Session {
   }
 
   private replayTo(head: number) {
-    let doc = emptyDoc()
-    const log: LogEntry[] = []
-    for (const o of this.ops) {
-      if (o.seq > head) break
-      try {
-        const out = applyOp(doc, o.op as Op)
-        doc = out.doc
-        log.push({ seq: o.seq, cmd: o.op.cmd, summary: o.message || out.summary, author: o.author, at: o.created_at })
-      } catch (e) {
-        // An op that no longer applies is skipped, not fatal.
-        log.push({ seq: o.seq, cmd: o.op.cmd, summary: `skipped: ${(e as Error).message}`, author: o.author, at: o.created_at })
-      }
-    }
-    this.doc = doc
+    this.focusTarget = undefined
+    const replay = replayOperations(this.ops.map((o) => ({ seq: o.seq, op: o.op as Op })), head)
+    const summaries = new Map(replay.summaries.map((s) => [s.seq, s.summary]))
+    this.recovery = replay.failure
+    this.log = this.ops.filter((o) => o.seq <= head).map((o) => ({ seq: o.seq, cmd: o.op.cmd, summary: o.seq === replay.failure?.seq ? `recovery required: ${replay.failure.error}` : o.seq > (replay.failure?.last_good_seq ?? head) ? 'not replayed: recover the failed operation first' : o.message || summaries.get(o.seq) || '', author: o.author, at: o.created_at }))
+    this.doc = replay.doc
     this.head = head
-    this.log = log
     this.replayed = true
     void this.rebuild()
   }
@@ -261,12 +249,15 @@ export class Session {
   }
 
   private applyLocal(op: Op, seq: number, author: string, message?: string) {
+    this.focusTarget = undefined
+    if (this.recovery) { this.replayTo(seq); return }
     try {
       const out = applyOp(this.doc, op)
       this.doc = out.doc
       this.log = [...this.log, { seq, cmd: op.cmd, summary: message || out.summary, author, at: new Date().toISOString() }]
     } catch (e) {
-      this.log = [...this.log, { seq, cmd: op.cmd, summary: `skipped: ${(e as Error).message}`, author, at: new Date().toISOString() }]
+      this.recovery = { seq, cmd: op.cmd, error: (e as Error).message, last_good_seq: this.head }
+      this.log = [...this.log, { seq, cmd: op.cmd, summary: `recovery required: ${(e as Error).message}`, author, at: new Date().toISOString() }]
     }
     this.head = seq
     void this.rebuild()
@@ -316,7 +307,13 @@ export class Session {
    * without another call. Queries return their answer.
    */
   run(cmd: string, args: unknown, author = 'user'): Promise<unknown> {
-    const p = this.chain.then(() => this.exec(cmd, args, author))
+    // Interruption cannot wait behind the task it is meant to stop.
+    if (cmd === 'cancel_operation') return this.exec(cmd, args, author)
+    const epoch = this.operationEpoch
+    const p = this.chain.then(() => {
+      if (epoch !== this.operationEpoch) throw new Error('queued command cancelled; read get_document before retrying')
+      return this.exec(cmd, args, author)
+    })
     this.chain = p.catch(() => undefined)
     return p
   }
@@ -325,6 +322,7 @@ export class Session {
     const def = command(cmd)
     if (!def) throw new Error(`unknown command "${cmd}" in this Ket tab; if the server offers it, the tab runs an older build: call reload_ui (or ask the user to reload the page)`)
     let parsed = parseArgs(def, args)
+    const startDoc = this.doc, startHead = this.head, epoch = this.operationEpoch
 
     const ctx = {
       doc: this.doc,
@@ -335,23 +333,19 @@ export class Session {
       renderSchematic: this.schematicRenderer,
       download: async (name: string, blob: Blob) => download(name, blob),
       services,
+      recovery: this.recovery,
+      focus: (target: import('../engine/registry').FocusTarget) => { this.focusTarget = target },
+      kernelFor: (doc: Doc) => this.kernel.api(doc),
+      revision: this.head,
+      interrupt: () => this.interruptOperation(),
     }
 
     if (def.kind === 'query') return def.run!(ctx, parsed as never)
+    if (this.recovery) throw new Error(`design recovery required at operation ${this.recovery.seq}: ${this.recovery.error}. No edits were saved. Reload with a compatible Ket build, or undo to operation ${this.recovery.last_good_seq}; use get_history to inspect the stored log.`)
 
-    // Batches prepare each step.
-    if (cmd === 'batch') {
-      const steps = (parsed as { steps: { cmd: string; args: unknown }[] }).steps
-      const prepared = []
-      for (const [i, s] of steps.entries()) {
-        const d = command(s.cmd)
-        if (!d) throw new Error(`step ${i + 1}: unknown command "${s.cmd}" in this Ket tab; if the server offers it, the tab runs an older build: call reload_ui (or ask the user to reload the page)`)
-        prepared.push({ cmd: s.cmd, args: d.prepare ? await d.prepare(ctx, parseArgs(d, s.args) as never) : s.args })
-      }
-      parsed = { steps: prepared }
-    } else if (def.prepare) {
-      parsed = await def.prepare(ctx, parsed as never)
-    }
+    parsed = (await prepareOperation(ctx, { cmd, args: parsed }, (doc) => this.kernel.api(doc))).args
+    if (epoch !== this.operationEpoch) throw new Error('operation cancelled before commit; nothing was saved')
+    if (this.doc !== startDoc || this.head !== startHead) throw new Error('the design changed while this operation was being prepared; nothing was saved. Read get_document and retry against the current design.')
 
     const op: Op = { cmd, args: parsed }
     const out = applyOp(this.doc, op)
@@ -359,6 +353,7 @@ export class Session {
   }
 
   private async commitAndBuild(op: Op, next: Doc, summary: string, author: string) {
+    this.focusTarget = undefined
     const prev = this.doc
     const base = this.head
     // Optimistic: show the change at once, roll back if the server refuses.
@@ -367,8 +362,9 @@ export class Session {
     try {
       seq = await this.commit(op, base, author, summary)
     } catch (e) {
-      this.doc = prev
-      void this.rebuild()
+      // A peer may have committed while we waited for the acknowledgement.
+      // Prefer server history over overwriting that peer's change with prev.
+      try { await this.reload() } catch { this.doc = prev; void this.rebuild() }
       throw new Error(`not saved: ${(e as Error).message}`)
     }
     this.ops = this.ops.filter((o) => o.seq < seq)
@@ -384,6 +380,13 @@ export class Session {
   /** The current board state (with DRC on request), for drawing. */
   async boardForRender(drc: boolean): Promise<BoardState | undefined> {
     return this.kernel.api(this.doc).board({ drc })
+  }
+
+  async interruptOperation() {
+    this.operationEpoch++
+    this.kernel.restart()
+    this.chain = Promise.resolve()
+    return (await this.rebuild())?.build
   }
 
   undo() {

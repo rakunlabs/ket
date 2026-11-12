@@ -5,7 +5,8 @@
 import type { Pcb } from '../doc'
 import { type ResolvedBoard } from './board'
 import { type Poly, distPointSeg, distPolyPoly, distSegPoly, distSegSeg, inside } from './geometry'
-import { inRegion, overlaps, stroke } from './poly'
+import { area, circle, difference, inRegion, intersect, offset, overlaps, stroke } from './poly'
+import { boardDrills } from './drills'
 import type { ZoneFill } from './zones'
 
 export const JLCPCB = {
@@ -26,6 +27,9 @@ export interface Violation {
   message: string
   at?: [number, number]
   objects?: string[]
+  measured?: number
+  required?: number
+  fix?: string
 }
 
 // ── Connectivity ──────────────────────────────────────────────────────
@@ -82,6 +86,9 @@ export function ratsnest(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Ra
     const eps = 0.01
 
     const padTouchesSeg = (pi: number, s: Seg) => pads[pi].layers.includes(s.layer) && distSegPoly(s.a, s.b, pads[pi].outline) <= s.w / 2 + eps
+    for (let i = 0; i < pads.length; i++) for (let j = i + 1; j < pads.length; j++) {
+      if (pads[i].layers.some((layer) => pads[j].layers.includes(layer)) && distPolyPoly(pads[i].outline, pads[j].outline) <= eps) d.union(i, j)
+    }
     for (let i = 0; i < pads.length; i++)
       for (let j = 0; j < segs.length; j++) if (padTouchesSeg(i, segs[j])) d.union(i, pads.length + j)
     for (let i = 0; i < segs.length; i++)
@@ -95,7 +102,10 @@ export function ratsnest(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Ra
         if (distPointSeg(c, s.a, s.b) <= v.diameter / 2 + s.w / 2 + eps) d.union(vi, pads.length + j)
       })
       pads.forEach((p, i) => {
-        if (inside(c, p.outline) || Math.hypot(c.x - p.center.x, c.y - p.center.y) < v.diameter / 2) d.union(vi, i)
+        if (distSegPoly(c, c, p.outline) <= v.diameter / 2 + eps) d.union(vi, i)
+      })
+      vias.slice(k + 1).forEach((other, j) => {
+        if (Math.hypot(c.x - other.at[0], c.y - other.at[1]) <= (v.diameter + other.diameter) / 2 + eps) d.union(vi, pads.length + segs.length + k + 1 + j)
       })
     })
     // Copper pours: everything a pour region touches is one island.
@@ -176,6 +186,30 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
   for (const poly of [b.outline, ...b.cutouts]) for (let i = 0; i < poly.length; i++) edges.push([poly[i], poly[(i + 1) % poly.length]])
   const distToEdge = (p: Poly) => Math.min(...edges.map(([a, c]) => distSegPoly(a, c, p)))
   const onBoard = (p: { x: number; y: number }) => inside(p, b.outline) && !b.cutouts.some((c) => inside(p, c))
+  const drilled = boardDrills(pcb, b)
+  const edgeDistance = (a: Poly[number], c: Poly[number], radius = 0) => Math.min(...edges.map(([p, q]) => distSegSeg(a, c, p, q))) - radius
+  const segmentOnBoard = (a: Poly[number], c: Poly[number], radius = 0) => onBoard(a) && onBoard(c) && edgeDistance(a, c, radius) >= -1e-6
+  const checkEdge = (id: string, a: Poly[number], c: Poly[number], radius: number) => {
+    const distance = edgeDistance(a, c, radius)
+    if (!segmentOnBoard(a, c, radius)) out.push({ rule: 'outside_board', message: `${id} copper leaves the board or crosses a cutout; move it inwards or reroute it`, at: pt(a), objects: [id], fix: 'Move or reroute the object so its full copper area lies inside the board.' })
+    else if (distance < R.copperToEdge - 1e-6) out.push({ rule: 'copper_to_edge', message: `${id} copper is ${f(distance)} mm from the board edge; keep ${R.copperToEdge}`, at: pt(a), objects: [id], measured: distance, required: R.copperToEdge, fix: 'Move or reroute the object inwards by the missing edge clearance.' })
+  }
+
+  // Custom silk must stay clear of the edge and exposed mask openings.
+  // Vias are tented, so they are not exposed pads. Fine line/gap fidelity
+  // is still a manufacturer DFM check, not certified by these polygons.
+  const silkPads = b.artwork?.length ? b.pads.map((p) => ({ p, keepout: offset([p.outline], 0.2) })) : []
+  for (const art of b.artwork ?? []) {
+    const objects = [art.name], layer = art.side === 'top' ? 'F.Cu' : 'B.Cu'
+    if (art.regions.some((r) => !r[0].every(onBoard) || distToEdge(r[0]) < 0.2 - 1e-6 || b.cutouts.some((cutout) => overlaps(r, [cutout]))))
+      out.push({ rule: 'silk_to_edge', message: `${art.name} silkscreen is off the board or within 0.2 mm of an edge/cutout; move it inwards or reduce its width`, at: art.at, objects })
+    for (const { p, keepout } of silkPads) {
+      if (p.layers.includes(layer) && art.regions.some((r) => overlaps(r, keepout)))
+        out.push({ rule: 'silk_to_pad', message: `${art.name} silkscreen is within 0.2 mm of exposed pad ${p.ref}.${p.pin}; move the artwork or reduce its width`, at: art.at, objects: [...objects, `${p.ref}.${p.pin}`] })
+    }
+    if (b.holes.some((hole) => art.regions.some((r) => overlaps(r, [circle(hole.at, hole.d / 2 + 0.2)]))))
+      out.push({ rule: 'silk_to_hole', message: `${art.name} silkscreen reaches a drilled hole; keep 0.2 mm from its edge`, at: art.at, objects })
+  }
 
   // Components on the board and courtyards apart.
   for (const c of b.components) {
@@ -219,11 +253,13 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
       const a = { x: t.points[i][0], y: t.points[i][1] }
       const c = { x: t.points[i + 1][0], y: t.points[i + 1][1] }
       cu.push({ kind: 'track', id: `track ${ti + 1}`, net: t.net, layers: [t.layer], seg: [a, c], w: t.width })
-      if (!onBoard(a) || !onBoard(c)) out.push({ rule: 'outside_board', message: `track ${ti + 1} (${t.net}) leaves the board`, at: t.points[i] })
+      checkEdge(`track ${ti + 1}`, a, c, t.width / 2)
     }
   })
   pcb.vias.forEach((v, vi) => {
     const c = { x: v.at[0], y: v.at[1] }
+    checkEdge(`via ${vi + 1}`, c, c, v.diameter / 2)
+    if (v.diameter < R.minViaDiameter - 1e-9) out.push({ rule: 'via', message: `via ${vi + 1} diameter ${f(v.diameter)} < ${R.minViaDiameter} mm`, at: v.at, objects: [`via ${vi + 1}`] })
     if (v.drill < R.minViaDrill - 1e-9) out.push({ rule: 'via', message: `via ${vi + 1} drill ${f(v.drill)} < ${R.minViaDrill} mm`, at: v.at })
     if ((v.diameter - v.drill) / 2 < R.minAnnular - 1e-9)
       out.push({ rule: 'via', message: `via ${vi + 1} annular ring ${f((v.diameter - v.drill) / 2)} < ${R.minAnnular} mm`, at: v.at })
@@ -283,28 +319,37 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
   // touches another net (should never happen; guards the fill).
   for (const z of zones) {
     if (!z.regions.length) out.push({ rule: 'zone', message: `zone ${z.index + 1} (${z.net} on ${z.layer}) fills nothing: it touches no ${z.net} copper or is blocked; check its polygon and the ${z.net} pads on ${z.layer}` })
+    const rings = z.regions.flatMap((r) => r)
+    const material = [b.outline, ...b.cutouts.map((c) => area(c) > 0 ? [...c].reverse() : c)]
+    if (rings.length && difference(rings, offset(material, -R.copperToEdge)).some((r) => Math.abs(area(r)) > 1e-6))
+      out.push({ rule: 'copper_to_edge', message: `zone ${z.index + 1} (${z.net}) leaves the board or is within ${R.copperToEdge} mm of an edge/cutout; increase its edge clearance`, objects: [`zone ${z.index + 1}`], required: R.copperToEdge })
+    for (const copper of cu) {
+      if (copper.net === z.net || !copper.layers.includes(z.layer) || !rings.length) continue
+      const poly = copper.poly ? [copper.poly] : stroke(copper.seg ?? [copper.c!], copper.w ?? copper.r! * 2)
+      const need = Math.max(b.netClass.get(z.net)?.clearance ?? R.minClearance, b.netClass.get(copper.net ?? '')?.clearance ?? R.minClearance, R.minClearance)
+      if (intersect(rings, offset(poly, need - 0.005)).some((r) => Math.abs(area(r)) > 1e-6))
+        out.push({ rule: 'clearance', message: `zone ${z.index + 1} (${z.net}) is too close to ${copper.id} (${copper.net ?? 'no net'}); keep ${f(need)} mm`, objects: [`zone ${z.index + 1}`, copper.id], required: need, at: pt(copper.poly?.[0] ?? copper.seg?.[0] ?? copper.c!) })
+    }
   }
 
   // Copper to board edge.
   for (const p of b.pads) {
     const d = distToEdge(p.outline)
-    if (d < R.copperToEdge - 1e-6 && !(p.drill && p.drill > 0))
+    if (!p.outline.every(onBoard) || b.cutouts.some((c) => overlaps([p.outline], [c])))
+      out.push({ rule: 'outside_board', message: `pad ${p.ref}.${p.pin} copper leaves the board or crosses a cutout; move the component inwards`, at: pt(p.center), objects: [`${p.ref}.${p.pin}`] })
+    else if (d < R.copperToEdge - 1e-6)
       out.push({ rule: 'copper_to_edge', message: `pad ${p.ref}.${p.pin} is ${f(d)} mm from the board edge; keep ${R.copperToEdge}`, at: pt(p.center), objects: [`${p.ref}.${p.pin}`] })
   }
 
   // Holes.
-  const holes = [
-    ...b.holes.filter((h) => !h.ref).map((h, i) => ({ id: `hole ${i + 1}`, c: h.at, d: h.d, npth: true })),
-    ...b.holes.filter((h) => h.ref).map((h) => ({ id: `${h.ref}.hole${b.holes.filter((o) => o.ref === h.ref).indexOf(h) + 1}`, c: h.at, d: h.d, npth: true })),
-    ...pcb.vias.map((v, i) => ({ id: `via ${i + 1}`, c: { x: v.at[0], y: v.at[1] }, d: v.drill, npth: false })),
-    ...b.pads.filter((p) => p.drill).map((p) => ({ id: `${p.ref}.${p.pin}`, c: p.center, d: p.drill!, npth: false })),
-  ]
+  const holes = drilled.map((h) => ({ ...h, c: h.at, npth: !h.plated }))
   for (const h of holes) if (h.d < R.minHole - 1e-9) out.push({ rule: 'drill', message: `${h.id} drill ${f(h.d)} < ${R.minHole} mm`, at: pt(h.c) })
+  for (const h of holes) if (!segmentOnBoard(h.from, h.to, h.d / 2)) out.push({ rule: 'outside_board', message: `${h.id} drilled hole/slot leaves the board; move it inwards`, at: pt(h.c), objects: [h.id] })
   for (let i = 0; i < holes.length; i++)
     for (let j = i + 1; j < holes.length; j++) {
       const a = holes[i]
       const c = holes[j]
-      const gap = Math.hypot(a.c.x - c.c.x, a.c.y - c.c.y) - a.d / 2 - c.d / 2
+      const gap = distSegSeg(a.from, a.to, c.from, c.to) - a.d / 2 - c.d / 2
       // Two unplated holes only need the drill web (like same-net holes):
       // the MX switch pegs and hot-swap pin holes sit 0.47 mm apart by design.
       const keep = a.npth && c.npth ? R.npthToNpth : R.holeToHole

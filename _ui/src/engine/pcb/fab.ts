@@ -7,6 +7,7 @@ import type { ResolvedBoard } from './board'
 import type { Poly } from './geometry'
 import type { ZoneFill } from './zones'
 import { rot } from './geometry'
+import { boardDrills } from './drills'
 
 const fmt = (mm: number) => Math.round(mm * 1e6).toString() // 4.6 format, mm
 
@@ -34,12 +35,14 @@ class Gerber {
     this.body.push(dark ? '%LPD*%' : '%LPC*%')
   }
 
-  region(poly: Poly) {
+  region(poly: Poly, holes: Poly[] = []) {
     if (poly.length < 3) return
     this.body.push('G36*')
-    this.body.push(`X${fmt(poly[0].x)}Y${fmt(poly[0].y)}D02*`)
-    for (const p of poly.slice(1)) this.body.push(`X${fmt(p.x)}Y${fmt(p.y)}D01*`)
-    this.body.push(`X${fmt(poly[0].x)}Y${fmt(poly[0].y)}D01*`)
+    for (const ring of [poly, ...holes]) {
+      this.body.push(`X${fmt(ring[0].x)}Y${fmt(ring[0].y)}D02*`)
+      for (const p of ring.slice(1)) this.body.push(`X${fmt(p.x)}Y${fmt(p.y)}D01*`)
+      this.body.push(`X${fmt(ring[0].x)}Y${fmt(ring[0].y)}D01*`)
+    }
     this.body.push('G37*')
   }
 
@@ -142,6 +145,10 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Fa
         g.line([m(x1, y1), m(x2, y2)], Math.max(w, 0.12))
       }
     }
+    for (const art of b.artwork ?? []) {
+      if (art.side !== side) continue
+      for (const region of art.regions) g.region(region[0], region.slice(1))
+    }
     files[file] = g.toString()
   }
 
@@ -149,27 +156,27 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Fa
   for (const poly of [b.outline, ...b.cutouts]) edge.line([...poly, poly[0]].map((p) => [p.x, p.y]), 0.1)
   files['board-Edge_Cuts.gm1'] = edge.toString()
 
-  // Excellon: plated (vias, through pads) and non-plated (holes) in one file
-  // with tool comments; JLCPCB accepts both.
-  const tools = new Map<string, number>()
-  const hits: { t: number; x: number; y: number; plated: boolean }[] = []
-  const tool = (d: number, plated: boolean) => {
-    const key = `${d.toFixed(3)}${plated ? 'P' : 'N'}`
-    if (!tools.has(key)) tools.set(key, tools.size + 1)
-    return tools.get(key)!
+  // Separate PTH/NPTH files: plating is machine-readable, not just a comment.
+  // G85 slots carry both tool-center endpoints, already mirrored/rotated.
+  for (const plated of [true, false]) {
+    const hits = boardDrills(pcb, b).filter((h) => h.plated === plated)
+    const tools = new Map<string, number>()
+    for (const h of hits) if (!tools.has(h.d.toFixed(4))) tools.set(h.d.toFixed(4), tools.size + 1)
+    const drl = ['M48', `; #@! TF.FileFunction,${plated ? 'Plated' : 'NonPlated'},1,${b.layers},${plated ? 'PTH' : 'NPTH'}`, '; FILE_FORMAT=4:4', 'FMAT,2', 'METRIC,TZ']
+    for (const [d, tool] of tools) drl.push(`T${tool}C${d}`)
+    drl.push('%', 'G90', 'G05')
+    const xy = (p: { x: number; y: number }) => `X${p.x.toFixed(4)}Y${p.y.toFixed(4)}`
+    for (const [d, tool] of tools) {
+      drl.push(`T${tool}`)
+      for (const h of hits.filter((h) => h.d.toFixed(4) === d)) {
+        const slot = Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y) > 1e-9
+        drl.push(slot ? `${xy(h.from)}G85${xy(h.to)}` : xy(h.at))
+        if (slot) drl.push('G05')
+      }
+    }
+    drl.push('T0', 'M30', '')
+    files[plated ? 'board-PTH.drl' : 'board-NPTH.drl'] = drl.join('\n')
   }
-  for (const v of pcb.vias) hits.push({ t: tool(v.drill, true), x: v.at[0], y: v.at[1], plated: true })
-  for (const p of b.pads) if (p.drill) hits.push({ t: tool(p.drill, true), x: p.center.x, y: p.center.y, plated: true })
-  for (const h of b.holes) hits.push({ t: tool(h.d, false), x: h.at.x, y: h.at.y, plated: false })
-  const drl = ['M48', '; ket drill file', 'FMAT,2', 'METRIC,TZ']
-  for (const [key, t] of tools) drl.push(`; ${key.endsWith('P') ? 'plated' : 'non-plated'}`, `T${t}C${parseFloat(key)}`)
-  drl.push('%', 'G90', 'G05')
-  for (const [, t] of tools) {
-    drl.push(`T${t}`)
-    for (const h of hits) if (h.t === t) drl.push(`X${h.x.toFixed(3)}Y${h.y.toFixed(3)}`)
-  }
-  drl.push('T0', 'M30', '')
-  files['board.drl'] = drl.join('\n')
 
   // BOM grouped by LCSC part, CPL per placement (JLCPCB column names).
   const csv = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`

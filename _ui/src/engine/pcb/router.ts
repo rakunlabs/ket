@@ -222,7 +222,10 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
   }
   const all = new Set(layerNames.map((_, i) => i))
   for (const h of b.holes) obstacles.push({ layers: all, net: 0, dist: (x, y) => Math.max(0, Math.hypot(x - h.at.x, y - h.at.y) - h.d / 2), box: [h.at.x - h.d / 2, h.at.y - h.d / 2, h.at.x + h.d / 2, h.at.y + h.d / 2] })
-  for (const p of b.pads) if (p.drill) obstacles.push({ layers: all, net: p.net ? netId.get(p.net) ?? 0 : 0, dist: (x, y) => Math.max(0, Math.hypot(x - p.center.x, y - p.center.y) - p.drill! / 2), box: [p.center.x - p.drill / 2, p.center.y - p.drill / 2, p.center.x + p.drill / 2, p.center.y + p.drill / 2] })
+  for (const p of b.pads) if (p.drill) {
+    const [a, c] = p.drillSlot ?? [p.center, p.center], r = p.drill / 2
+    obstacles.push({ layers: all, net: p.drillPlated !== false && p.net ? netId.get(p.net) ?? 0 : 0, dist: (x, y) => Math.max(0, distPS(x, y, a.x, a.y, c.x, c.y) - r), box: [Math.min(a.x, c.x) - r, Math.min(a.y, c.y) - r, Math.max(a.x, c.x) + r, Math.max(a.y, c.y) + r] })
+  }
   const routedNets = new Set(nets.map((n) => n.net))
   for (const t of pcb.tracks) {
     if (routedNets.has(t.net)) continue
@@ -545,7 +548,10 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
       const y = cy(cell)
       const vd = net.cls.via_drill / 2
       for (const h of b.holes) if (Math.hypot(x - h.at.x, y - h.at.y) - h.d / 2 - vd < HOLE_TO_HOLE) return false
-      for (const p of b.pads) if (p.drill && Math.hypot(x - p.center.x, y - p.center.y) - p.drill / 2 - vd < HOLE_TO_HOLE) return false
+      for (const p of b.pads) if (p.drill) {
+        const [a, c] = p.drillSlot ?? [p.center, p.center]
+        if (distPS(x, y, a.x, a.y, c.x, c.y) - p.drill / 2 - vd < HOLE_TO_HOLE) return false
+      }
     }
     for (let l = 0; l < L; l++)
       for (const o of offs) {

@@ -59,7 +59,7 @@ export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
     }
     for (const h of b.holes) avoid.push(circle(h.at, h.d / 2 + clearance))
     for (const c of b.cutouts) avoid.push(...offset([c], edge))
-    for (const p of b.pads) if (p.drill && p.net !== z.net) avoid.push(circle(p.center, p.drill / 2 + clearance))
+    for (const p of b.pads) if (p.drill && (p.net !== z.net || p.drillPlated === false)) avoid.push(...stroke(p.drillSlot ?? [p.center], p.drill + clearance * 2))
     const earlier: Ring[] = []
     for (const f of fills) {
       if (f.layer !== z.layer || f.net === z.net) continue

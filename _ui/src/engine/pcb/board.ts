@@ -5,6 +5,7 @@
 
 import type { Doc, NetClass, Pcb, PartModel } from '../doc'
 import { num } from '../expr'
+import { resolveArtwork, type ResolvedArtwork } from './artwork'
 import type { SolvedSketch } from '../sketch'
 import { type Placed, type Poly, type WorldPad, bboxOf, courtyard, polyArea, rot, worldPads } from './geometry'
 
@@ -24,6 +25,7 @@ export interface ResolvedBoard {
   /** Board holes and footprint holes (ref set: drilled for that part). */
   holes: { at: { x: number; y: number }; d: number; ref?: string }[]
   errors: string[]
+  artwork?: ResolvedArtwork[]
 }
 
 export function emptyPcb(): Pcb {
@@ -166,6 +168,11 @@ export function resolveBoard(doc: Doc, params: Map<string, number>, sketch: (nam
     }
   }
 
+  const artwork: ResolvedArtwork[] = []
+  for (const art of pcb.artwork ?? []) {
+    try { artwork.push(resolveArtwork(art, params)) } catch (e) { errors.push((e as Error).message) }
+  }
+
   return {
     outline,
     cutouts,
@@ -188,6 +195,7 @@ export function resolveBoard(doc: Doc, params: Map<string, number>, sketch: (nam
       ),
     ],
     errors,
+    artwork,
   }
 }
 

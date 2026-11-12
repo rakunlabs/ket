@@ -24,6 +24,9 @@ export interface WorldPad {
   /** Copper layers the pad is on. */
   layers: string[]
   drill?: number
+  /** Kept separately from the diameter for backwards-compatible consumers. */
+  drillPlated?: boolean
+  drillSlot?: [P, P]
   net?: string
 }
 
@@ -87,15 +90,28 @@ const copperOf = (pad: Pad, side: 'top' | 'bottom', layers: number): string[] =>
 }
 
 export function worldPads(c: Placed, layers: number): WorldPad[] {
-  return c.footprint.pads.map((pad) => ({
-    ref: c.ref,
-    pin: pad.number,
-    name: c.footprint.pins[pad.number],
-    center: toWorld(c, pad.at),
-    outline: padLocal(pad).map((p) => toWorld(c, p)),
-    layers: copperOf(pad, c.side, layers),
-    drill: pad.drill?.d,
-  }))
+  return c.footprint.pads.map((pad) => {
+    let drillSlot: [P, P] | undefined
+    if (pad.drill?.ends || (pad.drill?.slot ?? 0) > (pad.drill?.d ?? 0)) {
+      const half = Math.max(0, ((pad.drill!.slot ?? pad.drill!.d) - pad.drill!.d) / 2)
+      const local = pad.drill!.ends ?? (pad.w >= pad.h ? [{ x: -half, y: 0 }, { x: half, y: 0 }] : [{ x: 0, y: -half }, { x: 0, y: half }])
+      drillSlot = local.map((p) => {
+        const q = rot(p, pad.rotation)
+        return toWorld(c, { x: pad.at.x + q.x, y: pad.at.y + q.y })
+      }) as [P, P]
+    }
+    return {
+      ref: c.ref,
+      pin: pad.number,
+      name: c.footprint.pins[pad.number],
+      center: toWorld(c, pad.at),
+      outline: padLocal(pad).map((p) => toWorld(c, p)),
+      layers: copperOf(pad, c.side, layers),
+      drill: pad.drill?.d,
+      ...(pad.drill ? { drillPlated: pad.drill.plated } : {}),
+      ...(drillSlot ? { drillSlot } : {}),
+    }
+  })
 }
 
 export function courtyard(c: Placed): Poly {

@@ -17,6 +17,8 @@
   import { ProjectAccess, provideAccess } from '../lib/access.svelte'
   import { Session } from '../lib/session.svelte'
   import { type Tab, tabs } from '../lib/tabs.svelte'
+  import { toasts } from '../lib/toasts'
+  import type { DesignProblem } from '../engine/problems'
 
   let { tab, visible }: { tab: Tab; visible: boolean } = $props()
 
@@ -57,6 +59,20 @@
   let schView = $state<SchematicView>()
   const modes = ['3d', 'pcb', 'sch'] as const
 
+  $effect(() => {
+    const target = session.focusTarget
+    if (!target) return
+    mode = target.view
+    session.selected = target.view === 'pcb'
+      ? target.objects.map((o) => o.replace(/^part_/, '').split('.')[0]).find((o) => session.doc.pcb?.components.some((c) => c.ref === o))
+      : target.objects.find((o) => session.build?.bodies.includes(o))
+  })
+
+  function requestRepair(problem: DesignProblem) {
+    showChat = true
+    session.assistantRequest = { prompt: `Please investigate and repair this design problem on a proposal branch.\nProblem ID: ${problem.id}\n${problem.message}\nAffected objects: ${problem.objects.join(', ') || '(see report)'}\nGuidance: ${problem.fix}\nStart with get_document and get_problems for current evidence. Use preview_changes for a focused repair, then apply it on the proposal. Preserve unrelated work; do not delete/weaken checks or invent electrical pin types. Finish with get_problems and relevant renders; state any remaining problems and verification limits.` }
+  }
+
   onMount(async () => {
     try {
       project = await api.project(projectID)
@@ -82,7 +98,7 @@
   function onKey(e: KeyboardEvent) {
     if (!visible) return
     const t = e.target as HTMLElement
-    if (t.closest('input, textarea, [contenteditable]')) return
+    if (t.closest('input, textarea, select, [contenteditable], [data-toast-region], [data-board-tools]')) return
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault()
       if (e.shiftKey) session.redo()
@@ -94,7 +110,7 @@
       if (mode === 'pcb') boardView?.frame()
       else if (mode === 'sch') schView?.frame()
       else viewport?.frame()
-    } else if (e.key === 'Tab' && !e.ctrlKey) {
+    } else if (e.key.toLowerCase() === 'v' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault()
       mode = modes[(modes.indexOf(mode) + 1) % modes.length]
     }
@@ -103,8 +119,9 @@
   async function exportAs(format: 'step' | 'stl') {
     try {
       await session.run('export', { format, filename: `${project?.name ?? 'model'}.${format}` })
+      toasts.show(`${format.toUpperCase()} file downloaded.`)
     } catch (e) {
-      alert((e as Error).message)
+      toasts.show((e as Error).message, 'error')
     }
   }
 
@@ -112,27 +129,29 @@
     try {
       await session.run('export_fab', { filename: `${project?.name ?? 'board'}-fab.zip` })
     } catch (e) {
-      if (confirm(`${(e as Error).message}\n\nExport anyway?`)) await session.run('export_fab', { force: true, filename: `${project?.name ?? 'board'}-fab.zip` })
+      if (!confirm(`${(e as Error).message}\n\nExport anyway?`)) return
+      try {
+        await session.run('export_fab', { force: true, filename: `${project?.name ?? 'board'}-fab.zip` })
+      } catch (error) {
+        toasts.show((error as Error).message, 'error')
+        return
+      }
     }
+    toasts.show('Gerber package downloaded.')
   }
 
   let projectInput: HTMLInputElement
   let fileBusy = $state(false)
-  let fileMessage = $state('')
-  let fileError = $state(false)
   let manufacturer = $state<'jlcpcb' | 'pcbway'>('jlcpcb')
   let quantity = $state(5)
   const quoteUrl = $derived(manufacturer === 'jlcpcb' ? 'https://jlcpcb.com/quote' : 'https://www.pcbway.com/orderonline.aspx')
   async function fileAction(action: () => Promise<unknown>, message: string) {
     fileBusy = true
-    fileMessage = ''
-    fileError = false
     try {
       await action()
-      fileMessage = message
+      toasts.show(message)
     } catch (e) {
-      fileError = true
-      fileMessage = (e as Error).message
+      toasts.show((e as Error).message, 'error')
     } finally { fileBusy = false }
   }
   async function openProjectFile(event: Event) {
@@ -188,7 +207,7 @@
       <span class="mx-1 h-5 w-px bg-line-strong"></span>
       <div class="seg" role="radiogroup" aria-label="View">
         {#each [['3d', '3D'], ['pcb', 'PCB'], ['sch', 'SCH']] as const as [m, label] (m)}
-          <button role="radio" aria-checked={mode === m} onclick={() => (mode = m)} title="Tab switches views">{label}</button>
+          <button role="radio" aria-checked={mode === m} onclick={() => (mode = m)} title="Shift+V switches views">{label}</button>
         {/each}
       </div>
       <button class="btn btn-ghost px-1.5" title="Fit view (F)" onclick={() => (mode === 'pcb' ? boardView?.frame() : mode === 'sch' ? schView?.frame() : viewport?.frame())}><Focus size={15} /></button>
@@ -226,6 +245,7 @@
           <Bot size={14} /> Assistant
         </button>
       {/if}
+      {#if session.building}<button class="btn text-xs" onclick={() => session.run('cancel_operation', {}).catch((e) => toasts.show((e as Error).message, 'error'))}>Stop kernel work</button>{/if}
       {#if project}<ShareDialog {project} />{/if}
       <ThemeToggle />
       <AccountMenu />
@@ -233,16 +253,19 @@
   </header>
 
   <ProposalBar {session} />
-  <input bind:this={projectInput} class="hidden" type="file" accept=".ket,application/json" onchange={openProjectFile} aria-label="Import Ket project file" />
-  {#if fileMessage}
-    <div class={['note mx-2 my-1 text-xs', fileError && 'danger']} role={fileError ? 'alert' : 'status'}>{fileMessage}</div>
+  {#if session.recovery}
+    <div class="note danger mx-2 my-1 items-center text-xs" role="alert">
+      <span class="min-w-0 flex-1">Recovery required at operation {session.recovery.seq}: {session.recovery.error}. Showing the last working design (operation {session.recovery.last_good_seq}); editing and exports are blocked. Reload a compatible build or undo to that operation. Stored history is preserved.</span>
+      <button class="btn shrink-0 text-xs" disabled={!access.canEdit || session.head === 0} onclick={() => session.undo()}>Undo last change</button>
+    </div>
   {/if}
+  <input bind:this={projectInput} class="hidden" type="file" accept=".ket,application/json" onchange={openProjectFile} aria-label="Import Ket project file" />
 
   {#if loadError}
     <div class="note danger m-6">{loadError}</div>
   {:else}
     <div class="flex min-h-0 flex-1">
-      <Sidebar {session} />
+      <Sidebar {session} onrepair={canChat ? requestRepair : undefined} />
       <main class="relative min-w-0 flex-1">
         <div class={['absolute inset-0', mode !== '3d' && 'invisible']}><Viewport bind:this={viewport} {session} /></div>
         <div class={['absolute inset-0', mode !== 'pcb' && 'invisible']}><BoardView bind:this={boardView} {session} /></div>

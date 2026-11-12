@@ -2,6 +2,7 @@
   import { onMount, untrack } from 'svelte'
 
   import TabBar from './components/TabBar.svelte'
+  import Toasts from './components/Toasts.svelte'
   import { account } from './lib/account.svelte'
   import { appLink } from './lib/app-link.svelte'
   import { router } from './lib/router.svelte'
@@ -48,3 +49,5 @@
     </div>
   </div>
 {/if}
+
+<Toasts />

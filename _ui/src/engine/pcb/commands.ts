@@ -8,9 +8,12 @@ import { z } from 'zod'
 import type { Component, Doc, Footprint, Net, Pcb, Track, Via, Wire } from '../doc'
 import { normalizeDoc } from '../doc'
 import { define } from '../registry'
+import { requireHealthyHistory } from '../operations'
 import { expr, ident, vec2, vec3 } from '../schema'
 import { tidyTracks } from './autoroute'
 import { DEFAULT_CLASS, emptyPcb } from './board'
+import { boardStyle } from './artwork'
+import { boardDrills } from './drills'
 import { parsePart } from './easyeda'
 import { footprintFromName } from './footprints'
 import { placeParts } from './place'
@@ -40,7 +43,7 @@ function comp(pcb: Pcb, ref: string): Component {
  * Resolves "U1.VIN" / "U1.3" / "J1.GND" to "U1.<pad number>". Pin names
  * that map to several pads (GND on a USB-C) expand to all of them.
  */
-function resolvePin(pcb: Pcb, spec: string): string[] {
+export function resolvePin(pcb: Pcb, spec: string): string[] {
   const i = spec.indexOf('.')
   if (i < 1) throw new Error(`"${spec}" is not a pin; write REF.PIN, e.g. "U1.3" or "U1.VIN"`)
   const ref = spec.slice(0, i)
@@ -1021,7 +1024,7 @@ define({
   group: 'pcb',
   kind: 'query',
   description:
-    'Read the board: outline size, parts (ref, part, package, position, rotation, side, size), nets with their pins (and pin names), routing status (which nets are still unrouted, with the missing connections) and copper counts.',
+    'Read the board: outline size, solder-mask/silkscreen colors, printed artwork, parts (ref, part, package, position, rotation, side, size), nets with their pins (and pin names), routing status and copper counts.',
   args: z.object({ detail: z.enum(['summary', 'full']).optional() }),
   async run(ctx, a) {
     const st = await ctx.kernel.board()
@@ -1036,6 +1039,8 @@ define({
       thickness: board.thickness,
       z: board.z,
       layers: board.layers,
+      style: boardStyle(pcb),
+      artwork: (board.artwork ?? []).map((art) => ({ name: art.name, kind: art.kind, side: art.side, at: art.at, width: art.width, rotation: pcb.artwork?.find((item) => item.name === art.name)?.rotation ?? 0, text: pcb.artwork?.find((item) => item.name === art.name)?.text, regions: art.regions.length })),
       errors: board.errors.length ? board.errors : undefined,
       components: board.components.map((c) => {
         const cx = c.courtyard.map((p) => p.x)
@@ -1050,6 +1055,7 @@ define({
           side: c.side,
           size: [r2(Math.max(...cx) - Math.min(...cx)), r2(Math.max(...cy) - Math.min(...cy))],
           note: src.note,
+          pin_rules: src.pin_rules,
           ...(a.detail === 'full' ? { pins: Object.fromEntries(c.footprint.pads.map((p) => [p.number, c.footprint.pins[p.number] ?? p.number])) } : {}),
         }
       }),
@@ -1070,6 +1076,7 @@ define({
         vias: pcb.vias.length,
       },
       holes: board.holes.map((h) => ({ at: [r2(h.at.x), r2(h.at.y)], d: h.d, ...(h.ref ? { part: h.ref } : {}) })),
+      drills: boardDrills(pcb, board).map((h) => ({ id: h.id, at: [r2(h.at.x), r2(h.at.y)], diameter: h.d, plated: h.plated, ...(Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y) > 1e-9 ? { slot: { from: h.from, to: h.to } } : {}) })),
       zones: st.zones.map((zf) => ({ number: zf.index + 1, net: zf.net, layer: zf.layer, area: zf.area, islands: zf.regions.length, dropped_islands: zf.dropped || undefined })),
       wires: pcb.wires?.length ? pcb.wires.map((w) => `${w.a} — ${w.b}`) : undefined,
     }
@@ -1081,7 +1088,7 @@ define({
   group: 'pcb',
   kind: 'query',
   description:
-    "Design rule check against JLCPCB's standard capabilities: parts inside the outline and not overlapping, track width, clearance and shorts between nets, copper to edge, drills and hole spacing, plus unrouted nets. Each violation names the objects and the measured value.",
+    "Design rule check against JLCPCB's standard capabilities: parts inside the outline and not overlapping, track width, clearance and shorts between nets, copper to edge, drills and hole spacing, printed artwork to exposed pads/edges/holes, plus unrouted nets. Each violation names the objects and the measured value. Fine artwork details still need manufacturer DFM review.",
   args: z.object({}),
   async run(ctx) {
     const st = await ctx.kernel.board({ drc: true })
@@ -1129,9 +1136,10 @@ define({
   group: 'pcb',
   kind: 'query',
   description:
-    'Write the JLCPCB fabrication package as a zip download: Gerber X2 for copper, mask, silk and outline, Excellon drill, BOM and CPL for assembly. Refuses while DRC fails or nets are unrouted unless force is true.',
+    'Write the fabrication ZIP: Gerber X2 copper/mask/silk/outline, separate PTH and NPTH Excellon drill files (including rotated G85 slots), BOM and CPL. Refuses while DRC fails or nets are unrouted unless force is true. A history recovery failure cannot be bypassed.',
   args: z.object({ force: z.boolean().optional(), filename: z.string().optional() }),
   async run(ctx, a) {
+    requireHealthyHistory(ctx)
     const st = await ctx.kernel.board({ drc: true })
     if (!st) throw new Error('the project has no board yet; start with set_board')
     const problems = st.drc!.length + st.ratsnest.unrouted.length
