@@ -30,13 +30,13 @@ func TestThreeMFObjects(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "Cover" || got[1].Name != "Pawn & Rook" || got[1].Triangles != 12 {
 		t.Fatalf("objects: %+v", got)
 	}
-	if err := CheckUpload("set.3mf", buf.Bytes()); err != nil {
-		t.Fatalf("check: %v", err)
+	if objs, err := CheckUpload("set.3mf", buf.Bytes()); err != nil || len(objs) != 2 {
+		t.Fatalf("check: %v %v", objs, err)
 	}
-	if err := CheckUpload("set.3mf", []byte("solid x")); err == nil || !strings.Contains(err.Error(), "zip") {
+	if _, err := CheckUpload("set.3mf", []byte("solid x")); err == nil || !strings.Contains(err.Error(), "zip") {
 		t.Fatalf("want zip error, got %v", err)
 	}
-	if err := CheckUpload("notes.txt", []byte("hi")); err == nil {
+	if _, err := CheckUpload("notes.txt", []byte("hi")); err == nil {
 		t.Fatal("want refusal of a .txt")
 	}
 }
@@ -66,5 +66,39 @@ func TestThreeMFObjectsBambu(t *testing.T) {
 	}
 	if len(got) != 7 || got[5].ID != "10" || got[5].Name != "Cover" || got[5].Triangles != 799576 {
 		t.Fatalf("objects: %+v", got)
+	}
+}
+
+func TestCleanUploadName(t *testing.T) {
+	for in, want := range map[string]string{
+		"case.stl":                 "case.stl",
+		"../../etc/x.stl":          "x.stl",
+		`C:\models\50% infill.3mf`: "50_ infill.3mf",
+		"PlayBook'd Chess.3mf":     "PlayBook'd Chess.3mf",
+		"a#b?.step":                "a_b_.step",
+	} {
+		if got, err := CleanUploadName(in); err != nil || got != want {
+			t.Errorf("CleanUploadName(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", ".stl", "notes.txt", "/"} {
+		if _, err := CleanUploadName(bad); err == nil {
+			t.Errorf("CleanUploadName(%q): want an error", bad)
+		}
+	}
+}
+
+func TestThreeMFBomb(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("3D/3dmodel.model")
+	// 2 GB of zeros compresses to a few MB; the limit must refuse it before reading.
+	chunk := make([]byte, 1<<20)
+	for i := 0; i < 1100; i++ {
+		_, _ = w.Write(chunk)
+	}
+	_ = zw.Close()
+	if _, err := ThreeMFObjects(buf.Bytes()); err == nil || !strings.Contains(err.Error(), "inflates") {
+		t.Fatalf("want the inflate limit, got %v", err)
 	}
 }

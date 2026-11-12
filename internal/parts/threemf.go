@@ -6,8 +6,8 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"path"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -18,36 +18,74 @@ type ThreeMFObject struct {
 	Triangles int    `json:"triangles,omitempty"`
 }
 
+// Limits for reading 3MF archives: a small zip can inflate to gigabytes.
+const (
+	max3MFEntry = 1 << 30 // one model file, uncompressed
+	max3MFTotal = 4 << 30 // all entries
+	max3MFMeta  = 8 << 20 // a config or relationships file
+)
+
 var (
 	objectRe   = regexp.MustCompile(`<object\s+id="([^"]+)"[^>]*>([\s\S]*?)</object>`)
 	nameMetaRe = regexp.MustCompile(`<metadata\s+(?:type="object"\s+)?key="name"\s+value="([^"]*)"`)
 	faceCount  = regexp.MustCompile(`face_count="(\d+)"`)
 )
 
-// ThreeMFObjects lists the build items of a 3MF, with the names slicers
-// (Bambu Studio, Orca, Prusa) give them.
-func ThreeMFObjects(data []byte) ([]ThreeMFObject, error) {
+// open3MF opens a 3MF archive and refuses one that inflates past the limits.
+func open3MF(data []byte) (*zip.Reader, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("read 3MF; %w", err)
 	}
-	read := func(name string) ([]byte, bool) {
-		for _, f := range zr.File {
-			if strings.TrimPrefix(f.Name, "/") == strings.TrimPrefix(name, "/") {
-				rc, err := f.Open()
-				if err != nil {
-					return nil, false
-				}
-				defer rc.Close()
-				b, err := io.ReadAll(io.LimitReader(rc, 8<<20))
-				return b, err == nil
-			}
+	var total uint64
+	for _, f := range zr.File {
+		if f.UncompressedSize64 > max3MFEntry {
+			return nil, fmt.Errorf("the 3MF entry %s inflates to %d MB, more than %d MB", f.Name, f.UncompressedSize64>>20, max3MFEntry>>20)
 		}
+		total += f.UncompressedSize64
+	}
+	if total > max3MFTotal {
+		return nil, fmt.Errorf("the 3MF inflates to %d MB, more than %d MB", total>>20, max3MFTotal>>20)
+	}
+
+	return zr, nil
+}
+
+func zipEntry(zr *zip.Reader, name string) *zip.File {
+	for _, f := range zr.File {
+		if strings.TrimPrefix(f.Name, "/") == strings.TrimPrefix(name, "/") {
+			return f
+		}
+	}
+
+	return nil
+}
+
+func readSmall(zr *zip.Reader, name string) ([]byte, bool) {
+	f := zipEntry(zr, name)
+	if f == nil {
 		return nil, false
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, false
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(io.LimitReader(rc, max3MFMeta))
+
+	return b, err == nil
+}
+
+// ThreeMFObjects lists the build items of a 3MF, with the names slicers
+// (Bambu Studio, Orca, Prusa) give them.
+func ThreeMFObjects(data []byte) ([]ThreeMFObject, error) {
+	zr, err := open3MF(data)
+	if err != nil {
+		return nil, err
 	}
 
 	root := "3D/3dmodel.model"
-	if rels, ok := read("_rels/.rels"); ok {
+	if rels, ok := readSmall(zr, "_rels/.rels"); ok {
 		var r struct {
 			Rel []struct {
 				Target string `xml:"Target,attr"`
@@ -62,36 +100,20 @@ func ThreeMFObjects(data []byte) ([]ThreeMFObject, error) {
 			}
 		}
 	}
-	// The root model can be large when meshes are inline: read only its head and build.
-	var model []byte
-	for _, f := range zr.File {
-		if strings.TrimPrefix(f.Name, "/") == strings.TrimPrefix(root, "/") {
-			rc, err := f.Open()
-			if err != nil {
-				return nil, err
-			}
-			model, err = io.ReadAll(rc)
-			rc.Close()
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	if model == nil {
+	f := zipEntry(zr, root)
+	if f == nil {
 		return nil, fmt.Errorf("the 3MF has no %s", root)
 	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
 
-	type item struct {
-		ObjectID string `xml:"objectid,attr"`
-	}
-	type object struct {
-		ID   string `xml:"id,attr"`
-		Name string `xml:"name,attr"`
-	}
-	// Scan tags without unmarshalling the meshes.
+	// Stream the model: meshes are skipped, only object names and build items are kept.
 	names := map[string]string{}
 	var items []string
-	dec := xml.NewDecoder(bytes.NewReader(model))
+	dec := xml.NewDecoder(io.LimitReader(rc, max3MFEntry))
 	inBuild := false
 	for {
 		tok, err := dec.Token()
@@ -99,37 +121,37 @@ func ThreeMFObjects(data []byte) ([]ThreeMFObject, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read %s; %w", path.Base(root), err)
+			return nil, fmt.Errorf("read %s; %w", root, err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
 			switch t.Name.Local {
 			case "object":
-				var o object
+				var id, name string
 				for _, a := range t.Attr {
 					switch a.Name.Local {
 					case "id":
-						o.ID = a.Value
+						id = a.Value
 					case "name":
-						o.Name = a.Value
+						name = a.Value
 					}
 				}
-				if o.Name != "" {
-					names[o.ID] = o.Name
+				if name != "" {
+					names[id] = name
 				}
 			case "mesh":
-				_ = dec.Skip()
+				if err := dec.Skip(); err != nil {
+					return nil, fmt.Errorf("read %s; %w", root, err)
+				}
 			case "build":
 				inBuild = true
 			case "item":
 				if inBuild {
-					var it item
 					for _, a := range t.Attr {
 						if a.Name.Local == "objectid" {
-							it.ObjectID = a.Value
+							items = append(items, a.Value)
 						}
 					}
-					items = append(items, it.ObjectID)
 				}
 			}
 		case xml.EndElement:
@@ -141,7 +163,7 @@ func ThreeMFObjects(data []byte) ([]ThreeMFObject, error) {
 
 	counts := map[string]int{}
 	for _, cfg := range []string{"Metadata/model_settings.config", "Metadata/Slic3r_PE_model.config"} {
-		b, ok := read(cfg)
+		b, ok := readSmall(zr, cfg)
 		if !ok {
 			continue
 		}
@@ -150,9 +172,9 @@ func ThreeMFObjects(data []byte) ([]ThreeMFObject, error) {
 				names[string(m[1])] = xmlUnescape(string(n[1]))
 			}
 			if c := faceCount.FindSubmatch(m[2]); c != nil {
-				var v int
-				fmt.Sscan(string(c[1]), &v)
-				counts[string(m[1])] = v
+				if v, err := strconv.Atoi(string(c[1])); err == nil {
+					counts[string(m[1])] = v
+				}
 			}
 		}
 	}

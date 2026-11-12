@@ -14,6 +14,34 @@ export interface TriMesh {
   paints?: string[]
 }
 
+// ── URLs ────────────────────────────────────────────────────────────────
+
+/** decodeURIComponent that leaves a string with a stray "%" as it is. */
+export function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return s
+  }
+}
+
+/** The #fragment of an import URL (which object of a 3MF, which file of a zip). */
+export function urlFragment(url: string): string {
+  const i = url.indexOf('#')
+  return i < 0 ? '' : safeDecode(url.slice(i + 1))
+}
+
+/** The file name at the end of a URL. */
+export function urlFile(url: string): string {
+  return safeDecode(fetchKey(url).split('/').pop() ?? '')
+}
+
+/** Where a URL is fetched from: a 3MF file once for all its #objects. */
+export function fetchKey(url: string): string {
+  const [base] = url.split('#')
+  return /\.3mf$/i.test(base) ? base : url
+}
+
 // ── Zip ─────────────────────────────────────────────────────────────────
 
 const crcTable = (() => {

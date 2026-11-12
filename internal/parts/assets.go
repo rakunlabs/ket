@@ -4,12 +4,16 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/rakunlabs/ket/internal/store"
@@ -91,7 +95,7 @@ func (s *Service) Asset(ctx context.Context, rawURL string) ([]byte, error) {
 	data := raw
 	if strings.EqualFold(path.Ext(u.Path), ".3mf") {
 		// A 3MF is itself a zip; the browser picks objects out of it.
-		if err := CheckUpload(path.Base(u.Path), raw); err != nil {
+		if _, err := CheckUpload(path.Base(u.Path), raw); err != nil {
 			return nil, err
 		}
 	} else if bytes.HasPrefix(raw, []byte("PK\x03\x04")) {
@@ -141,7 +145,25 @@ func UploadID(rawURL string) (string, bool) {
 
 // UploadURL is the import URL of an uploaded file.
 func UploadURL(id, name string) string {
-	return AssetScheme + id + "/" + strings.ReplaceAll(name, "#", "_")
+	return AssetScheme + id + "/" + name
+}
+
+var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._\- ()'+,]+`)
+
+// CleanUploadName keeps a file name usable in a ket:asset URL: no folders,
+// and characters that would need escaping (#, %, ?, /...) become "_".
+func CleanUploadName(raw string) (string, error) {
+	name := path.Base(strings.ReplaceAll(strings.TrimSpace(raw), "\\", "/"))
+	name = strings.TrimSpace(unsafeName.ReplaceAllString(name, "_"))
+	if name == "" || name == "." || strings.HasPrefix(name, ".") {
+		return "", fmt.Errorf("%q is not a file name: give the name with its extension, e.g. \"case.3mf\"", raw)
+	}
+	if len(name) > 200 {
+		ext := path.Ext(name)
+		name = name[:200-len(ext)] + ext
+	}
+
+	return name, CheckUploadName(name)
 }
 
 // CheckUploadName says whether a file name is one import can read.
@@ -154,45 +176,48 @@ func CheckUploadName(name string) error {
 }
 
 // UploadAnswer is what an upload answers: the url for import, and a 3MF's objects.
-func UploadAnswer(id, name string, size int64, data []byte) map[string]any {
+func UploadAnswer(id, name string, size int64, objects []ThreeMFObject) map[string]any {
 	url := UploadURL(id, name)
 	out := map[string]any{"id": id, "name": name, "url": url, "bytes": size}
-	if strings.EqualFold(path.Ext(name), ".3mf") {
-		if objs, err := ThreeMFObjects(data); err == nil && len(objs) > 0 {
-			out["objects"] = objs
-			out["note"] = "import one object with url#<id>, e.g. " + url + "#" + objs[0].ID
-		}
+	if len(objects) > 0 {
+		out["objects"] = objects
+		out["note"] = "import one object with url#<id>, e.g. " + url + "#" + objects[0].ID
 	}
 
 	return out
 }
 
-// CheckUpload says whether data is a model file that import can read.
-func CheckUpload(name string, data []byte) error {
+// CheckUpload says whether data is a model file that import can read; for
+// a 3MF it also lists the objects (what import takes with #<id>).
+func CheckUpload(name string, data []byte) ([]ThreeMFObject, error) {
 	if err := CheckUploadName(name); err != nil {
-		return err
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("%s is empty", name)
+	}
+	if len(data) > MaxUpload {
+		return nil, fmt.Errorf("%s is larger than %d MB", name, MaxUpload>>20)
 	}
 	if strings.EqualFold(path.Ext(name), ".3mf") {
 		if !bytes.HasPrefix(data, []byte("PK\x03\x04")) {
-			return fmt.Errorf("%s is not a 3MF file (a 3MF is a zip archive)", name)
+			return nil, fmt.Errorf("%s is not a 3MF file (a 3MF is a zip archive)", name)
 		}
-		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		objs, err := ThreeMFObjects(data)
 		if err != nil {
-			return fmt.Errorf("%s: read 3MF; %w", name, err)
+			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		for _, f := range zr.File {
-			if strings.EqualFold(path.Ext(f.Name), ".model") {
-				return nil
-			}
+		if len(objs) == 0 {
+			return nil, fmt.Errorf("%s has no objects to print (no build items)", name)
 		}
 
-		return fmt.Errorf("%s has no 3D model inside (no .model file)", name)
+		return objs, nil
 	}
 	if !looksLikeModel(data) {
-		return fmt.Errorf("%s is not a STEP or STL file", name)
+		return nil, fmt.Errorf("%s is not a STEP or STL file", name)
 	}
 
-	return nil
+	return nil, nil
 }
 
 func fromZip(raw []byte, inner string) ([]byte, error) {
@@ -251,4 +276,42 @@ func looksLikeModel(b []byte) bool {
 	}
 
 	return false
+}
+
+// StoreUpload checks a model file and stores it in a project: what the
+// Import model button, upload links and upload_asset all do. It answers
+// the url to import it with, and a 3MF's objects.
+func StoreUpload(ctx context.Context, st *store.Store, projectID, rawName string, data []byte, by string) (map[string]any, error) {
+	name, err := CleanUploadName(rawName)
+	if err != nil {
+		return nil, err
+	}
+	objs, err := CheckUpload(name, data)
+	if err != nil {
+		return nil, err
+	}
+	var objJSON json.RawMessage
+	if len(objs) > 0 {
+		objJSON, _ = json.Marshal(objs)
+	}
+	sum := sha256.Sum256(data)
+	up, err := st.SaveUpload(ctx, projectID, name, hex.EncodeToString(sum[:]), data, objJSON, by)
+	if err != nil {
+		return nil, err
+	}
+
+	return UploadAnswer(up.ID, up.Name, up.Size, objs), nil
+}
+
+// UploadView is an upload as listed: the url for import and a 3MF's objects.
+func UploadView(u *store.Upload) map[string]any {
+	out := map[string]any{"id": u.ID, "name": u.Name, "url": UploadURL(u.ID, u.Name), "bytes": u.Size, "created_at": u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")}
+	if u.CreatedBy != "" {
+		out["created_by"] = u.CreatedBy
+	}
+	if len(u.Objects) > 0 {
+		out["objects"] = u.Objects
+	}
+
+	return out
 }

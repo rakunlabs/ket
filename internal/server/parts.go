@@ -2,14 +2,11 @@ package server
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
-	"path"
 	"strconv"
-	"strings"
 
 	"github.com/rakunlabs/ada"
 
@@ -68,11 +65,16 @@ func (s *Server) getAsset(c *ada.Context) error {
 	}
 	if id, ok := parts.UploadID(u); ok {
 		ctx := c.Request.Context()
-		up, data, err := s.Store.UploadData(ctx, id)
+		up, err := s.Store.UploadInfo(ctx, id)
 		if err != nil {
 			return httpErr(err)
 		}
 		if _, err := s.access.Project(ctx, up.ProjectID, access.Viewer); err != nil {
+			// The same answer as a missing file: do not tell what exists.
+			return ada.NewHTTPError(http.StatusNotFound, "upload "+id+" not found")
+		}
+		data, err := s.Store.UploadData(ctx, id)
+		if err != nil {
 			return httpErr(err)
 		}
 		c.SetHeader("Content-Type", "application/octet-stream")
@@ -101,18 +103,6 @@ func (s *Server) getModel(c *ada.Context) error {
 	return c.SendString(obj)
 }
 
-// uploadView is an upload with the URL that import uses for it.
-type uploadView struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Size int64  `json:"size"`
-	URL  string `json:"url"`
-	// Objects of a 3MF: import one with url#<id>.
-	Objects   []parts.ThreeMFObject `json:"objects,omitempty"`
-	CreatedBy string                `json:"created_by,omitempty"`
-	CreatedAt string                `json:"created_at"`
-}
-
 // uploadAsset stores a model file for a project: the raw file is the body,
 // ?name= its file name. Answers the ket:asset URL to import it with.
 func (s *Server) uploadAsset(c *ada.Context) error {
@@ -121,33 +111,16 @@ func (s *Server) uploadAsset(c *ada.Context) error {
 	if err != nil {
 		return httpErr(err)
 	}
-	name := path.Base(strings.ReplaceAll(strings.TrimSpace(c.Request.URL.Query().Get("name")), "\\", "/"))
-	if name == "" || name == "." || name == "/" {
-		return ada.NewHTTPError(http.StatusBadRequest, "name is required: the file name, e.g. ?name=case.stl")
-	}
 	data, err := readUpload(c)
 	if err != nil {
 		return err
 	}
-	if err := parts.CheckUpload(name, data); err != nil {
-		return ada.WrapHTTPError(http.StatusBadRequest, err)
-	}
-	sum := sha256.Sum256(data)
-	up, err := s.Store.SaveUpload(ctx, p.ID, name, hex.EncodeToString(sum[:]), data, s.access.Subject(ctx))
+	out, err := parts.StoreUpload(ctx, s.Store, p.ID, c.Request.URL.Query().Get("name"), data, s.access.Subject(ctx))
 	if err != nil {
-		return err
+		return uploadErr(err)
 	}
 
-	v := viewUpload(up)
-	if strings.EqualFold(path.Ext(name), ".3mf") {
-		v.Objects, _ = parts.ThreeMFObjects(data)
-	}
-
-	return c.SetStatus(http.StatusCreated).SendJSON(v)
-}
-
-func viewUpload(u *store.Upload) uploadView {
-	return uploadView{ID: u.ID, Name: u.Name, Size: u.Size, URL: parts.UploadURL(u.ID, u.Name), CreatedBy: u.CreatedBy, CreatedAt: u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")}
+	return c.SetStatus(http.StatusCreated).SendJSON(out)
 }
 
 func (s *Server) listUploads(c *ada.Context) error {
@@ -160,9 +133,9 @@ func (s *Server) listUploads(c *ada.Context) error {
 	if err != nil {
 		return err
 	}
-	out := make([]uploadView, 0, len(list))
+	out := make([]map[string]any, 0, len(list))
 	for i := range list {
-		out = append(out, viewUpload(&list[i]))
+		out = append(out, parts.UploadView(&list[i]))
 	}
 
 	return c.SendJSON(out)
@@ -183,25 +156,38 @@ func (s *Server) deleteUpload(c *ada.Context) error {
 
 // putUpload takes the file of an upload link that upload_asset handed out:
 // the token in the path is the permission, valid once and for a short time.
+// Access to the project is checked again, as the person who asked for it.
 func (s *Server) putUpload(c *ada.Context) error {
+	ctx := c.Request.Context()
 	tk, ok := s.Tickets.Take(c.Request.PathValue("token"))
 	if !ok {
 		return ada.NewHTTPError(http.StatusNotFound, "this upload link is unknown, used or expired; call upload_asset again for a new one")
+	}
+	if _, err := s.access.Project(tk.Context(ctx), tk.ProjectID, access.Editor); err != nil {
+		return ada.NewHTTPError(http.StatusForbidden, "the project is gone, or the person this upload link was made for can no longer edit it")
 	}
 	data, err := readUpload(c)
 	if err != nil {
 		return err
 	}
-	if err := parts.CheckUpload(tk.Name, data); err != nil {
-		return ada.WrapHTTPError(http.StatusBadRequest, err)
-	}
-	sum := sha256.Sum256(data)
-	up, err := s.Store.SaveUpload(c.Request.Context(), tk.ProjectID, tk.Name, hex.EncodeToString(sum[:]), data, tk.By)
+	out, err := parts.StoreUpload(ctx, s.Store, tk.ProjectID, tk.Name, data, tk.By)
 	if err != nil {
-		return err
+		return uploadErr(fmt.Errorf("%w; call upload_asset again for a new link", err))
 	}
 
-	return c.SetStatus(http.StatusCreated).SendJSON(parts.UploadAnswer(up.ID, up.Name, up.Size, data))
+	return c.SetStatus(http.StatusCreated).SendJSON(out)
+}
+
+// uploadErr maps store errors and refused files to HTTP statuses.
+func uploadErr(err error) error {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return ada.WrapHTTPError(http.StatusNotFound, err)
+	case errors.Is(err, store.ErrConflict):
+		return ada.WrapHTTPError(http.StatusInsufficientStorage, err)
+	default:
+		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	}
 }
 
 func readUpload(c *ada.Context) ([]byte, error) {

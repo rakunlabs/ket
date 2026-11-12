@@ -1,10 +1,14 @@
 package parts
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"sync"
 	"time"
+
+	"github.com/rakunlabs/ada/middleware/auth/identity"
 )
 
 // UploadTicket lets one PUT of a model file into a project, without a
@@ -13,9 +17,23 @@ type UploadTicket struct {
 	ProjectID string
 	Name      string
 	// By is who asked for it; the upload is recorded as theirs.
-	By      string
+	By string
+	// Who is their sign-in, to check project access again when the file comes (nil without accounts).
+	Who     *identity.Identity
 	Expires time.Time
 }
+
+// Context is ctx acting as the person the link was made for.
+func (t UploadTicket) Context(ctx context.Context) context.Context {
+	if t.Who == nil {
+		return ctx
+	}
+
+	return identity.WithContext(ctx, t.Who)
+}
+
+// maxTickets bounds the open links (each is small; this stops a flood).
+const maxTickets = 10000
 
 // UploadTTL is how long an upload link stays valid.
 const UploadTTL = 15 * time.Minute
@@ -29,11 +47,13 @@ type Tickets struct {
 func NewTickets() *Tickets { return &Tickets{open: map[string]UploadTicket{}} }
 
 // Issue opens a link for one file and returns its token.
-func (t *Tickets) Issue(projectID, name, by string) (string, UploadTicket) {
+func (t *Tickets) Issue(ctx context.Context, projectID, name, by string) (string, UploadTicket, error) {
 	b := make([]byte, 24)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", UploadTicket{}, err
+	}
 	token := hex.EncodeToString(b)
-	tk := UploadTicket{ProjectID: projectID, Name: name, By: by, Expires: time.Now().Add(UploadTTL)}
+	tk := UploadTicket{ProjectID: projectID, Name: name, By: by, Who: identity.FromContext(ctx), Expires: time.Now().Add(UploadTTL)}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := time.Now()
@@ -42,9 +62,12 @@ func (t *Tickets) Issue(projectID, name, by string) (string, UploadTicket) {
 			delete(t.open, k)
 		}
 	}
+	if len(t.open) >= maxTickets {
+		return "", UploadTicket{}, errors.New("too many open upload links; wait a few minutes or upload with the Import model button")
+	}
 	t.open[token] = tk
 
-	return token, tk
+	return token, tk, nil
 }
 
 // Take uses up a token: false when it is unknown, used or expired.

@@ -234,6 +234,11 @@ describe('mesh bodies (STL, 3MF)', () => {
     // section answers with numbers; the picture needs a canvas (browser).
     const sec = await k.sectionImage(['tray_cut'], 'Z', 7)
     expect((sec.bodies[0] as { loops: { kind: string }[] }).loops.map((l) => l.kind)).toEqual(['material', 'hole'])
+    // Across Y and X too: the pocket is open at the top, so the cut is one U-shaped material loop.
+    for (const [axis, at] of [['Y', 80], ['X', 120]] as const) {
+      const cut = await k.sectionImage(['tray_cut'], axis, at)
+      expect((cut.bodies[0] as { loops: { kind: string }[] }).loops.map((l) => l.kind)).toEqual(['material'])
+    }
   }, 120_000)
 
   it('decodes slicer paint to the filament covering most of a triangle', () => {
@@ -268,6 +273,30 @@ describe('mesh bodies (STL, 3MF)', () => {
     // Rows: big and tall side by side, wide on the next row.
     expect(box('wide_placed')[0][1]).toBeGreaterThan(box('big_placed')[1][1])
     await expect(prepareOperation(ctx(doc), { cmd: 'arrange', args: { names: ['big_placed'], plate: [100, 100] } }, (d) => localKernel(k, d))).rejects.toThrow(/do not fit a 100 × 100/)
+  }, 60_000)
+
+  it('turns, mirrors and cuts meshes like B-rep solids', async () => {
+    const k = new Kernel()
+    const url = 'ket:asset/p/part.stl'
+    // An L-shaped part (two boxes): any wrong turn or mirror shows in its box.
+    const part = mergeMeshes([denseBox([0, 0, 0], [30, 10, 5], 30), denseBox([0, 10, 0], [5, 20, 5], 30)])
+    await k.loadImport(url, await buf(writeSTL([part])))
+    let doc = emptyDoc()
+    doc = run(doc, 'import', { name: 'mesh_l', url })
+    doc = run(doc, 'transform', { name: 'mesh_t', target: 'mesh_l', rotate: [30, 45, 60], translate: [3, -2, 7] })
+    doc = run(doc, 'box', { name: 'a', size: [30, 10, 5], center: false })
+    doc = run(doc, 'box', { name: 'b', size: [5, 20, 5], center: false, translate: [0, 10, 0] })
+    doc = run(doc, 'boolean', { name: 'brep_l', op: 'union', target: 'a', tools: ['b'] })
+    doc = run(doc, 'transform', { name: 'brep_t', target: 'brep_l', rotate: [30, 45, 60], translate: [3, -2, 7] })
+    doc = run(doc, 'mirror', { name: 'mesh_m', target: 'mesh_t', plane: 'XZ', offset: 4, keep: false })
+    doc = run(doc, 'mirror', { name: 'brep_m', target: 'brep_t', plane: 'XZ', offset: 4, keep: false })
+    const r = k.build(doc)
+    expect(r.features.every((f) => f.ok)).toBe(true)
+    const bb = (n: string) => r.features.find((f) => f.name === n)!.bbox!
+    for (let i = 0; i < 2; i++) for (let j = 0; j < 3; j++) expect(bb('mesh_m')[i][j]).toBeCloseTo(bb('brep_m')[i][j], 2)
+    // A Y cut through a hollow body: walls are material, the inside a hole.
+    const ring = k.section(['mesh_l'], 'Y', 5) as { loops: { kind: string }[] }[]
+    expect(ring[0].loops.every((l) => l.kind === 'material')).toBe(true)
   }, 60_000)
 
   it('says what is wrong with a mesh that is not closed', async () => {

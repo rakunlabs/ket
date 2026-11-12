@@ -5,13 +5,10 @@ package mcpserver
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -110,6 +107,9 @@ func (t *Tools) need(ctx context.Context, p *store.Project, readOnly bool) (*sto
 }
 
 func (t *Tools) readOnly(name string) bool {
+	if name == toolListAssets {
+		return true
+	}
 	if c, ok := t.cat.Get(name); ok {
 		return c.Kind == catalog.KindQuery
 	}
@@ -582,11 +582,8 @@ func (t *Tools) uploadAsset(ctx context.Context, p *store.Project, args json.Raw
 		DataBase64 string `json:"data_base64"`
 	}
 	_ = json.Unmarshal(args, &in)
-	name := filepath.Base(strings.ReplaceAll(strings.TrimSpace(in.Name), "\\", "/"))
-	if in.Name == "" || name == "." || name == "/" {
-		return Result{}, errors.New(`name is required: the file name with its extension, e.g. "case.3mf"`)
-	}
-	if err := parts.CheckUploadName(name); err != nil {
+	name, err := parts.CleanUploadName(in.Name)
+	if err != nil {
 		return Result{}, err
 	}
 
@@ -594,7 +591,10 @@ func (t *Tools) uploadAsset(ctx context.Context, p *store.Project, args json.Raw
 		if t.tickets == nil || t.baseURL == nil {
 			return Result{}, errors.New("upload links are not available here; send data_base64, or ask the user to upload with the Import model button")
 		}
-		token, tk := t.tickets.Issue(p.ID, name, t.subject(ctx))
+		token, tk, err := t.tickets.Issue(ctx, p.ID, name, t.subject(ctx))
+		if err != nil {
+			return Result{}, err
+		}
 		link := t.baseURL(ctx) + "/api/v1/uploads/" + token
 		return jsonResult(map[string]any{
 			"upload_url": link,
@@ -606,20 +606,19 @@ func (t *Tools) uploadAsset(ctx context.Context, p *store.Project, args json.Raw
 		})
 	}
 
+	if base64.StdEncoding.DecodedLen(len(in.DataBase64)) > parts.MaxUpload+2 {
+		return Result{}, fmt.Errorf("data_base64 is larger than %d MB; call upload_asset with name only and send the file to the upload link", parts.MaxUpload>>20)
+	}
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(in.DataBase64))
 	if err != nil {
 		return Result{}, fmt.Errorf("data_base64 is not valid base64: %v", err)
 	}
-	if err := parts.CheckUpload(name, data); err != nil {
-		return Result{}, err
-	}
-	sum := sha256.Sum256(data)
-	up, err := t.store.SaveUpload(ctx, p.ID, name, hex.EncodeToString(sum[:]), data, t.subject(ctx))
+	out, err := parts.StoreUpload(ctx, t.store, p.ID, name, data, t.subject(ctx))
 	if err != nil {
 		return Result{}, err
 	}
 
-	return jsonResult(parts.UploadAnswer(up.ID, up.Name, up.Size, data))
+	return jsonResult(out)
 }
 
 func shellQuote(s string) string {
@@ -631,24 +630,12 @@ func (t *Tools) listAssets(ctx context.Context, p *store.Project) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
-	type asset struct {
-		Name    string                `json:"name"`
-		URL     string                `json:"url"`
-		Bytes   int64                 `json:"bytes"`
-		Objects []parts.ThreeMFObject `json:"objects,omitempty"`
+	if len(list) == 0 {
+		return Result{Text: "No files are uploaded to this project. Upload one with upload_asset, or the user uploads with the Import model button in Ket; import can also take https URLs of open model libraries."}, nil
 	}
-	out := make([]asset, 0, len(list))
-	for _, u := range list {
-		a := asset{Name: u.Name, URL: parts.UploadURL(u.ID, u.Name), Bytes: u.Size}
-		if strings.HasSuffix(strings.ToLower(u.Name), ".3mf") {
-			if _, data, err := t.store.UploadData(ctx, u.ID); err == nil {
-				a.Objects, _ = parts.ThreeMFObjects(data)
-			}
-		}
-		out = append(out, a)
-	}
-	if len(out) == 0 {
-		return Result{Text: "No files are uploaded to this project. The user uploads STL, 3MF or STEP files with the Import model button in Ket; import can also take https URLs of open model libraries."}, nil
+	out := make([]map[string]any, 0, len(list))
+	for i := range list {
+		out = append(out, parts.UploadView(&list[i]))
 	}
 
 	return jsonResult(out)

@@ -80,28 +80,45 @@ export class MeshBody {
 
   /**
    * The separate solids, each with the voids enclosed in it (a magnet pocket
-   * stays in its piece), in decompose order.
+   * stays in its piece), in decompose order. A void goes to the smallest
+   * solid whose box holds it and that contains a point of it.
    */
   parts(): MeshBody[] {
     const pieces = this.m.decompose()
     const shells = pieces.filter((p) => p.volume() > 0)
     const voids = pieces.filter((p) => p.volume() <= 0)
     if (!voids.length) return shells.map((p) => new MeshBody(p))
-    const box = (m: Manifold) => m.boundingBox()
-    const within = (inner: Manifold, outer: Manifold) => {
-      const a = box(inner)
-      const b = box(outer)
-      return [0, 1, 2].every((k) => a.min[k] >= b.min[k] - 1e-6 && a.max[k] <= b.max[k] + 1e-6)
+    const boxes = shells.map((m) => m.boundingBox())
+    const volumes = shells.map((m) => m.volume())
+    const mine: Manifold[][] = shells.map(() => [])
+    for (const v of voids) {
+      const b = v.boundingBox()
+      const probe = v.getMesh()
+      const pt: V3 = [probe.vertProperties[0], probe.vertProperties[1], probe.vertProperties[2]]
+      let best = -1
+      for (let i = 0; i < shells.length; i++) {
+        const o = boxes[i]
+        if (![0, 1, 2].every((k) => b.min[k] >= o.min[k] - 1e-6 && b.max[k] <= o.max[k] + 1e-6)) continue
+        if (best >= 0 && volumes[i] >= volumes[best]) continue
+        // The void's surface lies inside the solid: a tiny cube there overlaps it.
+        const c = manifoldLib().Manifold.cube([2e-3, 2e-3, 2e-3], true).translate(pt)
+        const hit = shells[i].intersect(c)
+        if (hit.volume() > 0) best = i
+        hit.delete()
+        c.delete()
+      }
+      if (best >= 0) mine[best].push(v)
     }
     const M = manifoldLib().Manifold
-    return shells.map((s) => {
-      const mine = voids.filter((v) => within(v, s))
-      if (!mine.length) return new MeshBody(s)
-      // A void is a shell turned inside out: composing them keeps it a hole.
-      const out = M.compose([s, ...mine])
+    const out = shells.map((s, i) => {
+      if (!mine[i].length) return new MeshBody(s)
+      // A void is a shell turned inside out: composing keeps it a hole.
+      const whole = M.compose([s, ...mine[i]])
       s.delete()
-      return new MeshBody(out)
+      return new MeshBody(whole)
     })
+    for (const v of voids) v.delete()
+    return out
   }
 
   /** Volume-weighted center (tetrahedra from the origin). */
@@ -128,59 +145,69 @@ export class MeshBody {
     return [cx / (4 * v), cy / (4 * v), cz / (4 * v)]
   }
 
+  /** Applies a column-major 4×4 transform once; consumes this. */
+  private transformed(mat: Mat4): MeshBody {
+    const m = this.m.transform(mat)
+    this.m.delete()
+    return new MeshBody(m)
+  }
+
   /** Rotates (X, then Y, then Z, degrees, about the origin) and translates; consumes this. */
   place(r: V3, t: V3): MeshBody {
     if (!r[0] && !r[1] && !r[2] && !t[0] && !t[1] && !t[2]) return this
-    let m = this.m
-    // manifold's rotate([x, y, z]) turns about global X, then Y, then Z: the same order as place().
-    if (r[0] || r[1] || r[2]) m = m.rotate(r)
-    if (t[0] || t[1] || t[2]) m = m.translate(t)
-    this.m.delete()
-    return new MeshBody(m)
+    // Global X, then Y, then Z: R = Rz · Ry · Rx (as place() turns B-rep solids).
+    const R = mul(rotationMatrix([0, 0, 1], r[2]), mul(rotationMatrix([0, 1, 0], r[1]), rotationMatrix([1, 0, 0], r[0])))
+    return this.transformed(mul(translation(t), R))
   }
 
   /** Rotates by angle degrees about an axis through center; consumes this. */
   rotateAbout(angle: number, center: V3, axis: V3): MeshBody {
-    const m = this.m.translate([-center[0], -center[1], -center[2]]).transform(rotationMatrix(axis, angle)).translate(center)
-    this.m.delete()
-    return new MeshBody(m)
+    return this.transformed(mul(translation(center), mul(rotationMatrix(axis, angle), translation([-center[0], -center[1], -center[2]]))))
   }
 
   translate(t: V3): MeshBody {
-    const m = this.m.translate(t)
-    this.m.delete()
-    return new MeshBody(m)
+    return this.transformed(translation(t))
   }
 
   scale(k: number): MeshBody {
-    const m = this.m.scale(k)
-    this.m.delete()
-    return new MeshBody(m)
+    return this.transformed([k, 0, 0, 0, 0, k, 0, 0, 0, 0, k, 0, 0, 0, 0, 1])
   }
 
   /** Mirrors across the plane with this normal through origin; consumes this. */
   mirror(normal: V3, origin: V3): MeshBody {
-    const m = this.m.translate([-origin[0], -origin[1], -origin[2]]).mirror(normal).translate(origin)
-    this.m.delete()
-    return new MeshBody(m)
+    const l = Math.hypot(...normal) || 1
+    const [x, y, z] = [normal[0] / l, normal[1] / l, normal[2] / l]
+    // Householder reflection I - 2nnᵀ, about the plane through origin.
+    const H: Mat4 = [1 - 2 * x * x, -2 * x * y, -2 * x * z, 0, -2 * x * y, 1 - 2 * y * y, -2 * y * z, 0, -2 * x * z, -2 * y * z, 1 - 2 * z * z, 0, 0, 0, 0, 1]
+    return this.transformed(mul(translation(origin), mul(H, translation([-origin[0], -origin[1], -origin[2]]))))
   }
 
   /** Boolean with others; consumes this and them. */
   boolean(op: 'union' | 'cut' | 'intersect', others: MeshBody[]): MeshBody {
     const M = manifoldLib().Manifold
-    const out = op === 'intersect' ? M.intersection([this.m, ...others.map((o) => o.m)]) : op === 'union' ? M.union([this.m, ...others.map((o) => o.m)]) : undefined
-    let result: Manifold
-    if (out) result = out
-    else {
-      const tool = others.length === 1 ? others[0].m : M.union(others.map((o) => o.m))
-      result = this.m.subtract(tool)
-      if (others.length > 1) tool.delete()
+    let result: Manifold | undefined
+    try {
+      if (op === 'intersect') result = M.intersection([this.m, ...others.map((o) => o.m)])
+      else if (op === 'union') result = M.union([this.m, ...others.map((o) => o.m)])
+      else if (others.length === 1) result = this.m.subtract(others[0].m)
+      else {
+        const tool = M.union(others.map((o) => o.m))
+        try {
+          result = this.m.subtract(tool)
+        } finally {
+          tool.delete()
+        }
+      }
+      const st = result.status()
+      if (st !== 'NoError') throw new Error(`the mesh ${op} failed: ${STATUS[st] ?? st}`)
+      const out = new MeshBody(result)
+      result = undefined
+      return out
+    } finally {
+      result?.delete()
+      this.m.delete()
+      for (const o of others) o.m.delete()
     }
-    this.m.delete()
-    for (const o of others) o.m.delete()
-    const st = result.status()
-    if (st !== 'NoError') throw new Error(`the mesh ${op} failed: ${STATUS[st] ?? st}`)
-    return new MeshBody(result)
   }
 
   /** Volume of the overlap with another body. */
@@ -230,7 +257,8 @@ export class MeshBody {
     const m = axis === 'Z' ? this.m : axis === 'X' ? this.m.transform([0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]) : this.m.transform([1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1])
     const cs = m.slice(at)
     try {
-      const polys = cs.toPolygons().map((ring) => ring.map((p) => (axis === 'Y' ? [p[0], -p[1]] : [p[0], p[1]]) as [number, number]))
+      // Y: v was negated to undo the rotation, which mirrors the outline: reverse the rings to keep material counter-clockwise.
+      const polys = cs.toPolygons().map((ring) => (axis === 'Y' ? ring.map((p) => [p[0], -p[1]] as [number, number]).reverse() : ring.map((p) => [p[0], p[1]] as [number, number])))
       return { outlines: polys, area: cs.area() }
     } finally {
       cs.delete()
@@ -288,8 +316,21 @@ export class MeshBody {
   }
 }
 
+type Mat4 = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]
+
+/** a · b for column-major 4×4 matrices (b applies first). */
+function mul(a: Mat4, b: Mat4): Mat4 {
+  const out = new Array<number>(16).fill(0) as Mat4
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) out[c * 4 + r] += a[k * 4 + r] * b[c * 4 + k]
+  return out
+}
+
+function translation(t: V3): Mat4 {
+  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, t[0], t[1], t[2], 1]
+}
+
 /** Column-major 4x4 rotation about a unit axis (degrees), for Manifold.transform. */
-function rotationMatrix(axis: V3, deg: number): [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number] {
+function rotationMatrix(axis: V3, deg: number): Mat4 {
   const l = Math.hypot(...axis) || 1
   const [x, y, z] = [axis[0] / l, axis[1] / l, axis[2] / l]
   const a = (deg * Math.PI) / 180
@@ -344,9 +385,12 @@ export function weld(m: TriMesh): TriMesh {
 
 /**
  * Paint for triangles that came from no painted source (a cut's new walls
- * and floors): the paint of the nearest source triangle facing the same way
- * (a new pocket floor takes the nearby pocket floors' color, its walls the
- * wall color); what has none within reach takes a painted neighbour's.
+ * and floors). First, a new face takes the paint most used by original
+ * faces in the same plane (the floors at that height, the walls in that
+ * line). The rest spread out from painted triangles across shared edges,
+ * taking the paint of a neighbour that faces the same way when there is one
+ * (so the colour of a floor does not climb a wall). A separate solid with no
+ * painted triangle stays unpainted (the object's own filament). Linear time.
  */
 function inheritPaint(m: TriMesh, paint: Uint32Array, known: Uint8Array) {
   const T = m.triangles
@@ -370,9 +414,8 @@ function inheritPaint(m: TriMesh, paint: Uint32Array, known: Uint8Array) {
     nor[t * 3 + 1] = y / l
     nor[t * 3 + 2] = z / l
   }
-  // A new face takes the paint of original faces in the same plane (the
-  // floors at that height, the walls in that line), else the nearest original
-  // face that looks the same way. Planes: facing rounded, offset in 0.05 mm.
+
+  // Same plane: facing rounded, offset in 0.05 mm.
   const plane = (t: number) => {
     const nx = Math.round(nor[t * 3] * 20), ny = Math.round(nor[t * 3 + 1] * 20), nz = Math.round(nor[t * 3 + 2] * 20)
     const d = Math.round((nor[t * 3] * cen[t * 3] + nor[t * 3 + 1] * cen[t * 3 + 1] + nor[t * 3 + 2] * cen[t * 3 + 2]) / 0.05)
@@ -399,53 +442,7 @@ function inheritPaint(m: TriMesh, paint: Uint32Array, known: Uint8Array) {
   }
   if (!todo) return
 
-  const dot = (a: number, b: number) => nor[a * 3] * nor[b * 3] + nor[a * 3 + 1] * nor[b * 3 + 1] + nor[a * 3 + 2] * nor[b * 3 + 2]
-
-  // Source triangles in a grid of cells, by centroid.
-  const cell = 2
-  const grid = new Map<string, number[]>()
-  const key = (x: number, y: number, z: number) => `${x},${y},${z}`
-  for (let t = 0; t < nt; t++) {
-    if (known[t] !== 1) continue
-    const k = key(Math.floor(cen[t * 3] / cell), Math.floor(cen[t * 3 + 1] / cell), Math.floor(cen[t * 3 + 2] / cell))
-    let list = grid.get(k)
-    if (!list) grid.set(k, (list = []))
-    list.push(t)
-  }
-  const reach = 12
-  for (let t = 0; t < nt; t++) {
-    if (known[t]) continue
-    const cx = Math.floor(cen[t * 3] / cell)
-    const cy = Math.floor(cen[t * 3 + 1] / cell)
-    const cz = Math.floor(cen[t * 3 + 2] / cell)
-    let best = -1
-    let bestD = Infinity
-    for (let r = 0; r <= reach && best < 0; r++) {
-      for (let i = -r; i <= r; i++)
-        for (let j = -r; j <= r; j++)
-          for (let k = -r; k <= r; k++) {
-            if (Math.max(Math.abs(i), Math.abs(j), Math.abs(k)) !== r) continue
-            const list = grid.get(key(cx + i, cy + j, cz + k))
-            if (!list) continue
-            for (const o of list) {
-              if (dot(t, o) < 0.9) continue
-              const d = (cen[o * 3] - cen[t * 3]) ** 2 + (cen[o * 3 + 1] - cen[t * 3 + 1]) ** 2 + (cen[o * 3 + 2] - cen[t * 3 + 2]) ** 2
-              if (d < bestD) {
-                bestD = d
-                best = o
-              }
-            }
-          }
-    }
-    if (best >= 0) {
-      paint[t] = paint[best]
-      known[t] = 2
-      todo--
-    }
-  }
-  if (!todo) return
-
-  // Left over: flood from painted neighbours across shared edges.
+  // Neighbours across shared edges.
   const nv = P.length / 3
   const edges = new Map<number, number>()
   const nb = new Int32Array(nt * 3).fill(-1)
@@ -459,24 +456,29 @@ function inheritPaint(m: TriMesh, paint: Uint32Array, known: Uint8Array) {
       else {
         nb[t * 3 + j] = Math.floor(o / 3)
         nb[o] = t
+        edges.delete(e)
       }
     }
-  let grew = true
-  while (grew && todo) {
-    grew = false
-    for (let t = 0; t < nt; t++) {
-      if (known[t]) continue
+  const dot = (a: number, b: number) => nor[a * 3] * nor[b * 3] + nor[a * 3 + 1] * nor[b * 3 + 1] + nor[a * 3 + 2] * nor[b * 3 + 2]
+
+  // Breadth-first from painted triangles: two passes, same facing first, then any.
+  for (const minDot of [0.9, -2]) {
+    const queue = new Int32Array(nt)
+    let head = 0
+    let tail = 0
+    for (let t = 0; t < nt; t++) if (known[t]) queue[tail++] = t
+    while (head < tail && todo) {
+      const t = queue[head++]
       for (let j = 0; j < 3; j++) {
         const o = nb[t * 3 + j]
-        if (o >= 0 && known[o]) {
-          paint[t] = paint[o]
-          known[t] = 2
-          todo--
-          grew = true
-          break
-        }
+        if (o < 0 || known[o] || dot(t, o) < minDot) continue
+        paint[o] = paint[t]
+        known[o] = 2
+        todo--
+        queue[tail++] = o
       }
     }
+    if (!todo) return
   }
 }
 

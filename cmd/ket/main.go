@@ -54,11 +54,12 @@ func run(ctx context.Context) error {
 	tools := mcpserver.NewTools(cat, h, st)
 	tickets := parts.NewTickets()
 	tools.SetUploads(tickets, func(ctx context.Context) string {
-		// The configured public URL wins (behind a proxy); else the address the MCP client used.
-		if u := strings.TrimRight(set.Get().PublicURL, "/"); u != "" {
+		// The server's address as the MCP client used it (the public URL setting wins there);
+		// the built-in agent runs in the server and has no request: the public URL or localhost.
+		if u := mcpserver.BaseFromContext(ctx); u != "" {
 			return u
 		}
-		if u := mcpserver.BaseFromContext(ctx); u != "" {
+		if u := strings.TrimRight(set.Get().PublicURL, "/"); u != "" {
 			return u
 		}
 		return "http://localhost:" + cfg.Server.Port + cfg.Server.BasePath

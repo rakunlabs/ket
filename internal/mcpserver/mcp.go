@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"context"
 	"net/http"
-	"strings"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -13,8 +12,9 @@ import (
 	"github.com/rakunlabs/ket/internal/config"
 )
 
-// Handler serves the tools over MCP streamable HTTP.
-func (t *Tools) Handler() http.Handler {
+// Handler serves the tools over MCP streamable HTTP. base is the server's
+// address as the client sees it (for links tools hand back).
+func (t *Tools) Handler(base func(*http.Request) string) http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: config.ServiceName, Version: config.Version}, &mcp.ServerOptions{
 		Instructions: t.Guide(),
 	})
@@ -91,7 +91,7 @@ func (t *Tools) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The address the client used, for links tools hand back (upload links).
 		r = r.Clone(r.Context())
-		r.Header.Set(baseHeader, requestBase(r))
+		r.Header.Set(baseHeader, base(r))
 		// A browser session (cookie) has no bearer header; the SDK
 		// middleware only needs one to be present.
 		if identity.FromContext(r.Context()) != nil {
@@ -114,19 +114,4 @@ type baseKey struct{}
 func BaseFromContext(ctx context.Context) string {
 	s, _ := ctx.Value(baseKey{}).(string)
 	return s
-}
-
-// requestBase is scheme://host plus the path before /mcp, as the client sees it.
-func requestBase(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		scheme = "https"
-	}
-	host := r.Host
-	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
-		host = h
-	}
-	prefix, _, _ := strings.Cut(r.URL.Path, "/mcp")
-
-	return scheme + "://" + host + strings.TrimRight(prefix, "/")
 }

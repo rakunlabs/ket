@@ -42,7 +42,7 @@ import type { BoardState } from './pcb/state'
 import { type Loop, type SolvedSketch, loopInside, solveSketch } from './sketch'
 import { drawSection } from './section-draw'
 import { MeshBody, composeBodies, displayMesh, meshBody, meshCube, meshFromTriangles } from './mesh-body'
-import { type ThreeMF, type TriMesh, isZip, paintFilament, parseSTL, pickObject, read3MF, update3MF, write3MF, writeSTL } from './model-files'
+import { type ThreeMF, type TriMesh, fetchKey, isZip, paintFilament, parseSTL, pickObject, read3MF, update3MF, urlFile, urlFragment, write3MF, writeSTL } from './model-files'
 
 /** A built feature: an OpenCascade solid, or a triangle-mesh solid (imported STL / 3MF and what is built from it). */
 export type Body = Shape3D | MeshBody
@@ -54,12 +54,6 @@ const SOLID_STL_TRIANGLES = 20_000
 
 /** A downloaded model file, by URL (with #fragment). */
 type Loaded = { shape: Shape3D } | { tri: TriMesh; solid?: Shape3D | Error; mesh?: MeshBody }
-
-/** Where a URL is fetched from: a 3MF file once for all its #objects. */
-export function fetchKey(url: string): string {
-  const [base] = url.split('#')
-  return /\.3mf$/i.test(base) ? base : url
-}
 
 /** The triangles of a B-rep solid as a mesh body (fine tessellation: booleans with meshes, mesh checks). */
 function brepToMesh(s: Shape3D, what: string): MeshBody {
@@ -761,9 +755,9 @@ export class Kernel {
         this.imported.set(url, file)
         continue
       }
-      const name = decodeURIComponent(fetchKey(url).split('/').pop() ?? '3MF file')
+      const name = urlFile(url) || '3MF file'
       try {
-        const obj = pickObject(file, decodeURIComponent(url.split('#')[1] ?? ''), name)
+        const obj = pickObject(file, urlFragment(url), name)
         this.imported.set(url, { tri: await file.mesh(obj.id) })
       } catch (e) {
         this.imported.set(url, new Error(kernelMessage(e)))
@@ -1965,7 +1959,7 @@ export class Kernel {
       const file = this.threeMF.get(fetchKey(f.url))
       if (!file || file instanceof Error) return undefined
       try {
-        const obj = pickObject(file, decodeURIComponent(f.url.split('#')[1] ?? ''), '')
+        const obj = pickObject(file, urlFragment(f.url), '')
         return obj.filament ? file.filaments[obj.filament - 1] : undefined
       } catch {
         return undefined
@@ -2544,7 +2538,7 @@ export class Kernel {
       const opened = this.threeMF.get(key)
       if (!opened || opened instanceof Error) throw new Error(`${key} is not open: build the design first`)
       file = opened
-      const obj = pickObject(opened, decodeURIComponent(f.url.split('#')[1] ?? ''), key)
+      const obj = pickObject(opened, urlFragment(f.url), urlFile(f.url))
       const c = this.cache.get(pr.body)
       if (!c) throw new Error(`no body "${pr.body}"`)
       const mesh = isMesh(c.shape) ? c.shape.triMesh() : this.meshOf(pr.body).triMesh()

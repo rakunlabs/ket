@@ -840,11 +840,18 @@ function bodyObject(
   if (paint) {
     const c = new THREE.Color(base)
     const rgb = m.colors!.slice()
+    const tmp = new THREE.Color()
     for (let i = 0; i < rgb.length; i += 3) {
       if (rgb[i] < 0) {
         rgb[i] = c.r
         rgb[i + 1] = c.g
         rgb[i + 2] = c.b
+      } else {
+        // Filament colors are sRGB; vertex colors are linear.
+        tmp.setRGB(rgb[i], rgb[i + 1], rgb[i + 2], THREE.SRGBColorSpace)
+        rgb[i] = tmp.r
+        rgb[i + 1] = tmp.g
+        rgb[i + 2] = tmp.b
       }
     }
     geo.setAttribute('color', new THREE.BufferAttribute(rgb, 3))

@@ -106,7 +106,7 @@ func (s *Server) build(ast *authstore.Store) (*ada.Server, error) {
 
 	// MCP and the websocket stream; keep them out of the compressing group.
 	// MCP needs a token with the mcp scope (OAuth or a personal token).
-	mcpHandler := s.Tools.Handler()
+	mcpHandler := s.Tools.Handler(s.publicURL)
 	mcpGuard := append(g.with(permWrite), authz.RequireScope("mcp"))
 	root.HandleWildcard("/mcp", mcpHandler, mcpGuard...)
 	root.HandleFunc("/mcp", mcpHandler.ServeHTTP, mcpGuard...)

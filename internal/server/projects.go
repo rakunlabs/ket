@@ -34,11 +34,13 @@ func (s *Server) publicURL(r *http.Request) string {
 	}
 
 	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+	// Behind several proxies these hold a list; the first is the client's.
+	first := func(v string) string { f, _, _ := strings.Cut(v, ","); return strings.TrimSpace(f) }
+	if r.TLS != nil || first(r.Header.Get("X-Forwarded-Proto")) == "https" {
 		scheme = "https"
 	}
 	host := r.Host
-	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+	if h := first(r.Header.Get("X-Forwarded-Host")); h != "" {
 		host = h
 	}
 

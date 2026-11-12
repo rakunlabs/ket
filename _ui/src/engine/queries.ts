@@ -6,6 +6,7 @@ import { z } from 'zod'
 
 import { type Doc, bodies, inputsOf } from './doc'
 import type { BuildResult } from './kernel'
+import { urlFile } from './model-files'
 import { explodeOffset } from './explode'
 import { define } from './registry'
 import { featureRef, selector } from './schema'
@@ -358,7 +359,7 @@ define({
     if (!ctx.download) throw new Error('export_slicer_3mf is only available in the browser')
     requireHealthyHistory(ctx)
     const r = await ctx.kernel.update3MF(a.replace)
-    const base = decodeURIComponent(r.file.split('/').pop() ?? 'project.3mf').replace(/\.3mf$/i, '')
+    const base = (urlFile(r.file) || 'project.3mf').replace(/\.3mf$/i, '')
     const file = a.filename ?? `${base} (edited).3mf`
     await ctx.download(file, r.blob)
     return {
