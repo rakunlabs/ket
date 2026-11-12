@@ -160,16 +160,18 @@ define({
   group: 'query',
   kind: 'query',
   description:
-    'Cut bodies with a plane and read the cut as numbers: per body the closed outlines in the plane (material and hole loops, each with its area and box, and its points when it is small), and the total cut area. Plane X=at gives (y, z) outlines, Y=at (x, z), Z=at (x, y). Use it to find walls, pockets, free space and wall thickness in imported models before editing them (render with section shows the same as a picture).',
+    'Cut bodies with a plane and read the cut as numbers: per body the closed outlines in the plane (material and hole loops, each with its area and box, and its points when it is small), and the total cut area. Plane X=at gives (y, z) outlines, Y=at (x, z), Z=at (x, y). Comes with a drawing of the cut (filled outlines per body on a millimetre grid) to look at. Use it to find walls, pockets, free space and wall thickness in imported models before editing them.',
   args: z.object({
     names: z.array(featureRef).min(1).max(8).optional().describe('Bodies to cut (default every visible body)'),
     axis: z.enum(['X', 'Y', 'Z']),
     at: z.number().describe('Coordinate of the plane in mm'),
+    image: z.boolean().optional().describe('Also return a picture of the cut: filled outlines on a mm grid (default true)'),
   }),
   examples: [{ names: ['cover'], axis: 'Z', at: 10 }],
   async run(ctx, a) {
     const names = a.names ?? (await ctx.kernel.build()).bodies
-    return { axis: a.axis, at: a.at, bodies: await ctx.kernel.section(names, a.axis, a.at) }
+    const r = await ctx.kernel.section(names, a.axis, a.at)
+    return { axis: a.axis, at: a.at, bodies: r.bodies, ...(r.image && a.image !== false ? { images: [{ mime: 'image/png', data: r.image }] } : {}) }
   },
 })
 

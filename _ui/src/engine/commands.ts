@@ -761,6 +761,92 @@ define({
 // batch is recorded as one op holding its steps; replay applies them in
 // order. The session validates and runs it (see Session.execBatch).
 define({
+  name: 'arrange',
+  group: 'cad',
+  kind: 'mutate',
+  description:
+    'Lay bodies out on a print plate: each one is placed flat on z = 0 inside the plate (width × depth, default 256 × 256 mm, Bambu A1/X1/P1), left to right in rows with gap mm between them, as new transform features named <body>_placed (the originals are consumed, like transform). rotate (optional, per body) turns a part first, e.g. [180, 0, 0] to print a cover face down. Bodies that do not fit the plate are reported, not placed. Positions are worked out once from the current boxes and stored as numbers, so the result is a normal transform you can change.',
+  args: z.object({
+    names: z.array(featureRef).min(1).describe('Bodies to place'),
+    plate: z.tuple([z.number().positive(), z.number().positive()]).optional().describe('Plate width and depth in mm (default [256, 256])'),
+    gap: z.number().min(0).optional().describe('Space between parts in mm (default 5)'),
+    margin: z.number().min(0).optional().describe('Keep this far from the plate edge (default 5)'),
+    origin: z.tuple([z.number(), z.number()]).optional().describe('Plate corner in model X/Y (default [0, 0]); several plates side by side: [300, 0], ...'),
+    rotate: z.record(z.string(), vec3).optional().describe('Per body, a rotation [rx, ry, rz] (degrees) applied before placing'),
+    placements: z.record(z.string(), z.object({ rotate: z.array(z.unknown()).optional(), align: z.object({ to: z.array(z.unknown()) }) })).optional(),
+  }),
+  internal: ['placements'],
+  examples: [{ names: ['cover_spares', 'spare_pieces'], gap: 8 }],
+  async prepare(ctx, a) {
+    if (a.placements) return a
+    const build = await ctx.kernel.build()
+    const [pw, pd] = a.plate ?? [256, 256]
+    const gap = a.gap ?? 5
+    const margin = a.margin ?? 5
+    const [ox, oy] = a.origin ?? [0, 0]
+    const placements: Record<string, { rotate?: unknown[]; align: { to: unknown[] } }> = {}
+    const tooBig: string[] = []
+    let x = margin
+    let y = margin
+    let rowDepth = 0
+    for (const name of a.names) {
+      const st = build.features.find((f) => f.name === name)
+      if (!st?.ok || !st.bbox) throw new Error(`"${name}" is not built (${st?.error ?? 'no such feature'}); fix it before arranging`)
+      const rot = a.rotate?.[name]
+      // Size after the rotation: rotate the box corners (exact for 90° turns, a bound otherwise).
+      const r = (rot ?? [0, 0, 0]).map((v) => Number(v) || 0) as [number, number, number]
+      const [lo, hi] = st.bbox
+      const corners: [number, number, number][] = []
+      for (const cx of [lo[0], hi[0]]) for (const cy of [lo[1], hi[1]]) for (const cz of [lo[2], hi[2]]) corners.push(rotXYZ([cx, cy, cz], r))
+      const w = Math.max(...corners.map((c) => c[0])) - Math.min(...corners.map((c) => c[0]))
+      const d = Math.max(...corners.map((c) => c[1])) - Math.min(...corners.map((c) => c[1]))
+      if (w > pw - 2 * margin + 1e-6 || d > pd - 2 * margin + 1e-6) {
+        tooBig.push(`${name} (${w.toFixed(1)} × ${d.toFixed(1)} mm)`)
+        continue
+      }
+      if (x + w > pw - margin + 1e-6) {
+        x = margin
+        y += rowDepth + gap
+        rowDepth = 0
+      }
+      if (y + d > pd - margin + 1e-6) {
+        tooBig.push(`${name} (no room left on the plate)`)
+        continue
+      }
+      placements[name] = { ...(rot ? { rotate: rot } : {}), align: { to: [round2(ox + x + w / 2), round2(oy + y + d / 2), 0] } }
+      x += w + gap
+      rowDepth = Math.max(rowDepth, d)
+    }
+    if (tooBig.length) throw new Error(`these do not fit a ${pw} × ${pd} mm plate (margin ${margin}): ${tooBig.join(', ')}; rotate them, use a bigger plate, or arrange the rest on another plate with origin`)
+    return { ...a, placements }
+  },
+  apply(doc, a) {
+    let next = doc
+    const added: string[] = []
+    for (const name of a.names) {
+      const p = a.placements?.[name]
+      if (!p) throw new Error(`no placement for "${name}"; run arrange again`)
+      const out = upsert(next, compact({ name: `${name}_placed`, type: 'transform', target: name, rotate: p.rotate, align: { to: p.align.to, anchor: ['center', 'center', 'min'] }, note: 'placed on the plate by arrange' }) as unknown as Feature, true)
+      next = out.doc
+      added.push(`${name}_placed`)
+    }
+    return { doc: next, summary: `arranged ${added.join(', ')}` }
+  },
+})
+
+const round2 = (v: number) => Math.round(v * 100) / 100
+
+/** A point rotated about X, then Y, then Z (degrees), as transform rotates. */
+function rotXYZ(p: [number, number, number], r: [number, number, number]): [number, number, number] {
+  let [x, y, z] = p
+  const [ax, ay, az] = r.map((d) => (d * Math.PI) / 180)
+  ;[y, z] = [y * Math.cos(ax) - z * Math.sin(ax), y * Math.sin(ax) + z * Math.cos(ax)]
+  ;[x, z] = [x * Math.cos(ay) + z * Math.sin(ay), -x * Math.sin(ay) + z * Math.cos(ay)]
+  ;[x, y] = [x * Math.cos(az) - y * Math.sin(az), x * Math.sin(az) + y * Math.cos(az)]
+  return [x, y, z]
+}
+
+define({
   name: 'batch',
   group: 'project',
   kind: 'mutate',

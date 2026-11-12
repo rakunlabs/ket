@@ -549,6 +549,8 @@ export interface DisplayMesh {
   triangles: Uint32Array
   /** Line segments along edges sharper than the crease angle. */
   edges: Float32Array
+  /** RGB per vertex (0..1) when the body carries slicer paint and colors were given. */
+  colors?: Float32Array
 }
 
 /**
@@ -556,11 +558,27 @@ export interface DisplayMesh {
  * where triangles meet at more than crease degrees, and lines on those
  * sharp edges, so a faceted solid reads like a CAD body.
  */
-export function displayMesh(body: MeshBody, crease = 30): DisplayMesh {
+export function displayMesh(body: MeshBody, crease = 30, paintColor?: (attrs: string) => [number, number, number] | undefined): DisplayMesh {
   const g = body.m.getMesh()
   const k = g.numProp
   const P = g.vertProperties
   const T = g.triVerts
+  // Slicer paint as a color per triangle; corners split where the color changes.
+  let triColor: Float32Array | undefined
+  if (paintColor) {
+    const tm = body.triMesh()
+    if (tm.paint && tm.paints) {
+      const byPaint = tm.paints.map((p) => paintColor(p))
+      if (byPaint.some(Boolean)) {
+        triColor = new Float32Array((T.length / 3) * 3).fill(-1)
+        for (let t = 0; t < tm.paint.length; t++) {
+          const c = byPaint[tm.paint[t]]
+          if (c) triColor.set(c, t * 3)
+        }
+      }
+    }
+  }
+  const sameColor = (a: number, b: number) => !triColor || (triColor[a * 3] === triColor[b * 3] && triColor[a * 3 + 1] === triColor[b * 3 + 1] && triColor[a * 3 + 2] === triColor[b * 3 + 2])
   const nt = T.length / 3
   const nv = P.length / k
   const pos = (v: number, c: number) => P[v * k + c]
@@ -597,6 +615,7 @@ export function displayMesh(body: MeshBody, crease = 30): DisplayMesh {
   const corner = new Uint32Array(T.length)
   const outPos: number[] = []
   const outNorm: number[] = []
+  const outColor: number[] = []
   let count = 0
   const seeds: number[] = []
   const sums: number[] = []
@@ -608,13 +627,14 @@ export function displayMesh(body: MeshBody, crease = 30): DisplayMesh {
     for (let i = start[v]; i < start[v + 1]; i++) {
       const t = around[i]
       let c = 0
-      for (; c < seeds.length; c++) if (dotf(seeds[c], t) >= cos) break
+      for (; c < seeds.length; c++) if (dotf(seeds[c], t) >= cos && sameColor(seeds[c], t)) break
       if (c === seeds.length) {
         seeds.push(t)
         sums.push(0, 0, 0)
         ids.push(count++)
         outPos.push(pos(v, 0), pos(v, 1), pos(v, 2))
         outNorm.push(0, 0, 0)
+        if (triColor) outColor.push(triColor[t * 3], triColor[t * 3 + 1], triColor[t * 3 + 2])
       }
       sums[c * 3] += fn[t * 3] * fa[t]
       sums[c * 3 + 1] += fn[t * 3 + 1] * fa[t]
@@ -651,5 +671,7 @@ export function displayMesh(body: MeshBody, crease = 30): DisplayMesh {
     }
   }
 
-  return { vertices: Float32Array.from(outPos), normals: Float32Array.from(outNorm), triangles: corner, edges: Float32Array.from(lines) }
+  const out: DisplayMesh = { vertices: Float32Array.from(outPos), normals: Float32Array.from(outNorm), triangles: corner, edges: Float32Array.from(lines) }
+  if (triColor) out.colors = Float32Array.from(outColor)
+  return out
 }

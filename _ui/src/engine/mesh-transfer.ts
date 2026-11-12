@@ -8,6 +8,11 @@ export function meshTransfer(meshes: MeshData[]) {
   const transfer: ArrayBuffer[] = []
   const out = meshes.map((mesh) => {
     const copy = { ...mesh }
+    if (mesh.colors) {
+      const colors = mesh.colors.slice()
+      Object.assign(copy, { colors })
+      transfer.push(colors.buffer)
+    }
     for (const key of attributes) {
       const data = mesh[key].slice()
       Object.assign(copy, { [key]: data })

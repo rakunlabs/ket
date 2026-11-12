@@ -144,7 +144,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         result = await k.update3MF(doc, req.pairs)
         break
       case 'section':
-        result = k.section(req.names, req.axis, req.at)
+        result = await k.sectionImage(req.names, req.axis, req.at)
         break
       case 'export':
         result = await k.export(req.format, req.names, req.models)

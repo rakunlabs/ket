@@ -40,8 +40,9 @@ import { parseOBJ, placeModel } from './pcb/model3d'
 import { type ZoneFill, fillZones } from './pcb/zones'
 import type { BoardState } from './pcb/state'
 import { type Loop, type SolvedSketch, loopInside, solveSketch } from './sketch'
+import { drawSection } from './section-draw'
 import { MeshBody, composeBodies, displayMesh, meshBody, meshCube, meshFromTriangles } from './mesh-body'
-import { type ThreeMF, type TriMesh, isZip, parseSTL, pickObject, read3MF, update3MF, write3MF, writeSTL } from './model-files'
+import { type ThreeMF, type TriMesh, isZip, paintFilament, parseSTL, pickObject, read3MF, update3MF, write3MF, writeSTL } from './model-files'
 
 /** A built feature: an OpenCascade solid, or a triangle-mesh solid (imported STL / 3MF and what is built from it). */
 export type Body = Shape3D | MeshBody
@@ -136,6 +137,8 @@ export interface MeshData {
   edgeGroups: Uint32Array
   /** faceGroups[i] = [start, count] in triangles for face i. */
   faceGroups: Uint32Array
+  /** RGB per vertex from slicer paint (3MF); -1 where a triangle is unpainted (the body color shows). */
+  colors?: Float32Array
   /** 0..1, from the feature; 1 when unset. */
   opacity?: number
   /** The feature's material (display only). */
@@ -1892,7 +1895,7 @@ export class Kernel {
    * Z → (x, y)), their boxes and the cut area. B-rep bodies are cut on a fine
    * tessellation (within 0.01 mm).
    */
-  section(names: string[], axis: 'X' | 'Y' | 'Z', at: number, simplify = 0.05): Record<string, unknown>[] {
+  section(names: string[], axis: 'X' | 'Y' | 'Z', at: number, simplify = 0.05, outlines?: Map<string, [number, number][][]>): Record<string, unknown>[] {
     const k = { X: 0, Y: 1, Z: 2 }[axis]
     const [u, v] = { X: ['y', 'z'], Y: ['x', 'z'], Z: ['x', 'y'] }[axis]
     return names.map((name) => {
@@ -1900,8 +1903,10 @@ export class Kernel {
       if (box && (at < box[0][k] || at > box[1][k])) return { name, cut: false, note: `the plane ${axis}=${at} misses ${name} (it spans ${box[0][k]}..${box[1][k]})` }
       const m = this.meshOf(name)
       try {
-        const { outlines, area } = m.section(axis, at)
-        const loops = outlines
+        const cut = m.section(axis, at)
+        const area = cut.area
+        outlines?.set(name, cut.outlines.map((r) => simplifyRing(r, simplify / 2)))
+        const loops = cut.outlines
           .map((ring) => {
             const pts = simplifyRing(ring, simplify)
             let a = 0
@@ -1926,6 +1931,62 @@ export class Kernel {
         m.delete()
       }
     })
+  }
+
+  /**
+   * Colors for slicer paint: the filament colors of the opened 3MF projects
+   * (a triangle painted with filament n shows filament n's color). Paint
+   * state 0 is "the object's own filament": left to the body color.
+   */
+  private paintColors(): ((attrs: string) => [number, number, number] | undefined) | undefined {
+    const filaments = [...this.threeMF.values()].find((f): f is ThreeMF => !(f instanceof Error) && f.filaments.length > 0)?.filaments
+    if (!filaments) return undefined
+    const rgb = filaments.map((c) => {
+      const m = /^#?([0-9a-f]{6})/i.exec(c)
+      if (!m) return undefined
+      const n = parseInt(m[1], 16)
+      return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255] as [number, number, number]
+    })
+    const memo = new Map<string, [number, number, number] | undefined>()
+    return (attrs) => {
+      if (memo.has(attrs)) return memo.get(attrs)
+      const f = paintFilament(attrs)
+      const c = f ? rgb[f - 1] : undefined
+      memo.set(attrs, c)
+      return c
+    }
+  }
+
+  /** The color of the filament a 3MF object prints with, for the body built from it (following inputs back to the import). */
+  private filamentOf(name: string, depth = 0): string | undefined {
+    const f = this.doc?.features.find((x) => x.name === name)
+    if (!f || depth > 64) return undefined
+    if (f.type === 'import') {
+      const file = this.threeMF.get(fetchKey(f.url))
+      if (!file || file instanceof Error) return undefined
+      try {
+        const obj = pickObject(file, decodeURIComponent(f.url.split('#')[1] ?? ''), '')
+        return obj.filament ? file.filaments[obj.filament - 1] : undefined
+      } catch {
+        return undefined
+      }
+    }
+    const src = f.type === 'solids' ? f.source : inputsOf(f)[0]
+    return src ? this.filamentOf(src, depth + 1) : undefined
+  }
+
+  /** section with a picture of the cut (PNG base64) when a canvas is available. */
+  async sectionImage(names: string[], axis: 'X' | 'Y' | 'Z', at: number): Promise<{ bodies: Record<string, unknown>[]; image?: string }> {
+    const outlines = new Map<string, [number, number][][]>()
+    const bodies = this.section(names, axis, at, 0.05, outlines)
+    const colorOf = (n: string) => {
+      const f = this.doc?.features.find((x) => x.name === n)
+      const material = f?.material ? this.doc?.materials?.find((x) => x.name === f.material) : undefined
+      return material?.color ?? f?.color
+    }
+    const axes = ({ X: ['Y', 'Z'], Y: ['X', 'Z'], Z: ['X', 'Y'] } as const)[axis]
+    const image = await drawSection([...outlines].map(([name, loops]) => ({ name, loops, color: colorOf(name) })), [axes[0], axes[1]], `section ${axis} = ${at} mm`)
+    return { bodies, image }
   }
 
   private hint(f: Feature, e: unknown): string {
@@ -2037,8 +2098,8 @@ export class Kernel {
       live.add(key)
       let m = this.meshCache.get(key)
       if (!m && isMesh(c.shape)) {
-        const d = displayMesh(c.shape)
-        m = { name, key, vertices: d.vertices, normals: d.normals, triangles: d.triangles, edges: d.edges, edgeGroups: new Uint32Array(0), faceGroups: new Uint32Array([0, d.triangles.length / 3]) }
+        const d = displayMesh(c.shape, 30, this.paintColors())
+        m = { name, key, vertices: d.vertices, normals: d.normals, triangles: d.triangles, edges: d.edges, edgeGroups: new Uint32Array(0), faceGroups: new Uint32Array([0, d.triangles.length / 3]), ...(d.colors ? { colors: d.colors } : {}) }
         this.meshCache.set(key, m)
       }
       if (!m) {
@@ -2074,7 +2135,7 @@ export class Kernel {
         this.meshCache.set(key, m)
       }
       const f = this.doc?.features.find((x) => x.name === name)
-      const color = f?.color ?? (name === BOARD && this.doc?.pcb ? boardStyle(this.doc.pcb).maskColor : name.startsWith(PART_PREFIX) ? '#30343b' : undefined)
+      const color = f?.color ?? (name === BOARD && this.doc?.pcb ? boardStyle(this.doc.pcb).maskColor : name.startsWith(PART_PREFIX) ? '#30343b' : m.colors ? this.filamentOf(name) : undefined)
       const material = f?.material ? this.doc?.materials?.find((x) => x.name === f.material) : undefined
       const decals = this.resolvedDecals(name)
       const explode = this.doc ? explodeOffset(this.doc, this.params, name) : undefined

@@ -165,9 +165,13 @@ it changes, so every dimension can be an expression over parameters.
   repeat meshes; fillet, chamfer, shell and selectors need B-rep.
 - Place a part by its box with transform align (to, anchor) instead of
   computing offsets: e.g. a piece lying in a pocket, bottom on the floor.
-- Check with no_overlap / min_distance / inside as for any body, then
-  export 3MF (one object per body) or STL for the slicer. A slicer
-  project's print settings and paint stay in the slicer: say so.
+- Check with no_overlap / min_distance / inside as for any body.
+- A body edited from a slicer project goes back into it with
+  export_slicer_3mf (replace: [{ body, object: <its import> }]): print
+  settings, plates and paint stay; new faces take the paint of nearby
+  faces in the same plane. Say which objects changed and that the user
+  should check the paint and re-slice. export 3mf/stl makes a plain file.
+- arrange lays bodies flat on a plate (default 256 × 256) for printing.
 
 ## Enclosures that print and assemble
 - One outline, many offsets: extrude the outline polygon, and its inside

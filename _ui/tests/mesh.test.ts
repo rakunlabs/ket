@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyOp, command, emptyDoc, parseArgs, type Doc } from '../src/engine'
+import { applyOp, command, emptyDoc, localKernel, parseArgs, prepareOperation, type Doc } from '../src/engine'
 import { Kernel } from '../src/engine/kernel'
-import { type TriMesh, mergeMeshes, read3MF, unzip, update3MF, write3MF, writeSTL, zipFiles } from '../src/engine/model-files'
+import { type TriMesh, mergeMeshes, paintFilament, read3MF, unzip, write3MF, writeSTL, zipFiles } from '../src/engine/model-files'
 import './setup'
 
 function run(doc: Doc, cmd: string, args: unknown): Doc {
@@ -227,7 +227,48 @@ describe('mesh bodies (STL, 3MF)', () => {
     expect(m.paint!.every((p) => p > 0)).toBe(true)
     const cfg = new TextDecoder().decode(await files.get('Metadata/model_settings.config')!())
     expect(cfg).toContain(`face_count="${m.triangles.length / 3}"`)
+
+    // In the viewport the paint shows in the filament colors of the project (none given here: body color).
+    const meshes = k.meshes(k.build(doc))
+    expect(meshes.find((x) => x.name === 'tray_cut')!.colors).toBeUndefined()
+    // section answers with numbers; the picture needs a canvas (browser).
+    const sec = await k.sectionImage(['tray_cut'], 'Z', 7)
+    expect((sec.bodies[0] as { loops: { kind: string }[] }).loops.map((l) => l.kind)).toEqual(['material', 'hole'])
   }, 120_000)
+
+  it('decodes slicer paint to the filament covering most of a triangle', () => {
+    expect(paintFilament('paint_color="4"')).toBe(1)
+    expect(paintFilament('paint_color="8"')).toBe(2)
+    expect(paintFilament('paint_color="1C"')).toBe(4)
+    // A split triangle that is mostly filament 2.
+    expect(paintFilament('paint_color="4882882882882882"')).toBe(2)
+    expect(paintFilament('paint_supports="4"')).toBeUndefined()
+  })
+
+  it('arranges bodies flat on a plate, and says what does not fit', async () => {
+    const k = new Kernel()
+    let doc = emptyDoc()
+    doc = run(doc, 'box', { name: 'big', size: [120, 80, 10], translate: [500, 500, 3] })
+    doc = run(doc, 'box', { name: 'tall', size: [20, 20, 60] })
+    doc = run(doc, 'box', { name: 'wide', size: [150, 30, 5] })
+    const ctx = (d: Doc) => ({ doc: d, kernel: localKernel(k, d) })
+    const op = await prepareOperation(ctx(doc), { cmd: 'arrange', args: { names: ['big', 'tall', 'wide'], rotate: { tall: [90, 0, 0] } } }, (d) => localKernel(k, d))
+    doc = applyOp(doc, op).doc
+    const r = k.build(doc)
+    expect(r.features.every((f) => f.ok)).toBe(true)
+    const box = (n: string) => r.features.find((f) => f.name === n)!.bbox!
+    for (const n of ['big_placed', 'tall_placed', 'wide_placed']) {
+      const [lo, hi] = box(n)
+      expect(lo[2]).toBeCloseTo(0, 6)
+      expect(Math.min(lo[0], lo[1])).toBeGreaterThanOrEqual(5 - 1e-6)
+      expect(Math.max(hi[0], hi[1])).toBeLessThanOrEqual(251 + 1e-6)
+    }
+    // Lying down after the 90° turn: 60 mm long in Y, 20 high.
+    expect(box('tall_placed')[1][2]).toBeCloseTo(20, 6)
+    // Rows: big and tall side by side, wide on the next row.
+    expect(box('wide_placed')[0][1]).toBeGreaterThan(box('big_placed')[1][1])
+    await expect(prepareOperation(ctx(doc), { cmd: 'arrange', args: { names: ['big_placed'], plate: [100, 100] } }, (d) => localKernel(k, d))).rejects.toThrow(/do not fit a 100 × 100/)
+  }, 60_000)
 
   it('says what is wrong with a mesh that is not closed', async () => {
     const k = new Kernel()

@@ -32,7 +32,7 @@ export interface KernelAPI {
   /** The slicer 3MF an import came from, with some objects replaced by bodies. */
   update3MF(pairs: { body: string; object: string }[]): Promise<{ blob: Blob; file: string; replaced: string[]; also_changed: string[] }>
   /** Cross-sections of bodies by a plane. */
-  section(names: string[], axis: 'X' | 'Y' | 'Z', at: number): Promise<Record<string, unknown>[]>
+  section(names: string[], axis: 'X' | 'Y' | 'Z', at: number): Promise<{ bodies: Record<string, unknown>[]; image?: string }>
   sketch(name: string): Promise<SolvedSketch>
   /** The resolved board with DRC and ratsnest; undefined without a PCB. */
   board(opts?: { drc?: boolean }): Promise<BoardState | undefined>
@@ -93,7 +93,7 @@ export function localKernel(kernel: Kernel, doc: Doc): KernelAPI {
     checks: async () => (await build(), kernel.checks(doc)),
     solids: async (n) => (await build(), kernel.listSolids(n)),
     update3MF: async (pairs) => (await build(), kernel.update3MF(doc, pairs)),
-    section: async (names, axis, at) => (await build(), kernel.section(names, axis, at)),
+    section: async (names, axis, at) => (await build(), kernel.sectionImage(names, axis, at)),
     sketch: async (n) => (await build(), kernel.sketch(n)),
     board: async (o) => (await build(), kernel.boardState(doc, o)),
     export: async (f, names, models) => (await build(), kernel.export(f, names, models)),

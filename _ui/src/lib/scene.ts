@@ -835,6 +835,20 @@ function bodyObject(
   // In the CAD view a material shows its base color, so bodies stay apart.
   const base = m.material ? new THREE.Color(m.material.color).getHex() : m.color ? new THREE.Color(m.color).getHex() : palette.body
   const color = override ?? base
+  // Slicer paint (3MF): per-vertex filament colors; unpainted corners (-1) take the body color.
+  const paint = m.colors && override === undefined && shading !== 'xray' && shading !== 'wireframe'
+  if (paint) {
+    const c = new THREE.Color(base)
+    const rgb = m.colors!.slice()
+    for (let i = 0; i < rgb.length; i += 3) {
+      if (rgb[i] < 0) {
+        rgb[i] = c.r
+        rgb[i + 1] = c.g
+        rgb[i + 2] = c.b
+      }
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(rgb, 3))
+  }
   // See-through bodies: no depth writes, so what is inside shows; their
   // edges stay faint but visible.
   const xray = shading === 'xray'
@@ -848,7 +862,8 @@ function bodyObject(
   const mat = usePbr
     ? pbrMaterial(m.material!, { clip, side, emissiveBoost: selected ? 0.15 : 0, env })
     : new THREE.MeshStandardMaterial({
-        color,
+        color: paint ? 0xffffff : color,
+        vertexColors: !!paint,
         transparent: seeThrough,
         opacity,
         depthWrite: !seeThrough,

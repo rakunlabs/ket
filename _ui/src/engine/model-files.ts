@@ -204,6 +204,8 @@ export interface ThreeMFObject {
   /** The object id of the build item (what #<id> picks). */
   id: string
   name: string
+  /** The filament (1-based) the slicer prints it with where it is not painted. */
+  filament?: number
 }
 
 interface MeshPart {
@@ -215,6 +217,8 @@ interface MeshPart {
 
 export interface ThreeMF {
   objects: ThreeMFObject[]
+  /** Filament colors of the slicer project (1-based filament n is filaments[n - 1]). */
+  filaments: string[]
   /** The file as read, to write edits back into it. */
   raw: Uint8Array
   /** The triangles of a build item in plate coordinates (mm). */
@@ -368,6 +372,7 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
 
   // Slicers (Bambu Studio, Orca, Prusa) keep object names in their own config.
   const names = new Map<string, string>()
+  const extruders = new Map<string, number>()
   for (const cfg of ['Metadata/model_settings.config', 'Metadata/Slic3r_PE_model.config']) {
     if (!files.has(cfg)) continue
     const xml = await text(cfg)
@@ -375,6 +380,18 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
     for (let m = re.exec(xml); m; m = re.exec(xml)) {
       const n = /<metadata\s+(?:type="object"\s+)?key="name"\s+value="([^"]*)"/.exec(m[2])
       if (n) names.set(m[1], unescapeXml(n[1]))
+      // The object's own extruder comes before its parts' metadata.
+      const e = /<metadata\s+(?:type="object"\s+)?key="extruder"\s+value="(\d+)"/.exec(m[2])
+      if (e) extruders.set(m[1], Number(e[1]))
+    }
+  }
+  let filaments: string[] = []
+  if (files.has('Metadata/project_settings.config')) {
+    try {
+      const cfg = JSON.parse(await text('Metadata/project_settings.config')) as { filament_colour?: string[] }
+      if (Array.isArray(cfg.filament_colour)) filaments = cfg.filament_colour.map(String)
+    } catch {
+      // Not JSON (older Prusa): no colors.
     }
   }
 
@@ -384,7 +401,7 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
     items.push({ id: attr(m[1], 'objectid') ?? '', path: attr(m[1], 'p:path') ?? root, transform: parseTransform(attr(m[1], 'transform')) })
   }
   if (!items.length) throw new Error('the 3MF has no build items (nothing to print)')
-  const objects = items.map((it) => ({ id: it.id, name: names.get(it.id) ?? rootObjects.get(it.id)?.name ?? `object ${it.id}` }))
+  const objects = items.map((it) => ({ id: it.id, name: names.get(it.id) ?? rootObjects.get(it.id)?.name ?? `object ${it.id}`, ...(extruders.has(it.id) ? { filament: extruders.get(it.id) } : {}) }))
 
   const parts = async (path: string, id: string, transform: number[], depth: number, out: MeshPart[]) => {
     if (depth > 16) throw new Error('3MF components nest too deep')
@@ -397,6 +414,7 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
 
   return {
     objects,
+    filaments,
     raw: buf instanceof Uint8Array ? buf : new Uint8Array(buf),
     async mesh(id: string) {
       const item = items.find((it) => it.id === id)
@@ -687,4 +705,43 @@ function meshXml(m: TriMesh): string {
   }
   out.push('    </triangles>\n   </mesh>')
   return out.join('')
+}
+
+// ── Slicer paint ────────────────────────────────────────────────────────
+
+/**
+ * The filament a painted triangle mostly prints with. Bambu/Orca/Prusa write
+ * paint_color as hex digits of a triangle subdivision tree, read from the
+ * end: each node is 4 bits, the low 2 the number of children (0 = a leaf),
+ * the high 2 the leaf state (0..2, 3 = state+3 in the next nibble). Children
+ * split a triangle into equal areas, so a leaf at depth d covers 4^-d (a
+ * split into 2 counts half each). The state is the filament (0 = the
+ * object's own). Returns undefined for no paint_color.
+ */
+export function paintFilament(attrs: string): number | undefined {
+  const m = /paint_color="([0-9A-Fa-f]+)"/.exec(attrs)
+  if (!m) return undefined
+  const hex = m[1]
+  // The tree is written root-last: read nibbles from the end.
+  let pos = hex.length - 1
+  const next = () => (pos >= 0 ? parseInt(hex[pos--], 16) : 0)
+  const share = new Map<number, number>()
+  const walk = (weight: number, depth: number) => {
+    if (depth > 12) return
+    const code = next()
+    const split = code & 3
+    if (split === 0) {
+      let state = code >> 2
+      if (state === 3) state = next() + 3
+      share.set(state, (share.get(state) ?? 0) + weight)
+      return
+    }
+    const children = split + 1
+    for (let i = 0; i < children; i++) walk(weight / children, depth + 1)
+  }
+  walk(1, 0)
+  let best = 0
+  let most = -1
+  for (const [s, w] of share) if (w > most) [best, most] = [s, w]
+  return best
 }
