@@ -107,6 +107,11 @@ function renameNet(pcb: Pcb, from: string, to: string) {
   for (const t of pcb.tracks) if (t.net === from) t.net = to
   for (const v of pcb.vias) if (v.net === from) v.net = to
   for (const zn of pcb.zones ?? []) if (zn.net === from) zn.net = to
+  for (const d of pcb.diff_pairs ?? []) {
+    if (d.p === from) d.p = to
+    if (d.n === from) d.n = to
+  }
+  for (const g of pcb.length_groups ?? []) g.nets = g.nets.map((x) => (x === from ? to : x))
 }
 
 define({

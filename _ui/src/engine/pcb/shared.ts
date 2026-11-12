@@ -51,6 +51,17 @@ export const AUTO_NET = /^N\d+$/
 /** Drops empty nets and the wires whose pins are no longer on one net. */
 export function tidy(pcb: Pcb) {
   pcb.nets = pcb.nets.filter((n) => n.pins.length > 0)
+  // Pairs and groups of nets that are gone go too.
+  const nets = new Set(pcb.nets.map((n) => n.name))
+  if (pcb.diff_pairs) {
+    pcb.diff_pairs = pcb.diff_pairs.filter((d) => nets.has(d.p) && nets.has(d.n))
+    if (!pcb.diff_pairs.length) delete pcb.diff_pairs
+  }
+  if (pcb.length_groups) {
+    for (const g of pcb.length_groups) g.nets = g.nets.filter((x) => nets.has(x))
+    pcb.length_groups = pcb.length_groups.filter((g) => g.nets.length >= 2)
+    if (!pcb.length_groups.length) delete pcb.length_groups
+  }
   if (!pcb.wires) return
   const netOf = new Map<string, string>()
   for (const n of pcb.nets) for (const p of n.pins) netOf.set(p, n.name)

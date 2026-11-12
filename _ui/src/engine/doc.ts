@@ -744,6 +744,30 @@ export interface Zone {
   priority?: number
 }
 
+export interface DiffPair {
+  name: string
+  /** Positive and negative nets. */
+  p: string
+  n: string
+  /** Track width and edge-to-edge gap, mm (from impedance). */
+  width: number
+  gap: number
+  /** Allowed length difference between the two, mm (default 0.15). */
+  skew?: number
+  /** Target differential impedance, for the report. */
+  impedance?: number
+}
+
+export interface LengthGroup {
+  name: string
+  nets: string[]
+  /** Allowed spread from the longest, mm. */
+  tolerance: number
+  /** Optional absolute bounds on every net's length, mm. */
+  min?: number
+  max?: number
+}
+
 /** A region of the board that forbids tracks, vias, pours and/or parts, on some copper layers (parts: by side). */
 export interface Keepout {
   name: string
@@ -786,6 +810,10 @@ export interface Pcb {
   zones?: Zone[]
   /** Teardrops where tracks meet pads and vias (derived when the board is resolved). */
   teardrops?: { length?: number; width?: number }
+  /** Differential pairs: two nets routed side by side at a gap (USB D+/D−, LVDS). */
+  diff_pairs?: DiffPair[]
+  /** Nets whose routed lengths must match (a bus, a pair's two halves), within a tolerance. */
+  length_groups?: LengthGroup[]
   /** Areas where some things may not go: copper (tracks, vias, pours) or parts (antenna clearance, under a connector). */
   keepouts?: Keepout[]
   /** Schematic wires between pins of the same net (drawing only; the netlist decides connectivity). */

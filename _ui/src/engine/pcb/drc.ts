@@ -7,6 +7,7 @@ import { type ResolvedBoard } from './board'
 import { type Poly, distPointSeg, distPolyPoly, distSegPoly, distSegSeg, inside } from './geometry'
 import { area, circle, difference, inRegion, intersect, offset, overlaps, stroke } from './poly'
 import { boardDrills } from './drills'
+import { lengthViolations } from './lengths'
 import type { Teardrop } from './teardrops'
 import type { ZoneFill } from './zones'
 
@@ -404,6 +405,8 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: T
         out.push({ rule: 'hole_to_copper', message: `zone ${z.index + 1} (${z.net}) is closer than ${need} mm to the hole at [${f(c.x)}, ${f(c.y)}]`, objects: [`zone ${z.index + 1}`], required: need })
     }
   }
+
+  out.push(...lengthViolations(pcb, b))
 
   // Holes.
   const holes = drilled.map((h) => ({ ...h, c: h.at, npth: !h.plated }))

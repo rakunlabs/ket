@@ -9,6 +9,7 @@ import { DEFAULT_CLASS } from './board'
 import type { Violation } from './drc'
 import { octilinear } from './octilinear'
 import { routeBoard } from './router'
+import { routePair } from './pairroute'
 
 type XY = [number, number]
 
@@ -111,11 +112,28 @@ export async function autorouteBoard(
   const started = Date.now()
   const nets = pcb.nets.filter((n) => n.pins.length >= 2 && !opts.skip?.has(n.name) && (!opts.only || opts.only.has(n.name))).length
   if (!nets) throw new Error(opts.only ? `nothing to route among ${[...opts.only].join(', ')}: they need 2+ pins and must not be left to a pour` : 'nothing to route: every net with 2+ pins is routed or left to a pour')
-  const r = routeBoard(pcb, b, { only: opts.only, skip: opts.skip, budget: (opts.timeout ?? 180) * 1000 })
-  const tracks = widenTracks(tidyRouted(r.tracks, r.vias, pcb, b), b, pcb.tracks, [...pcb.vias, ...r.vias])
-  const out = { tracks, vias: r.vias }
+  const budget = (opts.timeout ?? 180) * 1000
+  // Differential pairs first, coupled (one follows the other at the pair pitch); the rest route around them.
+  const pairs = (pcb.diff_pairs ?? []).filter((d) => !opts.skip?.has(d.p) && !opts.skip?.has(d.n) && (!opts.only || (opts.only.has(d.p) && opts.only.has(d.n))) && !pcb.tracks.some((t) => t.net === d.p || t.net === d.n))
+  const pairTracks: Track[] = []
+  const pairVias: Via[] = []
+  const notes: string[] = []
+  for (const d of pairs) {
+    const pr = routePair({ ...pcb, tracks: [...pcb.tracks, ...pairTracks], vias: [...pcb.vias, ...pairVias] }, b, d, budget / 4)
+    pairTracks.push(...pr.tracks)
+    pairVias.push(...pr.vias)
+    if (pr.note) notes.push(pr.note)
+  }
+  const paired = new Set(pairs.flatMap((d) => [d.p, d.n]))
+  const rest = pcb.nets.some((n) => n.pins.length >= 2 && !paired.has(n.name) && !opts.skip?.has(n.name) && (!opts.only || opts.only.has(n.name)))
+  const base = { ...pcb, tracks: [...pcb.tracks, ...pairTracks], vias: [...pcb.vias, ...pairVias] }
+  const r = rest ? routeBoard(base, b, { only: opts.only, skip: new Set([...(opts.skip ?? []), ...paired]), budget }) : { tracks: [], vias: [], unrouted: [], iterations: 0 }
+  // Pair tracks keep their exact geometry (the clean-up would move them apart); the rest is tidied around them.
+  const tracks = [...pairTracks, ...widenTracks(tidyRouted(r.tracks, r.vias, base, b), b, base.tracks, [...base.vias, ...r.vias])]
+  const out = { tracks, vias: [...pairVias, ...r.vias] }
   const violations = opts.check ? opts.check(out) : []
-  return { ...out, nets, unrouted: r.unrouted, seconds: Math.round((Date.now() - started) / 100) / 10, rounds: r.iterations, violations: violations.map((v) => v.message).slice(0, 10) }
+  const unrouted = [...r.unrouted, ...pairs.flatMap((d) => [d.p, d.n]).filter((n) => !pairTracks.some((t) => t.net === n))]
+  return { ...out, nets, unrouted, seconds: Math.round((Date.now() - started) / 100) / 10, rounds: r.iterations, violations: [...notes, ...violations.map((v) => v.message)].slice(0, 10) }
 }
 
 /** Cleans existing tracks: octilinear and as wide as fits, against all other copper. */

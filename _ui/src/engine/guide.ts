@@ -162,7 +162,10 @@ it changes, so every dimension can be an expression over parameters.
    impedance for the width (target 50 Ω single, 90 Ω USB pair with gap).
    4 or 6 layers give a solid ground plane under them. Blind/buried vias
    (add_via span) only when a through via will not do: most fabs charge
-   extra or do not make them.
+   extra or do not make them. USB/LVDS: set_diff_pair (width and gap from
+   impedance) before autoroute, which routes the pair together and evens
+   its lengths; buses: set_length_group. get_net_lengths reports lengths,
+   skew and coupling; tune_length adds a meander by hand.
 12. A second opinion: export_kicad writes a .kicad_pcb (KiCad 8/9) to run
    KiCad's DRC on or to continue there; read its notes for what is not
    carried over (net classes, teardrops, own 3D models).
