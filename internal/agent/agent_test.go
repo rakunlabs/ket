@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -214,4 +215,97 @@ func TestRunRecordsUsageAndCompacts(t *testing.T) {
 	if _, ok := err.(ErrOverBudget); !ok {
 		t.Fatalf("over budget: got %v", err)
 	}
+}
+
+// Two servers (two Agents on one database): one turn per conversation, and
+// Stop on either server ends it.
+func TestTurnLeaseAcrossServers(t *testing.T) {
+	dsn := os.Getenv("KET_TEST_DSN")
+	if dsn == "" {
+		t.Skip("KET_TEST_DSN is not set")
+	}
+	ctx := context.Background()
+	st, err := store.New(ctx, config.Store{Postgres: config.Postgres{DSN: dsn, MaxOpenConns: 4, Migrate: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+
+	// A provider that answers only when released: the first turn stays running.
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	set, err := settings.Load(ctx, st, settings.Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur := set.Get()
+	cur.Providers = []settings.Provider{{Name: "slow", BaseURL: srv.URL, Model: "m"}}
+	cur.MonthlyTokens = 0
+	if _, err := set.Update(ctx, cur, nil, []string{"admin", "editor", "viewer"}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := catalog.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := mcpserver.NewTools(cat, hub.New(st, config.Hub{}), st)
+	one, two := New(set, tools, st), New(set, tools, st)
+
+	p, err := st.CreateProject(ctx, "lease test", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteProject(ctx, p.ID) })
+	conv, err := st.CreateConversation(ctx, p.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- one.Run(ctx, conv, "", "first", false, func(Event) {}) }()
+	// Wait until the first turn holds the lease (a probe owner cannot take it then).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ok, err := st.AcquireTurn(ctx, conv.ID, "probe", time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+		_ = st.ReleaseTurn(ctx, conv.ID, "probe")
+		if time.Now().After(deadline) {
+			t.Fatal("the first turn never took the lease")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := two.Run(ctx, conv, "", "second", false, func(Event) {}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second server: %v, want ErrBusy", err)
+	}
+	if !two.Stop(conv.ID) {
+		t.Fatal("stop on the other server found no running turn")
+	}
+	// The running turn polls for a stop every second.
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "stopped") {
+			t.Fatalf("first turn ended with %v, want stopped", err)
+		}
+	case <-time.After(5 * stopPoll):
+		t.Fatal("the first turn did not stop")
+	}
+	if ok, _ := st.AcquireTurn(ctx, conv.ID, "someone", time.Second); !ok {
+		t.Fatal("the lease was not released")
+	}
+	_ = st.ReleaseTurn(ctx, conv.ID, "someone")
 }

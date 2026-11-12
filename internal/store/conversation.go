@@ -99,6 +99,10 @@ func (s *Store) AppendMessages(ctx context.Context, conversationID string, msgs 
 	}
 
 	return s.tx(ctx, func(tx *sql.Tx) error {
+		// The conversation row serializes appends, so two writers never pick the same seq.
+		if _, err := tx.ExecContext(ctx, `SELECT 1 FROM conversations WHERE id = $1 FOR UPDATE`, conversationID); err != nil {
+			return fmt.Errorf("lock conversation; %w", err)
+		}
 		var last int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COALESCE(max(seq), 0) FROM messages WHERE conversation_id = $1`, conversationID).Scan(&last); err != nil {

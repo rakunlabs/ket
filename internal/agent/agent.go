@@ -5,12 +5,15 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +37,8 @@ type Agent struct {
 
 	mu      sync.Mutex
 	running map[string]context.CancelFunc
+	// id names this server process in turn leases.
+	id string
 }
 
 func New(set *settings.Service, tools *mcpserver.Tools, st *store.Store) *Agent {
@@ -43,6 +48,7 @@ func New(set *settings.Service, tools *mcpserver.Tools, st *store.Store) *Agent 
 		store:    st,
 		http:     &http.Client{Timeout: 10 * time.Minute},
 		running:  map[string]context.CancelFunc{},
+		id:       newInstanceID(),
 	}
 }
 
@@ -142,17 +148,50 @@ type Event struct {
 	Usage *Usage `json:"usage,omitempty"`
 }
 
-// Stop cancels a running turn.
+// leaseTTL is how long a turn's lease lasts without renewal, so a server
+// that dies frees its conversations soon.
+const leaseTTL = 30 * time.Second
+
+// stopPoll is how often a running turn looks for a stop asked on another server.
+const stopPoll = time.Second
+
+func (a *Agent) keepLease(ctx context.Context, cancel context.CancelFunc, conversationID string) {
+	tick := time.NewTicker(stopPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			// Renewing is the poll: one small UPDATE a second per running turn.
+			stop, lost, err := a.store.RenewTurn(ctx, conversationID, a.id, leaseTTL)
+			if err != nil {
+				slog.Warn("renew assistant turn", "conversation", conversationID, "error", err)
+				continue
+			}
+			if stop || lost {
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+// Stop cancels a running turn, here or (through the database) on another server.
 func (a *Agent) Stop(conversationID string) bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if cancel, ok := a.running[conversationID]; ok {
+	cancel, ok := a.running[conversationID]
+	a.mu.Unlock()
+	if ok {
 		cancel()
 		return true
 	}
+	asked, err := a.store.RequestStop(context.Background(), conversationID)
+	if err != nil {
+		slog.Warn("request assistant stop", "conversation", conversationID, "error", err)
+	}
 
-	return false
+	return asked
 }
 
 // Run handles one user message: it calls the model, runs the tools it asks
@@ -179,6 +218,18 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 		delete(a.running, conv.ID)
 		a.mu.Unlock()
 	}()
+
+	// The lease makes it one turn per conversation across servers too; it is
+	// renewed while the turn runs, and a stop asked on another server ends it.
+	ok, err := a.store.AcquireTurn(ctx, conv.ID, a.id, leaseTTL)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrBusy
+	}
+	defer func() { _ = a.store.ReleaseTurn(context.WithoutCancel(ctx), conv.ID, a.id) }()
+	go a.keepLease(ctx, cancel, conv.ID)
 
 	project, err := a.store.GetProject(ctx, conv.ProjectID)
 	if err != nil {
@@ -483,4 +534,12 @@ func prune(history []Message) []Message {
 	}
 
 	return out
+}
+
+func newInstanceID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	host, _ := os.Hostname()
+
+	return host + "-" + hex.EncodeToString(b)
 }
