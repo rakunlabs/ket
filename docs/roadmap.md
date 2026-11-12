@@ -1,5 +1,9 @@
 # Roadmap and implementation plan
 
+Status: items 1–24 are done (November 2026). Still to check by hand: a
+zip64 3MF from a real slicer, the release workflow on a tag, and STEP
+assemblies opened in other CAD tools.
+
 What comes after roadmap items 1–8 in the README. Each item names the
 commands to add, the files it touches and how it is verified. Sizes are
 rough: S is days, M is one to two weeks, L is longer.

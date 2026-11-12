@@ -161,7 +161,37 @@ chat panel ─┘  (ada, hub, agent)      └─ kernel worker (OpenCascade WASM
   only what the user may see.
 - **Chat agent** (`internal/agent`): the tool loop runs on the server
   against any OpenAI-compatible endpoint, so API keys stay on the server.
-  Renders go to vision models as images.
+  Renders go to vision models as images. Usage is recorded per user and
+  project (as the provider reports it, else estimated), an optional monthly
+  token limit applies per user, and long conversations are summarized so
+  each request stays small.
+- **Mechanisms and motion**: involute gears (spur, helical, herringbone,
+  internal, rack, worm, bevel) meshed by solved centers and phases;
+  planetary, cam, Geneva and belt drives; joints and simple physics
+  (`set_motion`, `simulate`), and `sweep_motion` for the first collision.
+- **Appearance**: PBR materials from presets with procedural textures, and
+  decals (text and images) on bodies; display only.
+- **Mesh editing**: STL and 3MF imported as mesh bodies, edited with
+  B-rep booleans, written back into the slicer project (`export_slicer_3mf`,
+  zip64 for large files) with print settings and paint kept.
+- **Mechanical CAD**: sketches on faces, holes (counterbore, countersink,
+  tapped), heat-set insert bosses, threads, draft, snap fits, assembly
+  instances (one STEP product per body), parameter configurations, and
+  printability checks (`overhang`, `min_wall`).
+- **Drawings**: hidden-line views with dimensions as SVG, PDF or DXF.
+- **Electrical rules**: pin intent from datasheets (`set_pin_rules`) and
+  `run_erc` for driver conflicts, no-connects and required pins.
+- **Advanced PCB**: keep-outs, teardrops, 2/4/6 layers with stackup presets,
+  blind and buried vias, impedance from the stackup (IPC-2141), differential
+  pairs routed together with skew tuning, length groups and `tune_length`
+  meanders, interactive routing in the board view (R), multi-sheet
+  schematics and V-score or mouse-bite panels.
+- **KiCad bridge**: `export_kicad` writes a `.kicad_pcb` (KiCad 8/9; CI runs
+  KiCad's DRC on it) and `import_kicad` opens one, listing everything that
+  was not carried over.
+- **Templates and blocks**: start projects from server templates; insert a
+  saved block (a power input, a boss pattern) under a prefix, as often as
+  needed.
 
 ## Layout
 
@@ -195,3 +225,11 @@ _ui/src/components/ sidebar, viewport, chat
 6. ~~Proposal branches with review/accept, ada Auth Kit (users, roles, MCP OAuth)~~
 7. ~~Loft/sweep, schematic editing (wires), per-project sharing, vendor 3D models in STEP (`export` detail: "models")~~
 8. ~~Stored schematic wires, 3D selection and measuring, BOM price and stock check~~
+9. ~~Gears and mechanisms, motion, materials and decals, mesh editing, ERC~~
+10. ~~[Roadmap phases 0–4](docs/roadmap.md): E2E tests and releases, configurations,
+    mechanical features, drawings, instances, keep-outs, teardrops, stackups,
+    differential pairs, KiCad import/export, interactive routing, sheets,
+    panels, assistant usage and compaction, MCP core mode, templates and blocks~~
+
+What is planned next, and how each item is verified, lives in
+[docs/roadmap.md](docs/roadmap.md).
