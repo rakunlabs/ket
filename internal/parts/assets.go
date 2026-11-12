@@ -143,9 +143,10 @@ func UploadID(rawURL string) (string, bool) {
 	return id, id != ""
 }
 
-// UploadURL is the import URL of an uploaded file.
+// UploadURL is the import URL of an uploaded file. Names are cleaned at
+// upload; older ones may hold "#", which would start a fragment.
 func UploadURL(id, name string) string {
-	return AssetScheme + id + "/" + name
+	return AssetScheme + id + "/" + strings.ReplaceAll(name, "#", "_")
 }
 
 var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._\- ()'+,]+`)
@@ -158,12 +159,16 @@ func CleanUploadName(raw string) (string, error) {
 	if name == "" || name == "." || strings.HasPrefix(name, ".") {
 		return "", fmt.Errorf("%q is not a file name: give the name with its extension, e.g. \"case.3mf\"", raw)
 	}
+	// The extension is one of the short model ones, so cutting the stem stays in range.
+	if err := CheckUploadName(name); err != nil {
+		return "", err
+	}
 	if len(name) > 200 {
 		ext := path.Ext(name)
 		name = name[:200-len(ext)] + ext
 	}
 
-	return name, CheckUploadName(name)
+	return name, nil
 }
 
 // CheckUploadName says whether a file name is one import can read.
@@ -278,17 +283,23 @@ func looksLikeModel(b []byte) bool {
 	return false
 }
 
+// UploadError is a file that cannot be uploaded as it is (name, type, size, content).
+type UploadError struct{ Err error }
+
+func (e *UploadError) Error() string { return e.Err.Error() }
+func (e *UploadError) Unwrap() error { return e.Err }
+
 // StoreUpload checks a model file and stores it in a project: what the
 // Import model button, upload links and upload_asset all do. It answers
 // the url to import it with, and a 3MF's objects.
 func StoreUpload(ctx context.Context, st *store.Store, projectID, rawName string, data []byte, by string) (map[string]any, error) {
 	name, err := CleanUploadName(rawName)
 	if err != nil {
-		return nil, err
+		return nil, &UploadError{err}
 	}
 	objs, err := CheckUpload(name, data)
 	if err != nil {
-		return nil, err
+		return nil, &UploadError{err}
 	}
 	var objJSON json.RawMessage
 	if len(objs) > 0 {

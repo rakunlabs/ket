@@ -733,14 +733,22 @@ export class Kernel {
     return [...new Set(want.map(fetchKey))]
   }
 
-  /** URLs whose download failed (not ones that were read and found broken): retried on the next build. */
+  /** URLs whose download failed for a passing reason (network, server busy): retried on the next build. */
   private importErrors = new Set<string>()
 
-  /** Frees files no import uses any more. */
+  /** Builds since each import URL was last used (dry runs and undo build other documents in between). */
+  private importAge = new Map<string, number>()
+
+  /** Frees files no import has used for a while (so a preview or an undo does not reload a big 3MF). */
   private forgetImports(used: Set<string>) {
-    const keys = new Set([...used].map(fetchKey))
+    const keep = 8
+    const now = new Set([...used, ...[...used].map(fetchKey)])
+    for (const [u, age] of this.importAge) if (!now.has(u)) this.importAge.set(u, age + 1)
+    for (const u of now) this.importAge.set(u, 0)
+    const stale = (u: string) => (this.importAge.get(u) ?? keep + 1) > keep
+    const keys = new Set([...this.importAge.keys()].filter((u) => !stale(u)))
     for (const [u, e] of this.imported) {
-      if (used.has(u)) continue
+      if (!stale(u)) continue
       if (!(e instanceof Error)) {
         if ('shape' in e) e.shape.delete()
         else {
@@ -758,6 +766,7 @@ export class Kernel {
         this.importErrors.delete(k)
       }
     }
+    for (const u of [...this.importAge.keys()]) if (stale(u)) this.importAge.delete(u)
   }
 
   /**
@@ -765,10 +774,11 @@ export class Kernel {
    * this URL. A 3MF URL (without #) opens the file: its objects are read
    * when a feature asks for them by #id or #name.
    */
-  async loadImport(url: string, data: ArrayBuffer | Error): Promise<void> {
+  async loadImport(url: string, data: ArrayBuffer | Error, retry = false): Promise<void> {
     const is3MF = /\.3mf$/i.test(fetchKey(url))
     if (data instanceof Error) {
-      this.importErrors.add(is3MF ? fetchKey(url) : url)
+      // Network trouble is tried again on the next build; a refusal (host, type, size) stays until the URL changes.
+      if (retry) this.importErrors.add(is3MF ? fetchKey(url) : url)
       if (is3MF) this.threeMF.set(fetchKey(url), data)
       else this.imported.set(url, data)
       return
@@ -1950,9 +1960,7 @@ export class Kernel {
       bodies.forEach((b, i) => b !== meshes[i] && b.delete())
       return composeBodies(meshes)
     }
-    const compound = R.makeCompound(bodies as Shape3D[]) as unknown as Shape3D
-    for (const b of bodies) b.delete()
-    return compound
+    return R.makeCompound(bodies as Shape3D[]) as unknown as Shape3D
   }
 
   /**
@@ -2016,8 +2024,13 @@ export class Kernel {
         return { file }
       }
     }
-    const src = f.type === 'solids' ? f.source : inputsOf(f)[0]
-    return src ? this.sourceOf(src, depth + 1) : undefined
+    // The first input that leads to a 3MF (a B-rep target with a painted 3MF tool still shows the paint).
+    const srcs = f.type === 'solids' ? [f.source] : inputsOf(f)
+    for (const src of srcs) {
+      const found = this.sourceOf(src, depth + 1)
+      if (found) return found
+    }
+    return undefined
   }
 
   /** Paint state → RGB for a body: its 3MF's filament colors (state 0, "the object's own", is left to the body color). */

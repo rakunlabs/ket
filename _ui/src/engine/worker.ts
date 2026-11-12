@@ -89,10 +89,11 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
                 const r = await fetch(`${req.assets}?url=${encodeURIComponent(url)}`)
                 if (!r.ok) {
                   const msg = ((await r.json().catch(() => ({}))) as { message?: string }).message ?? r.statusText
-                  await k.loadImport(url, new Error(`download ${url}: ${msg}`))
+                  // The server could not reach the source (502/504) or is busy: worth another try; a refusal is not.
+                  await k.loadImport(url, new Error(`download ${url}: ${msg}`), r.status >= 500 && r.status !== 501)
                 } else await k.loadImport(url, await r.arrayBuffer())
               } catch (e) {
-                await k.loadImport(url, new Error(`download ${url}: ${(e as Error).message}`))
+                await k.loadImport(url, new Error(`download ${url}: ${(e as Error).message}`), true)
               }
             }),
           )

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -32,8 +33,11 @@ func (t UploadTicket) Context(ctx context.Context) context.Context {
 	return identity.WithContext(ctx, t.Who)
 }
 
-// maxTickets bounds the open links (each is small; this stops a flood).
-const maxTickets = 10000
+// Open links at once, in all and per person (each is small; this stops a flood).
+const (
+	maxTickets     = 10000
+	maxTicketsEach = 50
+)
 
 // UploadTTL is how long an upload link stays valid.
 const UploadTTL = 15 * time.Minute
@@ -64,6 +68,15 @@ func (t *Tickets) Issue(ctx context.Context, projectID, name, by string) (string
 	}
 	if len(t.open) >= maxTickets {
 		return "", UploadTicket{}, errors.New("too many open upload links; wait a few minutes or upload with the Import model button")
+	}
+	mine := 0
+	for _, v := range t.open {
+		if v.By == by {
+			mine++
+		}
+	}
+	if mine >= maxTicketsEach {
+		return "", UploadTicket{}, fmt.Errorf("you have %d upload links open; use them or wait %s for them to expire", mine, UploadTTL)
 	}
 	t.open[token] = tk
 

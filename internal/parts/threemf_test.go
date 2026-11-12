@@ -81,7 +81,11 @@ func TestCleanUploadName(t *testing.T) {
 			t.Errorf("CleanUploadName(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"", ".stl", "notes.txt", "/"} {
+	long := strings.Repeat("a", 300) + ".3mf"
+	if got, err := CleanUploadName(long); err != nil || len(got) != 200 || !strings.HasSuffix(got, ".3mf") {
+		t.Errorf("long name: %d %v", len(got), err)
+	}
+	for _, bad := range []string{"", ".stl", "notes.txt", "/", "x." + strings.Repeat("a", 250)} {
 		if _, err := CleanUploadName(bad); err == nil {
 			t.Errorf("CleanUploadName(%q): want an error", bad)
 		}

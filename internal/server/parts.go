@@ -185,8 +185,10 @@ func uploadErr(err error) error {
 		return ada.WrapHTTPError(http.StatusNotFound, err)
 	case errors.Is(err, store.ErrConflict):
 		return ada.WrapHTTPError(http.StatusInsufficientStorage, err)
-	default:
+	case errors.As(err, new(*parts.UploadError)):
 		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	default:
+		return err
 	}
 }
 

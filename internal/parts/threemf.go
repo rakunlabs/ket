@@ -47,6 +47,25 @@ func open3MF(data []byte) (*zip.Reader, error) {
 	if total > max3MFTotal {
 		return nil, fmt.Errorf("the 3MF inflates to %d MB, more than %d MB", total>>20, max3MFTotal>>20)
 	}
+	// The directory can lie about sizes: inflate every entry once, counting, so
+	// a browser that opens the file later meets nothing bigger than it says.
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, fmt.Errorf("the 3MF entry %s cannot be read; %w", f.Name, err)
+		}
+		n, err := io.Copy(io.Discard, io.LimitReader(rc, int64(f.UncompressedSize64)+1))
+		rc.Close()
+		if err != nil {
+			return nil, fmt.Errorf("the 3MF entry %s is damaged; %w", f.Name, err)
+		}
+		if uint64(n) != f.UncompressedSize64 {
+			return nil, fmt.Errorf("the 3MF entry %s inflates to more than its directory says; save the file again from the slicer", f.Name)
+		}
+	}
 
 	return zr, nil
 }

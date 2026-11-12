@@ -65,6 +65,25 @@ async function pipe(data: Uint8Array, stream: CompressionStream | DecompressionS
   return new Uint8Array(await out.arrayBuffer())
 }
 
+/** Inflates a deflate-raw entry, stopping as soon as it grows past the size its directory gave. */
+async function inflateAtMost(raw: Uint8Array, size: number, name: string): Promise<Uint8Array> {
+  const reader = new Blob([raw as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader()
+  const out = new Uint8Array(size)
+  let at = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (at + value.length > size) {
+      await reader.cancel()
+      throw new Error(`zip entry ${name} inflates to more than its directory says; the file is damaged or a zip bomb`)
+    }
+    out.set(value, at)
+    at += value.length
+  }
+  if (at !== size) throw new Error(`zip entry ${name} is damaged (inflates to ${at} bytes, not ${size})`)
+  return out
+}
+
 export function isZip(b: ArrayBuffer | Uint8Array): boolean {
   const u = b instanceof Uint8Array ? b : new Uint8Array(b)
   return u.length > 4 && u[0] === 0x50 && u[1] === 0x4b && u[2] === 0x03 && u[3] === 0x04
@@ -110,12 +129,7 @@ export function unzip(buf: ArrayBuffer | Uint8Array): Map<string, () => Promise<
       const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true)
       const raw = u.subarray(start, start + size)
       if (method === 0) return raw
-      if (method === 8) {
-        const out = await pipe(raw, new DecompressionStream('deflate-raw'))
-        // The directory can lie about sizes: check what came out.
-        if (out.length !== unpacked) throw new Error(`zip entry ${name} is damaged (inflates to ${out.length} bytes, not ${unpacked})`)
-        return out
-      }
+      if (method === 8) return inflateAtMost(raw, unpacked, name)
       throw new Error(`zip entry ${name} uses compression method ${method}; only stored and deflate are supported`)
     })
   }
@@ -778,9 +792,26 @@ export function paintFilament(attrs: string): number | undefined {
   let pos = hex.length - 1
   const next = () => (pos >= 0 ? parseInt(hex[pos--], 16) : 0)
   const share = new Map<number, number>()
+  // Reads a subtree without recursion (for very deep trees).
+  const skip = () => {
+    let pending = 1
+    while (pending > 0 && pos >= 0) {
+      const code = next()
+      pending--
+      const split = code & 3
+      if (split === 0) {
+        if (code >> 2 === 3) next()
+      } else pending += split + 1
+    }
+  }
+  // Every node takes a nibble, so the walk ends with the string. Beyond 32
+  // levels a node's share is nothing; it is still read so the rest stays in step.
   const walk = (weight: number, depth: number) => {
-    // Every node takes at least one nibble, so the walk ends with the string.
     if (pos < 0) return
+    if (depth > 32) {
+      skip()
+      return
+    }
     const code = next()
     const split = code & 3
     if (split === 0) {
