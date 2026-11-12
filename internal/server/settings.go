@@ -5,7 +5,10 @@ import (
 
 	"github.com/rakunlabs/ada"
 
+	"github.com/rakunlabs/ada/middleware/auth/identity"
 	"github.com/rakunlabs/ket/internal/settings"
+	"strconv"
+	"time"
 )
 
 func (s *Server) roleNames() []string {
@@ -61,4 +64,36 @@ func (s *Server) testProvider(w http.ResponseWriter, r *http.Request) {
 // providers lists the AI providers people may pick in the chat (no keys).
 func (s *Server) providers(c *ada.Context) error {
 	return c.SendJSON(s.Agent.Providers())
+}
+
+// usage reports the assistant's token use for the last days (admin), and
+// the caller's own total this month with the limit.
+func (s *Server) usage(c *ada.Context) error {
+	ctx := c.Request.Context()
+	days := 30
+	if v, err := strconv.Atoi(c.Request.URL.Query().Get("days")); err == nil && v > 0 && v <= 366 {
+		days = v
+	}
+	rows, err := s.Store.UsageSince(ctx, time.Now().AddDate(0, 0, -days))
+	if err != nil {
+		return err
+	}
+
+	return c.SendJSON(map[string]any{"days": days, "rows": rows, "monthly_limit": s.Settings.Get().MonthlyTokens})
+}
+
+// myUsage is the signed-in user's assistant use this month.
+func (s *Server) myUsage(c *ada.Context) error {
+	ctx := c.Request.Context()
+	user := ""
+	if id := identity.FromContext(ctx); id != nil {
+		user = id.Subject
+	}
+	now := time.Now().UTC()
+	used, err := s.Store.UsageTotal(ctx, user, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		return err
+	}
+
+	return c.SendJSON(map[string]any{"used": used, "limit": s.Settings.Get().MonthlyTokens})
 }

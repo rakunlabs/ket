@@ -31,6 +31,23 @@ export interface AdminSettings {
   providers: (ProviderIn & { has_key: boolean })[]
   default_provider?: string
   max_steps: number
+  /** History size, in estimated tokens, at which older turns are summarized. */
+  compact_tokens: number
+  /** Tokens one user may spend per calendar month; 0 = no limit. */
+  monthly_tokens: number
+}
+
+export interface UsageRow {
+  day: string
+  user: string
+  project_id?: string
+  project?: string
+  provider: string
+  model: string
+  requests: number
+  prompt_tokens: number
+  completion_tokens: number
+  estimated?: boolean
 }
 
 export type AdminSettingsIn = Omit<AdminSettings, 'providers'> & { providers: ProviderIn[]; clear_keys?: string[] }
@@ -220,6 +237,8 @@ export const api = {
   },
   settings: () => req<{ settings: AdminSettings; roles: { name: string; description?: string; permissions: string[] }[] }>('GET', '/settings'),
   saveSettings: (s: AdminSettingsIn) => req<{ settings: AdminSettings }>('PUT', '/settings', s),
+  usage: (days = 30) => req<{ days: number; rows: UsageRow[]; monthly_limit: number }>('GET', `/settings/usage?days=${days}`),
+  myUsage: () => req<{ used: number; limit: number }>('GET', '/me/usage'),
   testProvider: (p: ProviderIn) => req<{ ok: boolean; message: string }>('POST', '/settings/test-provider', p),
   account: () => fetch(`${base}/api/account`).then((r) => r.json() as Promise<{ username: string; name?: string; email?: string; has_password: boolean }>),
   changePassword: async (current: string, password: string) => {
@@ -305,8 +324,9 @@ export interface Branch {
 }
 
 export interface AgentEvent {
-  type: 'text' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'branch'
+  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'done' | 'error' | 'branch'
   delta?: string
+  usage?: { prompt_tokens: number; completion_tokens: number; estimated?: boolean }
   id?: string
   name?: string
   args?: unknown

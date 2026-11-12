@@ -77,11 +77,24 @@ type toolFun struct {
 }
 
 type chatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Tools       []toolDef `json:"tools,omitempty"`
-	Stream      bool      `json:"stream"`
-	Temperature *float64  `json:"temperature,omitempty"`
+	Model         string         `json:"model"`
+	Messages      []Message      `json:"messages"`
+	Tools         []toolDef      `json:"tools,omitempty"`
+	Stream        bool           `json:"stream"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	Temperature   *float64       `json:"temperature,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// Usage is what a provider reports for one request. Servers that do not
+// report it leave it zero; Estimated is set when Ket counted instead.
+type Usage struct {
+	PromptTokens     int  `json:"prompt_tokens"`
+	CompletionTokens int  `json:"completion_tokens"`
+	Estimated        bool `json:"estimated,omitempty"`
 }
 
 type streamChunk struct {
@@ -101,6 +114,7 @@ type streamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *Usage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
@@ -114,7 +128,22 @@ type client struct {
 // complete streams one assistant turn. onText receives content deltas as
 // they arrive; the full message (with tool calls) is returned at the end.
 func (c *client) complete(ctx context.Context, msgs []Message, tools []toolDef, onText func(string)) (Message, error) {
-	req := chatRequest{Model: c.p.Model, Messages: msgs, Tools: tools, Stream: true}
+	m, _, err := c.completeUsage(ctx, msgs, tools, onText)
+	return m, err
+}
+
+// completeUsage is complete with the token usage of the request: as the
+// provider reports it (stream_options.include_usage), else estimated.
+func (c *client) completeUsage(ctx context.Context, msgs []Message, tools []toolDef, onText func(string)) (Message, Usage, error) {
+	m, u, err := c.request(ctx, msgs, tools, onText)
+	if err == nil && u.PromptTokens == 0 && u.CompletionTokens == 0 {
+		u = Usage{PromptTokens: estimateTokens(msgs, tools), CompletionTokens: estimateTokens([]Message{m}, nil), Estimated: true}
+	}
+	return m, u, err
+}
+
+func (c *client) request(ctx context.Context, msgs []Message, tools []toolDef, onText func(string)) (Message, Usage, error) {
+	req := chatRequest{Model: c.p.Model, Messages: msgs, Tools: tools, Stream: true, StreamOptions: &streamOptions{IncludeUsage: true}}
 	if c.p.Temperature > 0 {
 		t := c.p.Temperature
 		req.Temperature = &t
@@ -122,12 +151,12 @@ func (c *client) complete(ctx context.Context, msgs []Message, tools []toolDef, 
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return Message{}, err
+		return Message{}, Usage{}, err
 	}
 
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.p.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return Message{}, err
+		return Message{}, Usage{}, err
 	}
 	hr.Header.Set("Content-Type", "application/json")
 	hr.Header.Set("Accept", "text/event-stream")
@@ -137,13 +166,13 @@ func (c *client) complete(ctx context.Context, msgs []Message, tools []toolDef, 
 
 	resp, err := c.http.Do(hr)
 	if err != nil {
-		return Message{}, fmt.Errorf("call %s; %w", c.p.Name, err)
+		return Message{}, Usage{}, fmt.Errorf("call %s; %w", c.p.Name, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Message{}, fmt.Errorf("%s answered %s: %s", c.p.Name, resp.Status, strings.TrimSpace(string(b)))
+		return Message{}, Usage{}, fmt.Errorf("%s answered %s: %s", c.p.Name, resp.Status, strings.TrimSpace(string(b)))
 	}
 
 	// Some servers ignore stream:true and answer one JSON object.
@@ -152,24 +181,30 @@ func (c *client) complete(ctx context.Context, msgs []Message, tools []toolDef, 
 			Choices []struct {
 				Message Message `json:"message"`
 			} `json:"choices"`
+			Usage *Usage `json:"usage"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&full); err != nil {
-			return Message{}, fmt.Errorf("decode answer; %w", err)
+			return Message{}, Usage{}, fmt.Errorf("decode answer; %w", err)
 		}
 		if len(full.Choices) == 0 {
-			return Message{}, fmt.Errorf("%s answered no choices", c.p.Name)
+			return Message{}, Usage{}, fmt.Errorf("%s answered no choices", c.p.Name)
 		}
 		m := full.Choices[0].Message
 		m.Role = "assistant"
 		if t := m.Text(); t != "" {
 			onText(t)
 		}
-		return m, nil
+		var u Usage
+		if full.Usage != nil {
+			u = *full.Usage
+		}
+		return m, u, nil
 	}
 
 	var (
 		text  strings.Builder
 		calls []ToolCall
+		usage Usage
 	)
 
 	sc := bufio.NewScanner(resp.Body)
@@ -188,8 +223,11 @@ func (c *client) complete(ctx context.Context, msgs []Message, tools []toolDef, 
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
+		if chunk.Usage != nil {
+			usage = *chunk.Usage
+		}
 		if chunk.Error != nil {
-			return Message{}, fmt.Errorf("%s: %s", c.p.Name, chunk.Error.Message)
+			return Message{}, Usage{}, fmt.Errorf("%s: %s", c.p.Name, chunk.Error.Message)
 		}
 
 		for _, ch := range chunk.Choices {
@@ -213,7 +251,7 @@ func (c *client) complete(ctx context.Context, msgs []Message, tools []toolDef, 
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return Message{}, fmt.Errorf("read stream; %w", err)
+		return Message{}, Usage{}, fmt.Errorf("read stream; %w", err)
 	}
 
 	msg := Message{Role: "assistant"}
@@ -230,5 +268,36 @@ func (c *client) complete(ctx context.Context, msgs []Message, tools []toolDef, 
 	}
 	msg.ToolCalls = calls
 
-	return msg, nil
+	return msg, usage, nil
+}
+
+// estimateTokens counts about four characters per token, images as a fixed
+// cost: for servers that do not report usage, and for compaction thresholds.
+func estimateTokens(msgs []Message, tools []toolDef) int {
+	n := 0
+	for _, m := range msgs {
+		n += 4
+		if len(m.Content) > 0 && m.Content[0] == '[' {
+			var parts []map[string]any
+			if json.Unmarshal(m.Content, &parts) == nil {
+				for _, p := range parts {
+					if p["type"] == "image_url" {
+						n += 800
+					} else if s, ok := p["text"].(string); ok {
+						n += len(s) / 4
+					}
+				}
+				continue
+			}
+		}
+		n += len(m.Text()) / 4
+		for _, tc := range m.ToolCalls {
+			n += (len(tc.Function.Name) + len(tc.Function.Arguments)) / 4
+		}
+	}
+	for _, t := range tools {
+		n += (len(t.Function.Name) + len(t.Function.Description) + len(t.Function.Parameters)) / 4
+	}
+
+	return n
 }

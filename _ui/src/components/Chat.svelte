@@ -30,6 +30,17 @@
   let abort: AbortController | undefined
   let lightbox = $state<string>()
   let propose = $state(false)
+  let month = $state<{ used: number; limit: number }>()
+  let turnTokens = $state(0)
+  const short = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n))
+  async function loadUsage() {
+    try {
+      month = await api.myUsage()
+    } catch {
+      // older server
+    }
+  }
+  onMount(() => void loadUsage())
 
   $effect(() => {
     const request = session.assistantRequest
@@ -128,6 +139,7 @@
         conversations = [current, ...conversations]
       }
       items.push({ kind: 'user', text })
+      turnTokens = 0
       await scrollDown()
 
       let assistant: Extract<Item, { kind: 'assistant' }> | undefined
@@ -163,6 +175,9 @@
               }
               break
             }
+            case 'usage':
+              if (ev.usage) turnTokens += ev.usage.prompt_tokens + ev.usage.completion_tokens
+              break
             case 'error':
               items.push({ kind: 'error', text: ev.message ?? 'error' })
               break
@@ -179,6 +194,7 @@
       abort = undefined
       await scrollDown()
       conversations = await api.conversations(projectID)
+      void loadUsage()
     }
   }
 
@@ -309,6 +325,11 @@
         <span class="truncate font-mono text-[11px] text-ink-2">{providers[0].model}</span>
       {/if}
       <span class="ml-auto"></span>
+      {#if month}
+        <span class="num font-mono text-[11px] text-ink-3" title={`Assistant tokens this month${month.limit ? ` (limit ${month.limit.toLocaleString()})` : ''}${turnTokens ? `; this message ${turnTokens.toLocaleString()}` : ''}`}>
+          {short(month.used)}{month.limit ? ` / ${short(month.limit)}` : ''}
+        </span>
+      {/if}
       {#if busy}
         <button type="button" class="btn" onclick={stop}><Square size={13} /> Stop</button>
       {:else}

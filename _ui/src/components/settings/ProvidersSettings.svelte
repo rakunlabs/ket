@@ -2,7 +2,7 @@
   import { Bot, Check, Eye, KeyRound, LoaderCircle, Pencil, Plus, Star, Trash2, X, Zap } from '@lucide/svelte'
   import { onMount } from 'svelte'
 
-  import { api, type ProviderIn } from '../../lib/api'
+  import { api, type ProviderIn, type UsageRow } from '../../lib/api'
   import { settings } from '../../lib/settings.svelte'
 
   /** Presets fill the base URL for common services; any OpenAI-compatible URL works. */
@@ -22,12 +22,30 @@
   let formError = $state('')
   let test = $state<{ ok: boolean; message: string; busy?: boolean }>()
   let steps = $state(40)
+  let compact = $state(60000)
+  let monthly = $state(0)
+  let usage = $state<{ rows: UsageRow[]; days: number }>()
+  const users = $derived(Object.values((usage?.rows ?? []).reduce((acc, r) => {
+    const k = r.user || '(no account)'
+    const e = (acc[k] ??= { user: k, requests: 0, tokens: 0, estimated: false })
+    e.requests += r.requests
+    e.tokens += r.prompt_tokens + r.completion_tokens
+    e.estimated ||= !!r.estimated
+    return acc
+  }, {} as Record<string, { user: string; requests: number; tokens: number; estimated: boolean }>)).sort((a, b) => b.tokens - a.tokens))
 
   const providers = $derived(settings.current?.providers ?? [])
 
   onMount(async () => {
     if (!settings.current) await settings.load()
     steps = settings.current?.max_steps ?? 40
+    compact = settings.current?.compact_tokens ?? 60000
+    monthly = settings.current?.monthly_tokens ?? 0
+    try {
+      usage = await api.usage(30)
+    } catch {
+      // older server
+    }
   })
 
   function startNew(preset = PRESETS[0]) {
@@ -53,7 +71,7 @@
   }
 
   async function persist(list: (ProviderIn & { has_key?: boolean })[], clear: string[] = [], defaultProvider = settings.current?.default_provider) {
-    await settings.save({ ...settings.current!, providers: list, default_provider: defaultProvider, max_steps: steps }, clear)
+    await settings.save({ ...settings.current!, providers: list, default_provider: defaultProvider, max_steps: steps, compact_tokens: compact, monthly_tokens: monthly }, clear)
   }
 
   async function saveDraft(e: Event) {
@@ -202,6 +220,36 @@
       <button class="btn" disabled={steps === settings.current?.max_steps || steps < 1 || steps > 500} onclick={saveSteps}>Save</button>
     </label>
     <p class="mt-1 text-xs text-ink-2">The assistant stops after this many tool-calling rounds and asks to continue. It bounds what one message can cost.</p>
+    <label class="mt-3 flex items-center gap-3">
+      <span class="text-ink-2">Summarize history past</span>
+      <input class="input w-28" type="number" min="4000" max="2000000" step="1000" bind:value={compact} />
+      <span class="text-ink-2">tokens</span>
+      <button class="btn" disabled={compact === settings.current?.compact_tokens || compact < 4000} onclick={saveSteps}>Save</button>
+    </label>
+    <p class="mt-1 text-xs text-ink-2">Long conversations get their older turns summarized by the model, so each request stays small. The design itself is always read fresh.</p>
+    <label class="mt-3 flex items-center gap-3">
+      <span class="text-ink-2">Tokens per user per month</span>
+      <input class="input w-32" type="number" min="0" step="10000" bind:value={monthly} />
+      <button class="btn" disabled={monthly === settings.current?.monthly_tokens || monthly < 0} onclick={saveSteps}>Save</button>
+    </label>
+    <p class="mt-1 text-xs text-ink-2">0 means no limit. When a user reaches it the assistant stops and says so until the next month (UTC).</p>
+  </section>
+
+  <section class="mt-8 border-t border-line pt-5">
+    <h3 class="font-semibold">Usage, last {usage?.days ?? 30} days</h3>
+    {#if !usage?.rows.length}
+      <p class="mt-2 text-xs text-ink-2">No assistant requests yet.</p>
+    {:else}
+      <table class="mt-2 w-full text-xs">
+        <thead><tr class="text-left text-ink-2"><th class="py-1">User</th><th class="text-right">Requests</th><th class="text-right">Tokens</th>{#if monthly}<th class="text-right">Of monthly limit</th>{/if}</tr></thead>
+        <tbody>
+          {#each users as u (u.user)}
+            <tr class="border-t border-line"><td class="py-1 font-mono">{u.user}</td><td class="num text-right">{u.requests}</td><td class="num text-right">{u.tokens.toLocaleString()}{u.estimated ? ' *' : ''}</td>{#if monthly}<td class="num text-right">{Math.round((u.tokens / monthly) * 100)}%</td>{/if}</tr>
+          {/each}
+        </tbody>
+      </table>
+      {#if users.some((u) => u.estimated)}<p class="mt-1 text-xs text-ink-2">* includes estimates for providers that do not report usage.</p>{/if}
+    {/if}
   </section>
 {/if}
 

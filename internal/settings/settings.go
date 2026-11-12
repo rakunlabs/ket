@@ -48,6 +48,12 @@ type Settings struct {
 	DefaultProvider string `json:"default_provider,omitempty"`
 	// MaxSteps caps the tool-calling rounds of one user turn.
 	MaxSteps int `json:"max_steps"`
+	// CompactTokens: when a conversation's history passes about this many
+	// tokens, its older turns are summarized and the summary is sent instead.
+	CompactTokens int `json:"compact_tokens"`
+	// MonthlyTokens caps what one user may spend with the assistant in a
+	// calendar month (UTC); 0 = no limit.
+	MonthlyTokens int64 `json:"monthly_tokens"`
 }
 
 const (
@@ -69,6 +75,9 @@ func (s *Settings) normalize() {
 	}
 	if s.MaxSteps <= 0 {
 		s.MaxSteps = 40
+	}
+	if s.CompactTokens <= 0 {
+		s.CompactTokens = 60000
 	}
 	if s.Providers == nil {
 		s.Providers = []Provider{}
@@ -119,6 +128,12 @@ func (s *Settings) Validate(roles []string) error {
 	}
 	if s.MaxSteps > 500 {
 		return errors.New("max steps must be at most 500")
+	}
+	if s.CompactTokens != 0 && (s.CompactTokens < 4000 || s.CompactTokens > 2_000_000) {
+		return errors.New("compact tokens must be between 4000 and 2000000")
+	}
+	if s.MonthlyTokens < 0 {
+		return errors.New("monthly tokens must be 0 (no limit) or more")
 	}
 	if s.PublicURL != "" && !strings.HasPrefix(s.PublicURL, "http://") && !strings.HasPrefix(s.PublicURL, "https://") {
 		return errors.New("public URL must start with http:// or https://")

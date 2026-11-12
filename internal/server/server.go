@@ -148,6 +148,8 @@ func (s *Server) routes(api *ada.Mux) {
 	api.GET("/providers", s.providers, s.guard.can(permAI))
 	api.GET("/settings", s.getSettings, s.guard.can(permSettings))
 	api.PUT("/settings", s.putSettings, s.guard.can(permSettings))
+	api.GET("/settings/usage", s.usage, s.guard.can(permSettings))
+	api.GET("/me/usage", s.myUsage, ai)
 	api.GET("/catalog", s.catalog, read)
 
 	api.GET("/projects", s.listProjects, read)

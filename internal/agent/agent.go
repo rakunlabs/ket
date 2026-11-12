@@ -126,7 +126,7 @@ func (a *Agent) Test(ctx context.Context, p settings.Provider) (string, error) {
 
 // Event is streamed to the UI while the agent works.
 type Event struct {
-	Type string `json:"type"` // text, tool_call, tool_result, done, error
+	Type string `json:"type"` // text, tool_call, tool_result, usage, done, error
 	// text
 	Delta string `json:"delta,omitempty"`
 	// tool_call / tool_result
@@ -138,6 +138,8 @@ type Event struct {
 	Images  []string        `json:"images,omitempty"` // data URLs
 	// error
 	Message string `json:"message,omitempty"`
+	// usage: tokens of the last request
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // Stop cancels a running turn.
@@ -202,9 +204,22 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 		a.onBranch(ctx, project.ID, b)
 	}
 
-	history, err := a.history(ctx, conv.ID)
+	if err := a.checkBudget(ctx); err != nil {
+		return err
+	}
+
+	all, err := a.history(ctx, conv.ID)
 	if err != nil {
 		return err
+	}
+	summary, upto, err := a.store.ConversationSummary(ctx, conv.ID)
+	if err != nil {
+		return err
+	}
+	// Messages the summary covers are not sent again.
+	history := all
+	if upto > 0 && int(upto) <= len(all) {
+		history = all[upto:]
 	}
 
 	if conv.Title == "" {
@@ -227,9 +242,10 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 
 	maxSteps := a.settings.Get().MaxSteps
 	for step := 0; step < maxSteps; step++ {
-		msgs := append([]Message{{Role: "system", Content: textContent(a.system(project, branchID != ""))}}, prune(history)...)
+		summary, upto, history = a.compact(ctx, conv, c, p, summary, upto, history, emit)
+		msgs := append([]Message{{Role: "system", Content: textContent(a.system(project, branchID != ""))}}, prune(withSummary(summary, history))...)
 
-		reply, err := c.complete(ctx, msgs, tools, func(delta string) {
+		reply, usage, err := c.completeUsage(ctx, msgs, tools, func(delta string) {
 			emit(Event{Type: "text", Delta: delta})
 		})
 		if err != nil {
@@ -237,6 +253,16 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 				return errors.New("stopped")
 			}
 			return err
+		}
+		a.record(ctx, conv, p, usage)
+		emit(Event{Type: "usage", Usage: &usage})
+		if step > 0 {
+			if err := a.checkBudget(ctx); err != nil {
+				_ = a.save(ctx, conv.ID, reply)
+				emit(Event{Type: "text", Delta: "\n\n_" + err.Error() + "_"})
+				emit(Event{Type: "done"})
+				return nil
+			}
 		}
 
 		if err := a.save(ctx, conv.ID, reply); err != nil {
