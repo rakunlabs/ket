@@ -149,6 +149,20 @@ it changes, so every dimension can be an expression over parameters.
    preferences in export_manufacturing and must be selected explicitly
    with the manufacturer. This is single-color silk, not UV color printing.
 
+## Editing print models (STL, 3MF)
+- Files come from Import model in Ket, or from upload_asset: call it with
+  the file name, then PUT the file to the upload link it returns (curl -T).
+  list_assets gives their url (ket:asset/...) and a 3MF's objects;
+  import url#<id> takes one object, where the slicer placed it.
+- STL and 3MF become triangle-mesh bodies. measure them and section or
+  render to find the walls, pockets and free space before changing them.
+- Edit them with boolean: model the pocket, rib or label as B-rep (box,
+  extrude of a sketch, text) and cut or union it. pattern and mirror
+  repeat meshes; fillet, chamfer, shell and selectors need B-rep.
+- Check with no_overlap / min_distance / inside as for any body, then
+  export 3MF (one object per body) or STL for the slicer. A slicer
+  project's print settings and paint stay in the slicer: say so.
+
 ## Enclosures that print and assemble
 - One outline, many offsets: extrude the outline polygon, and its inside
   with profile inset: "wall" (lip: inset "lip_t", rebate: inset

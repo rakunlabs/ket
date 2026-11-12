@@ -6,12 +6,15 @@ import { GcsWrapper, init_planegcs_module } from '@salusoft89/planegcs'
 import gcsWasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url'
 import init from 'replicad-opencascadejs'
 import wasmUrl from 'replicad-opencascadejs/wasm?url'
+import Manifold from 'manifold-3d'
+import manifoldWasmUrl from 'manifold-3d/manifold.wasm?url'
 
 import type { Doc, Selector } from './doc'
 import type { AutorouteOptions, SweepOptions } from './registry'
 import { type BuildResult, Kernel } from './kernel'
 import { meshTransfer } from './mesh-transfer'
 import { setGcs } from './sketch'
+import { setManifoldLib } from './mesh-body'
 import { FONT_FILES, registerFont } from './fonts'
 import fontRegular from '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff?url'
 import fontBold from '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-700-normal.woff?url'
@@ -23,8 +26,14 @@ let last: BuildResult | undefined
 const fontUrls: Record<keyof typeof FONT_FILES, string> = { regular: fontRegular, bold: fontBold }
 
 const ready = (async () => {
-  const [oc, gcs] = await Promise.all([init({ locateFile: () => wasmUrl }), init_planegcs_module({ locateFile: () => gcsWasmUrl })])
+  const [oc, gcs, manifold] = await Promise.all([
+    init({ locateFile: () => wasmUrl }),
+    init_planegcs_module({ locateFile: () => gcsWasmUrl }),
+    Manifold({ locateFile: () => manifoldWasmUrl }),
+  ])
   R.setOC(oc)
+  manifold.setup()
+  setManifoldLib(manifold)
   setGcs(new GcsWrapper(new gcs.GcsSystem()))
   // Text features need the fonts; a missing font only fails those features.
   await Promise.all(
@@ -48,7 +57,7 @@ export type WorkerRequest =
   | { id: number; type: 'between'; a: string | [number, number, number]; b: string | [number, number, number] }
   | { id: number; type: 'sketch'; name: string }
   | { id: number; type: 'board'; drc?: boolean }
-  | { id: number; type: 'export'; format: 'step' | 'stl'; names: string[]; models?: Record<string, string> }
+  | { id: number; type: 'export'; format: 'step' | 'stl' | '3mf'; names: string[]; models?: Record<string, string> }
   | { id: number; type: 'gears' }
   | { id: number; type: 'motion' }
   | { id: number; type: 'simulate'; seconds: number; samples: number }
@@ -86,6 +95,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
           )
         }
         if (want.length) timing.imports = Math.round(performance.now() - t0)
+        await k.prepareImports(doc)
         t0 = performance.now()
         last = k.build(doc)
         timing.build = Math.round(performance.now() - t0)
@@ -124,7 +134,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         result = doc ? k.checks(doc) : []
         break
       case 'export':
-        result = k.export(req.format, req.names, req.models)
+        result = await k.export(req.format, req.names, req.models)
         break
       case 'gears':
         result = k.gearReport()

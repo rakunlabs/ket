@@ -5,10 +5,13 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +20,7 @@ import (
 	"github.com/rakunlabs/ket/internal/access"
 	"github.com/rakunlabs/ket/internal/catalog"
 	"github.com/rakunlabs/ket/internal/hub"
+	"github.com/rakunlabs/ket/internal/parts"
 	"github.com/rakunlabs/ket/internal/store"
 )
 
@@ -71,6 +75,18 @@ type Tools struct {
 	// proposals maps an MCP session to the proposal branch it works on.
 	mu        sync.Mutex
 	proposals map[string]string
+
+	// tickets are the upload links upload_asset hands out.
+	tickets *parts.Tickets
+	// baseURL is how clients reach this server, for upload links.
+	baseURL func(ctx context.Context) string
+}
+
+// SetUploads lets upload_asset hand out upload links: the server's PUT
+// endpoint takes the tickets, baseURL is the server's address as clients see it.
+func (t *Tools) SetUploads(tickets *parts.Tickets, baseURL func(ctx context.Context) string) {
+	t.tickets = tickets
+	t.baseURL = baseURL
 }
 
 func NewTools(cat *catalog.Catalog, h *hub.Hub, st *store.Store) *Tools {
@@ -116,6 +132,8 @@ const (
 	toolRedo          = "redo"
 	toolPropose       = "start_proposal"
 	toolFinish        = "finish_proposal"
+	toolListAssets    = "list_assets"
+	toolUploadAsset   = "upload_asset"
 )
 
 // List returns the tools for a scope.
@@ -172,6 +190,17 @@ func (t *Tools) List(scope Scope) []Tool {
 	}
 
 	out = append(out,
+		Tool{
+			Name:        toolListAssets,
+			Description: "List the model files uploaded to the project (STL, 3MF, STEP, with the Import model button in Ket) with the url to give import, and for a 3MF its objects (import one with url#<id>).",
+			Schema:      t.schema(json.RawMessage(`{"type":"object","properties":{}}`), scope),
+			ReadOnly:    true,
+		},
+		Tool{
+			Name:        toolUploadAsset,
+			Description: t.uploadDescription(),
+			Schema:      t.schema(json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"File name with extension: .stl, .3mf, .step or .stp"},"data_base64":{"type":"string","description":"The file's content, base64, for small files (a few MB). Leave it out to get an upload link instead."}},"required":["name"]}`), scope),
+		},
 		Tool{
 			Name:        toolUndo,
 			Description: "Undo the last change of the project (any author).",
@@ -346,6 +375,10 @@ func (t *Tools) call(ctx context.Context, name string, args json.RawMessage, cal
 	}
 
 	switch name {
+	case toolListAssets:
+		return t.listAssets(ctx, p)
+	case toolUploadAsset:
+		return t.uploadAsset(ctx, p, args)
 	case toolUndo, toolRedo:
 		var st store.BranchState
 		if name == toolUndo {
@@ -531,6 +564,91 @@ func (t *Tools) reload(ctx context.Context) (Result, error) {
 		out["note"] = "Reloaded, but these projects did not reconnect yet: " + strings.Join(missing, ", ") + "; try open_project"
 	} else {
 		out["note"] = "Reloaded; the windows run the current UI and commands can run now."
+	}
+
+	return jsonResult(out)
+}
+
+func (t *Tools) uploadDescription() string {
+	return "Upload a model file (STL, 3MF, STEP) to the project, as the Import model button in Ket does, and get the url to give import (for a 3MF also its objects: import url#<id>). " +
+		"For a file of any size: call with name only; the answer has an upload link and a curl command that sends the file over plain HTTP (PUT, once, within " + parts.UploadTTL.String() + "), and its response has the url and objects. " +
+		"For a small file you can pass data_base64 with the content instead. Without a shell or HTTP client, ask the user to upload with the Import model button."
+}
+
+// uploadAsset stores a small file from its content, or opens an upload link for one file.
+func (t *Tools) uploadAsset(ctx context.Context, p *store.Project, args json.RawMessage) (Result, error) {
+	var in struct {
+		Name       string `json:"name"`
+		DataBase64 string `json:"data_base64"`
+	}
+	_ = json.Unmarshal(args, &in)
+	name := filepath.Base(strings.ReplaceAll(strings.TrimSpace(in.Name), "\\", "/"))
+	if in.Name == "" || name == "." || name == "/" {
+		return Result{}, errors.New(`name is required: the file name with its extension, e.g. "case.3mf"`)
+	}
+	if err := parts.CheckUploadName(name); err != nil {
+		return Result{}, err
+	}
+
+	if in.DataBase64 == "" {
+		if t.tickets == nil || t.baseURL == nil {
+			return Result{}, errors.New("upload links are not available here; send data_base64, or ask the user to upload with the Import model button")
+		}
+		token, tk := t.tickets.Issue(p.ID, name, t.subject(ctx))
+		link := t.baseURL(ctx) + "/api/v1/uploads/" + token
+		return jsonResult(map[string]any{
+			"upload_url": link,
+			"method":     "PUT",
+			"expires":    tk.Expires.UTC().Format(time.RFC3339),
+			"max_bytes":  parts.MaxUpload,
+			"curl":       "curl -sS --fail-with-body -T " + shellQuote("<path to "+name+">") + " " + shellQuote(link),
+			"note":       "Send the file's bytes as the request body, once. The JSON response has the url for import (and a 3MF's objects); list_assets shows it too.",
+		})
+	}
+
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(in.DataBase64))
+	if err != nil {
+		return Result{}, fmt.Errorf("data_base64 is not valid base64: %v", err)
+	}
+	if err := parts.CheckUpload(name, data); err != nil {
+		return Result{}, err
+	}
+	sum := sha256.Sum256(data)
+	up, err := t.store.SaveUpload(ctx, p.ID, name, hex.EncodeToString(sum[:]), data, t.subject(ctx))
+	if err != nil {
+		return Result{}, err
+	}
+
+	return jsonResult(parts.UploadAnswer(up.ID, up.Name, up.Size, data))
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func (t *Tools) listAssets(ctx context.Context, p *store.Project) (Result, error) {
+	list, err := t.store.Uploads(ctx, p.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	type asset struct {
+		Name    string                `json:"name"`
+		URL     string                `json:"url"`
+		Bytes   int64                 `json:"bytes"`
+		Objects []parts.ThreeMFObject `json:"objects,omitempty"`
+	}
+	out := make([]asset, 0, len(list))
+	for _, u := range list {
+		a := asset{Name: u.Name, URL: parts.UploadURL(u.ID, u.Name), Bytes: u.Size}
+		if strings.HasSuffix(strings.ToLower(u.Name), ".3mf") {
+			if _, data, err := t.store.UploadData(ctx, u.ID); err == nil {
+				a.Objects, _ = parts.ThreeMFObjects(data)
+			}
+		}
+		out = append(out, a)
+	}
+	if len(out) == 0 {
+		return Result{Text: "No files are uploaded to this project. The user uploads STL, 3MF or STEP files with the Import model button in Ket; import can also take https URLs of open model libraries."}, nil
 	}
 
 	return jsonResult(out)

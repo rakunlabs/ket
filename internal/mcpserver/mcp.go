@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -45,6 +46,11 @@ func (t *Tools) Handler() http.Handler {
 				}
 			}
 
+			if req.Extra != nil {
+				if base := req.Extra.Header.Get(baseHeader); base != "" {
+					ctx = context.WithValue(ctx, baseKey{}, base)
+				}
+			}
 			res := t.Call(ctx, tool.Name, req.Params.Arguments, Call{Author: author})
 
 			out := &mcp.CallToolResult{IsError: res.IsError}
@@ -83,11 +89,13 @@ func (t *Tools) Handler() http.Handler {
 	withUser := mcpauth.RequireBearerToken(verify, nil)(h)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The address the client used, for links tools hand back (upload links).
+		r = r.Clone(r.Context())
+		r.Header.Set(baseHeader, requestBase(r))
 		// A browser session (cookie) has no bearer header; the SDK
 		// middleware only needs one to be present.
 		if identity.FromContext(r.Context()) != nil {
 			if r.Header.Get("Authorization") == "" {
-				r = r.Clone(r.Context())
 				r.Header.Set("Authorization", "Bearer session")
 			}
 			withUser.ServeHTTP(w, r)
@@ -95,4 +103,30 @@ func (t *Tools) Handler() http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// baseHeader carries the server address the client used into tool calls.
+const baseHeader = "X-Ket-Base-Url"
+
+type baseKey struct{}
+
+// BaseFromContext is the server address the MCP client used ("" outside MCP).
+func BaseFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(baseKey{}).(string)
+	return s
+}
+
+// requestBase is scheme://host plus the path before /mcp, as the client sees it.
+func requestBase(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	host := r.Host
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+		host = h
+	}
+	prefix, _, _ := strings.Cut(r.URL.Path, "/mcp")
+
+	return scheme + "://" + host + strings.TrimRight(prefix, "/")
 }

@@ -264,9 +264,9 @@ define({
   group: 'query',
   kind: 'query',
   description:
-    'Export bodies as STEP (CAD exchange) or STL (3D printing). The file is downloaded in the user\'s browser. Default: all visible bodies. Board parts export as their part_* blocks (courtyard × real model height); with detail: "models" STEP gets the vendor 3D models instead (meshes sewn into faces: true shapes for checking fit in another CAD tool, but larger files, about 20 MB per detailed part). To print an enclosure alone, pass names: ["case"].',
+    'Export bodies as STEP (CAD exchange), STL or 3MF (3D printing; 3MF keeps one named object per body with its color). The file is downloaded in the user\'s browser. Default: all visible bodies. Triangle-mesh bodies (imported STL / 3MF and what is built from them) export to STL and 3MF only. Board parts export as their part_* blocks (courtyard × real model height); with detail: "models" STEP gets the vendor 3D models instead (meshes sewn into faces: true shapes for checking fit in another CAD tool, but larger files, about 20 MB per detailed part). To print an enclosure alone, pass names: ["case"].',
   args: z.object({
-    format: z.enum(['step', 'stl']),
+    format: z.enum(['step', 'stl', '3mf']),
     names: z.array(featureRef).optional(),
     filename: z.string().optional(),
     detail: z.enum(['blocks', 'models']).optional().describe('Board parts as blocks (default) or as vendor models (STEP)'),

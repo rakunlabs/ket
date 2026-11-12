@@ -30,7 +30,7 @@ export interface KernelAPI {
   sketch(name: string): Promise<SolvedSketch>
   /** The resolved board with DRC and ratsnest; undefined without a PCB. */
   board(opts?: { drc?: boolean }): Promise<BoardState | undefined>
-  export(format: 'step' | 'stl', names: string[], models?: Record<string, string>): Promise<Blob>
+  export(format: 'step' | 'stl' | '3mf', names: string[], models?: Record<string, string>): Promise<Blob>
   /** Solved gears: placement, sizes, ratios, warnings. */
   gears(): Promise<Record<string, unknown>[]>
   /** What Play moves. */
@@ -77,7 +77,7 @@ export interface SweepOptions {
 /** Wraps an in-process Kernel (Node, tests) as a KernelAPI for doc. */
 export function localKernel(kernel: Kernel, doc: Doc): KernelAPI {
   let built: BuildResult | undefined
-  const build = async () => (built ??= kernel.build(doc))
+  const build = async () => (built ??= (await kernel.prepareImports(doc), kernel.build(doc)))
   return {
     build,
     faces: async (n, s) => (await build(), kernel.faces(n, s)),

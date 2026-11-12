@@ -33,6 +33,7 @@
     "@tscircuit/footprinter": "0.0.450",
     "circuit-json": "0.0.548",
     "clipper2-js": "^1.2.4",
+    "manifold-3d": "^3.5.4",
     "replicad": "^1.2.1",
     "replicad-opencascadejs": "^1.2.1",
     "three": "^0.187.0",

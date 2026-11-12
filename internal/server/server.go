@@ -41,6 +41,8 @@ type Deps struct {
 	Agent   *agent.Agent
 	Catalog *catalog.Catalog
 	Parts   *parts.Service
+	// Tickets are the open upload links upload_asset handed out.
+	Tickets *parts.Tickets
 	// Settings are what an administrator edits in the UI.
 	Settings *settings.Service
 	// UI is nil when only the placeholder was embedded.
@@ -111,6 +113,10 @@ func (s *Server) build(ast *authstore.Store) (*ada.Server, error) {
 	root.HandleFunc(apiPrefix+"/projects/{id}/ws", s.websocket, g.with(permRead)...)
 	root.HandleFunc(apiPrefix+"/app/ws", s.appWebsocket, g.with(permRead)...)
 	root.HandleFunc(apiPrefix+"/conversations/{id}/messages", s.chat, g.with(permAI)...)
+	// Model uploads are large raw bodies; outside the compressing group.
+	root.POST(apiPrefix+"/projects/{id}/uploads", s.uploadAsset, g.with(permWrite)...)
+	// Upload links from upload_asset: the one-time token is the permission.
+	root.PUT(apiPrefix+"/uploads/{token}", s.putUpload)
 
 	// /info is public: the version and the MCP address.
 	root.GET(apiPrefix+"/info", s.info)
@@ -187,6 +193,8 @@ func (s *Server) routes(api *ada.Mux) {
 	api.GET("/parts/{lcsc}", s.getPart, read)
 	api.GET("/models/{uuid}", s.getModel, read)
 	api.GET("/assets", s.getAsset, read)
+	api.GET("/projects/{id}/uploads", s.listUploads, read)
+	api.DELETE("/projects/{id}/uploads/{upload}", s.deleteUpload, write)
 	api.POST("/parts/offers", s.offers, read)
 
 	api.HandleFuncWildcard("/", func(c *ada.Context) error {

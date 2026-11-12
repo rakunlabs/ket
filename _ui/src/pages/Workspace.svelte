@@ -8,6 +8,7 @@
   import ThemeToggle from '../components/ThemeToggle.svelte'
   import ProposalBar from '../components/ProposalBar.svelte'
   import ShareDialog from '../components/ShareDialog.svelte'
+  import ImportModel from '../components/ImportModel.svelte'
   import { account } from '../lib/account.svelte'
   import Sidebar from '../components/Sidebar.svelte'
   import BoardView from '../components/BoardView.svelte'
@@ -116,7 +117,7 @@
     }
   }
 
-  async function exportAs(format: 'step' | 'stl') {
+  async function exportAs(format: 'step' | 'stl' | '3mf') {
     try {
       await session.run('export', { format, filename: `${project?.name ?? 'model'}.${format}` })
       toasts.show(`${format.toUpperCase()} file downloaded.`)
@@ -238,8 +239,10 @@
         </details>
       {/if}
       {#if session.doc.pcb}<button class="btn" onclick={() => exportFab()}><Download size={14} /> Gerber</button>{/if}
+      <ImportModel {projectID} {session} canEdit={access.canEdit} />
       <button class="btn" onclick={() => exportAs('step')}><Download size={14} /> STEP</button>
       <button class="btn" onclick={() => exportAs('stl')}><Download size={14} /> STL</button>
+      <button class="btn" onclick={() => exportAs('3mf')}><Download size={14} /> 3MF</button>
       {#if canChat}
         <button class={['btn', showChat && 'on']} aria-pressed={showChat} onclick={toggleChat}>
           <Bot size={14} /> Assistant

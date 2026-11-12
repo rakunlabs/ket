@@ -2,9 +2,13 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/rakunlabs/ket/internal/catalog"
+	"github.com/rakunlabs/ket/internal/parts"
+	"github.com/rakunlabs/ket/internal/store"
 )
 
 func TestToolsFromCatalog(t *testing.T) {
@@ -58,5 +62,38 @@ func TestToResultLiftsImages(t *testing.T) {
 	}
 	if len(res.Images) != 1 || string(res.Images[0].Data) != "hello" {
 		t.Errorf("images = %+v", res.Images)
+	}
+}
+
+func TestUploadLink(t *testing.T) {
+	tickets := parts.NewTickets()
+	tools := NewTools(&catalog.Catalog{}, nil, nil)
+	tools.SetUploads(tickets, func(context.Context) string { return "https://ket.example" })
+	p := &store.Project{ID: "p1"}
+
+	if _, err := tools.uploadAsset(t.Context(), p, json.RawMessage(`{"name":"notes.txt"}`)); err == nil {
+		t.Fatal("want refusal of a .txt")
+	}
+	res, err := tools.uploadAsset(t.Context(), p, json.RawMessage(`{"name":"set.3mf"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		URL  string `json:"upload_url"`
+		Curl string `json:"curl"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("%v: %s", err, res.Text)
+	}
+	token, ok := strings.CutPrefix(out.URL, "https://ket.example/api/v1/uploads/")
+	if !ok || len(token) < 32 || !strings.Contains(out.Curl, "-T") {
+		t.Fatalf("link: %+v", out)
+	}
+	tk, ok := tickets.Take(token)
+	if !ok || tk.ProjectID != "p1" || tk.Name != "set.3mf" {
+		t.Fatalf("ticket: %+v %v", tk, ok)
+	}
+	if _, ok := tickets.Take(token); ok {
+		t.Fatal("a link works once")
 	}
 }

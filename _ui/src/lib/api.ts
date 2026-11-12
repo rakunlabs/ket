@@ -172,6 +172,18 @@ export function toLogin(): Promise<never> {
   return new Promise<never>(() => {})
 }
 
+/** A model file uploaded to a project; url is what import takes. */
+export interface Upload {
+  id: string
+  name: string
+  size: number
+  url: string
+  /** A 3MF's objects: import one with url#<id>. */
+  objects?: { id: string; name: string; triangles?: number }[]
+  created_by?: string
+  created_at: string
+}
+
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${base}/api/v1${path}`, {
     method,
@@ -259,6 +271,23 @@ export const api = {
   conversation: (id: string) => req<{ conversation: Conversation; messages: ChatMessage[] }>('GET', `/conversations/${id}`),
   deleteConversation: (id: string) => req<void>('DELETE', `/conversations/${id}`),
   stop: (id: string) => req<{ stopped: boolean }>('POST', `/conversations/${id}/stop`),
+  uploads: (id: string) => req<Upload[]>('GET', `/projects/${id}/uploads`),
+  deleteUpload: (id: string, upload: string) => req<void>('DELETE', `/projects/${id}/uploads/${upload}`),
+  async upload(id: string, file: File): Promise<Upload> {
+    const res = await fetch(`${base}/api/v1/projects/${id}/uploads?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file })
+    if (res.status === 401) return toLogin()
+    if (!res.ok) {
+      let msg = res.statusText
+      try {
+        const j = await res.json()
+        msg = j.message ?? j.error ?? msg
+      } catch {
+        // not JSON
+      }
+      throw new Error(msg)
+    }
+    return res.json() as Promise<Upload>
+  },
 }
 
 export function wsURL(projectID: string, branch?: string): string {

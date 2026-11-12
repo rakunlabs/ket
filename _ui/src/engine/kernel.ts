@@ -40,6 +40,43 @@ import { parseOBJ, placeModel } from './pcb/model3d'
 import { type ZoneFill, fillZones } from './pcb/zones'
 import type { BoardState } from './pcb/state'
 import { type Loop, type SolvedSketch, loopInside, solveSketch } from './sketch'
+import { MeshBody, displayMesh, meshBody, meshCube, meshFromTriangles } from './mesh-body'
+import { type ThreeMF, type TriMesh, isZip, parseSTL, pickObject, read3MF, write3MF, writeSTL } from './model-files'
+
+/** A built feature: an OpenCascade solid, or a triangle-mesh solid (imported STL / 3MF and what is built from it). */
+export type Body = Shape3D | MeshBody
+
+const isMesh = (b: Body): b is MeshBody => b instanceof MeshBody
+
+/** STL files up to this size also become OpenCascade solids (faces to select, part models). */
+const SOLID_STL_TRIANGLES = 20_000
+
+/** A downloaded model file, by URL (with #fragment). */
+type Loaded = { shape: Shape3D } | { tri: TriMesh; solid?: Shape3D | Error; mesh?: MeshBody }
+
+/** Where a URL is fetched from: a 3MF file once for all its #objects. */
+export function fetchKey(url: string): string {
+  const [base] = url.split('#')
+  return /\.3mf$/i.test(base) ? base : url
+}
+
+/** The triangles of a B-rep solid as a mesh body (fine tessellation: booleans with meshes, mesh checks). */
+function brepToMesh(s: Shape3D, what: string): MeshBody {
+  const m = s.mesh({ tolerance: 0.01, angularTolerance: 0.1 })
+  return meshFromTriangles(m.vertices, m.triangles, what)
+}
+
+function bodyBox(b: Body): BBox {
+  if (isMesh(b)) {
+    const [lo, hi] = b.bbox()
+    return [r3(lo), r3(hi)]
+  }
+  return bboxOf(b)
+}
+
+function bodyVolume(b: Body): number {
+  return isMesh(b) ? b.volume() : volumeOf(b)
+}
 
 export type V3 = [number, number, number]
 export type BBox = [V3, V3]
@@ -57,6 +94,8 @@ export interface FeatureStatus {
   ms?: number
   faces?: number
   edges?: number
+  /** A triangle-mesh body (imported STL / 3MF): its triangle count. It has no faces or edges to select. */
+  triangles?: number
 }
 
 export interface SketchStatus {
@@ -648,8 +687,10 @@ function polyDrawing(poly: { x: number; y: number }[]): R.Drawing {
 
 interface CacheEntry {
   key: string
-  shape: Shape3D
+  shape: Body
   status: FeatureStatus
+  /** The B-rep solid as a mesh body, made once when a mesh operation or check needs it. */
+  meshed?: MeshBody
 }
 
 export class Kernel {
@@ -657,29 +698,93 @@ export class Kernel {
   private meshCache = new Map<string, MeshData>()
   private params = new Map<string, number>()
   private doc: Doc | undefined
-  /** STEP/STL files by URL, read before a build (import features). */
-  private imported = new Map<string, Shape3D | Error>()
+  /** STEP/STL/3MF files by URL, read before a build (import features). */
+  private imported = new Map<string, Loaded | Error>()
+  /** Opened 3MF files by fetch URL: each #object is read from it on demand. */
+  private threeMF = new Map<string, ThreeMF | Error>()
 
-  /** URLs of import features that are not loaded yet. */
+  /** URLs to fetch before building doc: 3MF files once, whatever objects are taken from them. */
   missingImports(doc: Doc): string[] {
     const urls = [...doc.features.flatMap((f) => (f.type === 'import' ? [f.url] : [])), ...(doc.pcb?.components ?? []).flatMap((c) => (c.model ? [c.model.url] : []))]
-    return [...new Set(urls.filter((u) => !this.imported.has(u)))]
+    const want = urls.filter((u) => !this.imported.has(u) && !this.threeMF.has(fetchKey(u)))
+    return [...new Set(want.map(fetchKey))]
   }
 
-  /** Reads a downloaded STEP or STL file for import features with this URL. */
+  /**
+   * Reads a downloaded STEP, STL or 3MF file for the import features with
+   * this URL. A 3MF URL (without #) opens the file: its objects are read
+   * when a feature asks for them by #id or #name.
+   */
   async loadImport(url: string, data: ArrayBuffer | Error): Promise<void> {
     if (data instanceof Error) {
-      this.imported.set(url, data)
+      if (fetchKey(url) !== url || /\.3mf$/i.test(url)) this.threeMF.set(fetchKey(url), data)
+      else this.imported.set(url, data)
       return
     }
     try {
+      if (isZip(data) && /\.3mf$/i.test(url.split('#')[0])) {
+        this.threeMF.set(fetchKey(url), await read3MF(data))
+        return
+      }
       const head = new TextDecoder().decode(new Uint8Array(data, 0, Math.min(512, data.byteLength)))
-      const blob = new Blob([data])
-      const s = head.includes('ISO-10303-21') ? await R.importSTEP(blob) : await R.importSTL(blob)
-      this.imported.set(url, s as Shape3D)
+      if (head.includes('ISO-10303-21')) {
+        this.imported.set(url, { shape: (await R.importSTEP(new Blob([data]))) as Shape3D })
+        return
+      }
+      const tri = parseSTL(data)
+      const entry: Loaded = { tri }
+      // A small STL also becomes a B-rep solid: faces to select, and it can be a board part model.
+      if (tri.triangles.length / 3 <= SOLID_STL_TRIANGLES) {
+        try {
+          entry.solid = (await R.importSTL(new Blob([data]))) as Shape3D
+        } catch (e) {
+          entry.solid = new Error(kernelMessage(e))
+        }
+      }
+      this.imported.set(url, entry)
     } catch (e) {
       this.imported.set(url, new Error(`could not read ${url}: ${kernelMessage(e)}`))
     }
+  }
+
+  /** Reads the #objects of opened 3MF files that doc uses (synchronous builds need them ready). */
+  async prepareImports(doc: Doc): Promise<void> {
+    const urls = new Set([...doc.features.flatMap((f) => (f.type === 'import' ? [f.url] : [])), ...(doc.pcb?.components ?? []).flatMap((c) => (c.model ? [c.model.url] : []))])
+    for (const url of urls) {
+      if (this.imported.has(url)) continue
+      const file = this.threeMF.get(fetchKey(url))
+      if (!file) continue
+      if (file instanceof Error) {
+        this.imported.set(url, file)
+        continue
+      }
+      const name = decodeURIComponent(fetchKey(url).split('/').pop() ?? '3MF file')
+      try {
+        const obj = pickObject(file, decodeURIComponent(url.split('#')[1] ?? ''), name)
+        this.imported.set(url, { tri: await file.mesh(obj.id) })
+      } catch (e) {
+        this.imported.set(url, new Error(kernelMessage(e)))
+      }
+    }
+  }
+
+  /** The loaded body of an import URL: a B-rep solid (STEP, small STL) unless mesh is preferred. */
+  private importedBody(url: string, what: string, solidOnly = false): Body {
+    const s = this.imported.get(url)
+    if (!s) {
+      if (this.threeMF.has(fetchKey(url))) throw new Error(`${url} is not read yet; build again`)
+      throw new Error(`${url} is not loaded yet; it is downloaded before the build (check the URL and the server log)`)
+    }
+    if (s instanceof Error) throw s
+    if ('shape' in s) return s.shape.clone() as Shape3D
+    if (solidOnly) {
+      if (s.solid instanceof Error) throw new Error(`${what}: OpenCascade cannot make a solid of this STL (${s.solid.message})`)
+      if (!s.solid) throw new Error(`${what}: the model has ${s.tri.triangles.length / 3} triangles; a part model needs a STEP file or an STL with at most ${SOLID_STL_TRIANGLES} triangles`)
+      return s.solid.clone() as Shape3D
+    }
+    if (s.solid && !(s.solid instanceof Error)) return s.solid.clone() as Shape3D
+    s.mesh ??= meshBody(s.tri, what)
+    return s.mesh.clone()
   }
 
   private solved = new Map<string, { key: string; sketch: SolvedSketch; error?: string }>()
@@ -810,7 +915,7 @@ export class Kernel {
       }
 
       this.drop(f.name)
-      let shape: Shape3D | undefined
+      let shape: Body | undefined
       let status: FeatureStatus
       const t0 = Date.now()
       try {
@@ -930,10 +1035,7 @@ export class Kernel {
    */
   private partModel(c: ResolvedBoard['components'][number], b: ResolvedBoard): Shape3D {
     const m = c.model!
-    const s = this.imported.get(m.url)
-    if (!s) throw new Error(`${m.url} is not loaded yet`)
-    if (s instanceof Error) throw s
-    let shape = s.clone() as Shape3D
+    let shape = this.importedBody(m.url, `${c.ref} model`, true) as Shape3D
     const k = num(m.scale, this.params, `${c.ref}.model.scale`, 1)
     if (k !== 1) shape = shape.scale(k, [0, 0, 0]) as Shape3D
     shape = place(shape, m, this.params, `${c.ref}.model`)
@@ -962,6 +1064,7 @@ export class Kernel {
     const c = this.cache.get(name)
     if (c) {
       c.shape.delete()
+      c.meshed?.delete()
       this.cache.delete(name)
     }
   }
@@ -1104,12 +1207,18 @@ export class Kernel {
         const b = chosen[j]
         if ((moves.has(a) || moves.has(b)) && !skip.has(`${a}|${b}`)) pairs.push([a, b])
       }
-    const posed = (name: string, d: number): Shape3D => {
-      const s = this.shape(name)
+    const posed = (name: string, d: number): Body => {
+      const s = this.body(name)
       const mv = moves.get(name)
       if (!mv) return s
       const p = drivenPose(mv, d)
       const { axis, angle } = quatAxisAngle(p.q)
+      if (isMesh(s)) {
+        let out = s
+        if (angle) out = out.rotateAbout(angle, [0, 0, 0], axis)
+        if (p.t[0] || p.t[1] || p.t[2]) out = out.translate(p.t)
+        return out
+      }
       let out = s
       if (angle) out = out.rotate(angle, [0, 0, 0], axis)
       if (p.t[0] || p.t[1] || p.t[2]) out = out.translate(p.t[0], p.t[1], p.t[2])
@@ -1153,7 +1262,7 @@ export class Kernel {
           c.setTranslation({ x: p.t[0], y: p.t[1], z: p.t[2] })
           c.setRotation({ x: p.q[0], y: p.q[1], z: p.q[2], w: p.q[3] })
         }
-        const cache = new Map<string, Shape3D>()
+        const cache = new Map<string, Body>()
         const get = (n: string) => {
           let s = cache.get(n)
           if (!s) cache.set(n, (s = posed(n, d)))
@@ -1179,10 +1288,17 @@ export class Kernel {
           // First contact: confirm with the exact solids.
           const A = get(a)
           const B = get(b)
-          const [la, ha] = bboxOf(A)
-          const [lb, hb] = bboxOf(B)
+          const [la, ha] = bodyBox(A)
+          const [lb, hb] = bodyBox(B)
           if (la.some((x, k) => x > hb[k] || lb[k] > ha[k])) continue
-          const vol = overlapVolume(A, B)
+          let vol: number
+          if (isMesh(A) || isMesh(B)) {
+            const ma = isMesh(A) ? A : brepToMesh(A, a)
+            const mb = isMesh(B) ? B : brepToMesh(B, b)
+            vol = ma.overlap(mb).volume
+            if (ma !== A) ma.delete()
+            if (mb !== B) mb.delete()
+          } else vol = overlapVolume(A, B)
           if (vol > minVol) hits.set(key, { first: v, last: v, volume: vol, depth: Math.max(0, pen), at: v, count: 1 })
         }
         for (const s of cache.values()) s.delete()
@@ -1219,7 +1335,7 @@ export class Kernel {
     for (const f of this.doc ? bodies(this.doc) : []) {
       if (f.name === self || moving.has(f.name) || !this.cache.has(f.name)) continue
       const s = this.cache.get(f.name)!
-      const [lo, hi] = bboxOf(s.shape)
+      const [lo, hi] = bodyBox(s.shape)
       if (p.some((v, i) => v < lo[i] || v > hi[i])) continue
       const r = this.between(p, f.name) as { distance?: number }
       if (r.distance === 0) return f.name
@@ -1249,22 +1365,49 @@ export class Kernel {
   }
 
   /** A fresh copy of a built feature; the caller owns it. */
-  shape(name: string): Shape3D {
+  body(name: string): Body {
     const c = this.cache.get(name)
     if (!c) {
       const known = [...this.cache.keys()]
       throw new Error(`no feature "${name}"${known.length ? `; features are: ${known.join(', ')}` : ' (the model is empty)'}`)
     }
-    return c.shape.clone() as Shape3D
+    return c.shape.clone() as Body
+  }
+
+  /** A fresh copy of a built feature as a mesh body (B-rep solids are tessellated once and kept). */
+  meshOf(name: string): MeshBody {
+    const c = this.cache.get(name)
+    if (!c) return this.body(name) as MeshBody
+    if (isMesh(c.shape)) return c.shape.clone()
+    c.meshed ??= brepToMesh(c.shape, name)
+    return c.meshed.clone()
+  }
+
+  /** A fresh copy of a built B-rep feature; says what to do when it is a mesh body. */
+  shape(name: string, why = 'this operation'): Shape3D {
+    const b = this.body(name)
+    if (isMesh(b)) {
+      b.delete()
+      throw new Error(`"${name}" is a triangle mesh (imported STL / 3MF), and ${why} needs a B-rep solid with faces and edges; use boolean, transform, pattern or mirror on it, or model this part as a B-rep (box, extrude, ...) and combine it with the mesh`)
+    }
+    return b
+  }
+
+  private isMeshBody(name: string): boolean {
+    const c = this.cache.get(name)
+    return !!c && isMesh(c.shape)
   }
 
   has(name: string): boolean {
     return this.cache.has(name)
   }
 
-  private make(f: Feature, warnings: string[]): Shape3D {
+  private make(f: Feature, warnings: string[]): Body {
     const p = this.params
     const n = (e: Parameters<typeof num>[0], field: string, fb?: number) => num(e, p, `${f.name}.${field}`, fb)
+
+    // A feature over a triangle-mesh body works on meshes (B-rep inputs are tessellated for it).
+    if (inputsOf(f).some((i) => this.isMeshBody(i))) return this.makeMesh(f, warnings)
 
     switch (f.type) {
       case 'box': {
@@ -1485,12 +1628,14 @@ export class Kernel {
       case 'transform':
         return place(this.shape(f.target), f, p, f.name)
       case 'import': {
-        const s = this.imported.get(f.url)
-        if (!s) throw new Error(`${f.url} is not loaded yet; it is downloaded before the build (check the URL and the server log)`)
-        if (s instanceof Error) throw s
-        let shape = s.clone() as Shape3D
         const k = n(f.scale, 'scale', 1)
         if (k <= 0) throw new Error('scale must be > 0')
+        const body = this.importedBody(f.url, f.name)
+        if (isMesh(body)) {
+          const scaled = k !== 1 ? body.scale(k) : body
+          return scaled.place(vec(f.rotate, p, `${f.name}.rotate`), vec(f.translate, p, `${f.name}.translate`))
+        }
+        let shape = body
         if (k !== 1) shape = shape.scale(k, [0, 0, 0]) as Shape3D
         return place(shape, f, p, f.name)
       }
@@ -1550,6 +1695,85 @@ export class Kernel {
     }
   }
 
+  /** Features whose inputs include a mesh body: booleans, transforms, patterns and mirrors on meshes. */
+  private makeMesh(f: Feature, warnings: string[]): MeshBody {
+    const p = this.params
+    const n = (e: Parameters<typeof num>[0], field: string, fb?: number) => num(e, p, `${f.name}.${field}`, fb)
+    switch (f.type) {
+      case 'boolean': {
+        if (!f.tools.length) throw new Error('tools must name at least one feature')
+        const target = this.meshOf(f.target)
+        const before = target.volume()
+        const targetBox = target.bbox()
+        const tools = f.tools.map((t) => ({ name: t, body: this.meshOf(t) }))
+        const clear = (a: BBox, b: BBox) => a[0].some((lo, k) => lo > b[1][k] + 0.01 || b[0][k] > a[1][k] + 0.01)
+        if (f.op === 'cut') {
+          for (const t of tools) {
+            if (clear(t.body.bbox(), targetBox) || target.overlap(t.body).volume < 1e-6) warnings.push(`cutting "${t.name}" removed no material: it does not overlap "${f.target}"`)
+          }
+        }
+        const solids0 = f.op === 'union' && !f.separate ? target.solids() : 0
+        const out = target.boolean(f.op, tools.map((t) => t.body))
+        const after = out.volume()
+        if (f.op === 'intersect' && after < 1e-9) warnings.push('the intersection is empty')
+        if (f.op === 'union' && before > 0 && Math.abs(after - before) < 1e-6) warnings.push('the union added no material')
+        if (f.op === 'union' && !f.separate && out.solids() > solids0) warnings.push('some tools do not touch the rest: the union holds separate solids (pass separate: true if that is intended, e.g. keys or wheels)')
+        return out
+      }
+      case 'transform':
+        return this.meshOf(f.target).place(vec(f.rotate, p, `${f.name}.rotate`), vec(f.translate, p, `${f.name}.translate`))
+      case 'mirror': {
+        const s = this.meshOf(f.target)
+        const off = n(f.offset, 'offset', 0)
+        const normal: V3 = f.plane === 'XY' ? [0, 0, 1] : f.plane === 'XZ' ? [0, 1, 0] : [1, 0, 0]
+        const origin: V3 = [normal[0] * off, normal[1] * off, normal[2] * off]
+        const image = s.clone().mirror(normal, origin)
+        if (f.keep === false) {
+          s.delete()
+          return image
+        }
+        return s.boolean('union', [image])
+      }
+      case 'pattern': {
+        const base = this.meshOf(f.target)
+        const copies: MeshBody[] = []
+        if (f.kind === 'polar') {
+          const count = Math.round(n(f.count, 'count'))
+          if (count < 1 || count > 500) throw new Error('count must be between 1 and 500')
+          const total = n(f.angle, 'angle', 360)
+          if (total <= 0 || total > 360) throw new Error('angle must be in (0, 360]')
+          const center = vec(f.center, p, `${f.name}.center`)
+          const dir = AXES[f.axis ?? 'Z']
+          const step = total >= 360 ? 360 / count : count > 1 ? total / (count - 1) : 0
+          for (let i = 1; i < count; i++) copies.push(base.clone().rotateAbout(step * i, center, dir))
+        } else {
+          const offsets: V3[] = []
+          if (f.kind === 'linear') {
+            const count = Math.round(n(f.count, 'count'))
+            if (count < 1 || count > 500) throw new Error('count must be between 1 and 500')
+            const step = vec(f.step, p, `${f.name}.step`)
+            for (let i = 1; i < count; i++) offsets.push([step[0] * i, step[1] * i, step[2] * i])
+          } else {
+            const cx = Math.round(num(f.count[0], p, `${f.name}.count[0]`))
+            const cy = Math.round(num(f.count[1], p, `${f.name}.count[1]`))
+            if (cx < 1 || cy < 1 || cx * cy > 2000) throw new Error('count must be ≥ 1 per axis and at most 2000 in total')
+            const sx = num(f.step[0], p, `${f.name}.step[0]`)
+            const sy = num(f.step[1], p, `${f.name}.step[1]`)
+            for (let i = 0; i < cx; i++) for (let j = 0; j < cy; j++) if (i || j) offsets.push([sx * i, sy * j, 0])
+          }
+          for (const o of offsets) copies.push(base.clone().translate(o))
+        }
+        return copies.length ? base.boolean('union', copies) : base
+      }
+      case 'fillet':
+      case 'chamfer':
+      case 'shell':
+        throw new Error(`"${f.target}" is a triangle mesh (imported STL / 3MF): ${f.type} needs a B-rep solid with edges and faces. Round or hollow the B-rep parts before combining them with the mesh, or cut a shaped tool out of the mesh with boolean`)
+      default:
+        throw new Error(`${f.type} does not work on triangle meshes`)
+    }
+  }
+
   private hint(f: Feature, e: unknown): string {
     if (e instanceof Error && e.message && !(e instanceof WebAssembly.Exception)) return ''
     switch (f.type) {
@@ -1565,8 +1789,18 @@ export class Kernel {
     }
   }
 
-  private describe(f: Feature, s: Shape3D, warnings: string[]): FeatureStatus {
+  private describe(f: Feature, s: Body, warnings: string[]): FeatureStatus {
     const st: FeatureStatus = { name: f.name, type: f.type, ok: true }
+    if (isMesh(s)) {
+      st.bbox = bodyBox(s)
+      st.volume = round(s.volume(), 3)
+      st.solids = s.solids()
+      st.triangles = s.triangles
+      if (st.solids > 1 && f.type !== 'pattern' && f.type !== 'mirror' && f.type !== 'import' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
+      if (st.volume <= 0) warnings.push('the result has no volume')
+      if (warnings.length) st.warnings = warnings
+      return st
+    }
     try {
       st.bbox = bboxOf(s)
       st.volume = round(volumeOf(s), 3)
@@ -1648,15 +1882,21 @@ export class Kernel {
       const key = c.key + '#' + name
       live.add(key)
       let m = this.meshCache.get(key)
+      if (!m && isMesh(c.shape)) {
+        const d = displayMesh(c.shape)
+        m = { name, key, vertices: d.vertices, normals: d.normals, triangles: d.triangles, edges: d.edges, edgeGroups: new Uint32Array(0), faceGroups: new Uint32Array([0, d.triangles.length / 3]) }
+        this.meshCache.set(key, m)
+      }
       if (!m) {
+        const shape = c.shape as Shape3D
         // Vendor models (imports, part models) carry tiny fillets and text:
         // a looser tolerance keeps them light (a few thousand triangles, not
         // hundreds of thousands) and still looks right at viewing scale.
         const vendor = c.status.type === 'import'
         const tol = vendor ? Math.max(tolerance, 0.03 * Math.cbrt(Math.max(c.status.volume ?? 1, 1))) : tolerance
         const ang = vendor ? 0.5 : 0.2
-        const mesh = c.shape.mesh({ tolerance: tol, angularTolerance: ang })
-        const edges = vendor ? { lines: [] as number[], edgeGroups: [] as { start: number; count: number }[] } : c.shape.meshEdges({ tolerance, angularTolerance: 0.2 })
+        const mesh = shape.mesh({ tolerance: tol, angularTolerance: ang })
+        const edges = vendor ? { lines: [] as number[], edgeGroups: [] as { start: number; count: number }[] } : shape.meshEdges({ tolerance, angularTolerance: 0.2 })
         const egroups = new Uint32Array(edges.edgeGroups.length * 2)
         edges.edgeGroups.forEach((g, i) => {
           egroups[i * 2] = g.start
@@ -1765,7 +2005,70 @@ export class Kernel {
     }
   }
 
+  /** Distance between two built features: OpenCascade for two B-rep solids, meshes when either is a mesh. */
+  private distanceOf(a: string, b: string): number {
+    if (this.isMeshBody(a) || this.isMeshBody(b)) {
+      const [ma, mb] = [this.meshOf(a), this.meshOf(b)]
+      try {
+        return ma.distance(mb)
+      } finally {
+        ma.delete()
+        mb.delete()
+      }
+    }
+    const [sa, sb] = [this.shape(a), this.shape(b)]
+    try {
+      return safeDistance(sa, sb)
+    } finally {
+      sa.delete()
+      sb.delete()
+    }
+  }
+
+  private overlapOf(a: string, b: string): { volume: number; regions: { box: [V3, V3]; volume: number }[] } {
+    if (this.isMeshBody(a) || this.isMeshBody(b)) {
+      const [ma, mb] = [this.meshOf(a), this.meshOf(b)]
+      try {
+        const o = ma.overlap(mb)
+        return { volume: o.volume, regions: o.regions.map((r) => ({ box: [r3(r.box[0]), r3(r.box[1])] as [V3, V3], volume: round(r.volume, 4) })) }
+      } finally {
+        ma.delete()
+        mb.delete()
+      }
+    }
+    const [sa, sb] = [this.shape(a), this.shape(b)]
+    try {
+      return overlapRegions(sa, sb)
+    } finally {
+      sa.delete()
+      sb.delete()
+    }
+  }
+
   measure(a: string, b?: string): Record<string, unknown> {
+    if (this.isMeshBody(a)) {
+      const m = this.meshOf(a)
+      try {
+        const [lo, hi] = bodyBox(m)
+        const out: Record<string, unknown> = {
+          name: a,
+          bbox: [lo, hi],
+          size: r3([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]),
+          volume: round(m.volume(), 3),
+          area: round(m.area(), 3),
+          center_of_mass: r3(m.centerOfMass()),
+          triangles: m.triangles,
+        }
+        if (b) {
+          out.other = b
+          out.distance = round(this.distanceOf(a, b), 4)
+          out.overlap_volume = round(this.overlapOf(a, b).volume, 4)
+        }
+        return out
+      } finally {
+        m.delete()
+      }
+    }
     const sa = this.shape(a)
     try {
       const out: Record<string, unknown> = {
@@ -1785,14 +2088,9 @@ export class Kernel {
         // not a solid
       }
       if (b) {
-        const sb = this.shape(b)
-        try {
-          out.other = b
-          out.distance = round(safeDistance(sa, sb), 4)
-          out.overlap_volume = round(overlapVolume(sa, sb), 4)
-        } finally {
-          sb.delete()
-        }
+        out.other = b
+        out.distance = round(this.distanceOf(a, b), 4)
+        out.overlap_volume = round(this.overlapOf(a, b).volume, 4)
       }
       return out
     } finally {
@@ -1809,6 +2107,28 @@ export class Kernel {
     if (isPt(a) && isPt(b)) {
       const d: V3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
       return { distance: round(Math.hypot(...d), 4), delta: r3(d), from: a, to: b }
+    }
+    const meshy = (!isPt(a) && this.isMeshBody(a)) || (!isPt(b) && this.isMeshBody(b))
+    if (meshy) {
+      if (!isPt(a) && !isPt(b)) {
+        const ov = this.overlapOf(a, b)
+        const out: Record<string, unknown> = { a, b, distance: round(this.distanceOf(a, b), 4), overlap_volume: round(ov.volume, 4) }
+        if (ov.volume > 1e-6) out.overlap = ov.regions.slice(0, 8)
+        return out
+      }
+      const pt = (isPt(a) ? a : b) as V3
+      const name = (isPt(a) ? b : a) as string
+      const probe = meshCube([pt[0] - 1e-4, pt[1] - 1e-4, pt[2] - 1e-4], [pt[0] + 1e-4, pt[1] + 1e-4, pt[2] + 1e-4])
+      const m = this.meshOf(name)
+      try {
+        const inside = m.overlap(probe).volume > 0
+        const out: Record<string, unknown> = { a, b, distance: inside ? 0 : round(Math.max(0, m.distance(probe) - 1e-4), 4) }
+        if (out.distance === 0) out.note = 'the point is on or inside the feature'
+        return out
+      } finally {
+        m.delete()
+        probe.delete()
+      }
     }
     const shape = (v: string | V3) => (isPt(v) ? (R.makeSphere(1e-4).translate(v[0], v[1], v[2]) as Shape3D) : this.shape(v))
     const sa = shape(a)
@@ -1888,30 +2208,12 @@ export class Kernel {
           }
           case 'min_distance': {
             const min = num(c.min, p, `check ${c.name}.min`)
-            const d = this.pair(
-              'distance',
-              c.a,
-              c.b,
-              () => {
-                const [sa, sb] = [this.shape(c.a), this.shape(c.b)]
-                const v = safeDistance(sa, sb)
-                sa.delete()
-                sb.delete()
-                return v
-              },
-              min,
-            )
+            const d = this.pair('distance', c.a, c.b, () => this.distanceOf(c.a, c.b), min)
             const exact = !this.boxApart(c.a, c.b, min)
             return { ...base, ok: d >= min - 1e-6, detail: `distance ${c.a}↔${c.b} ${exact ? '=' : '≥'} ${d.toFixed(3)} mm (min ${min})` }
           }
           case 'no_overlap': {
-            const v = this.pair('overlap', c.a, c.b, () => {
-              const [sa, sb] = [this.shape(c.a), this.shape(c.b)]
-              const o = overlapVolume(sa, sb)
-              sa.delete()
-              sb.delete()
-              return o
-            })
+            const v = this.pair('overlap', c.a, c.b, () => this.overlapOf(c.a, c.b).volume)
             const allow = c.allow ?? 0
             if (v < 1e-6) return { ...base, ok: true, detail: `${c.a} and ${c.b} do not overlap` }
             return { ...base, ok: v <= allow + 1e-6, detail: `${c.a} and ${c.b} overlap by ${v.toFixed(3)} mm³${allow ? ` (allowed ${allow})` : ''}` }
@@ -1921,13 +2223,13 @@ export class Kernel {
             // free space, e.g. a cavity), keeping margin to every side of
             // outer's bounding box.
             const margin = num(c.margin, p, `check ${c.name}.margin`, 0)
-            const [si, so] = [this.shape(c.inner), this.shape(c.outer)]
-            const [ilo, ihi] = bboxOf(si)
-            const [olo, ohi] = bboxOf(so)
-            const vi = volumeOf(si)
-            const within = overlapVolume(si, so)
+            const [si, so] = [this.body(c.inner), this.body(c.outer)]
+            const [ilo, ihi] = bodyBox(si)
+            const [olo, ohi] = bodyBox(so)
+            const vi = bodyVolume(si)
             si.delete()
             so.delete()
+            const within = this.overlapOf(c.inner, c.outer).volume
             const outside = Math.max(0, vi - within)
             const gaps = [0, 1, 2].flatMap((i) => [ilo[i] - olo[i], ohi[i] - ihi[i]])
             const minGap = Math.min(...gaps)
@@ -1942,8 +2244,8 @@ export class Kernel {
             }
           }
           case 'volume': {
-            const s = this.shape(c.target)
-            const v = volumeOf(s)
+            const s = this.body(c.target)
+            const v = bodyVolume(s)
             s.delete()
             const min = c.min !== undefined ? num(c.min, p, `check ${c.name}.min`) : -Infinity
             const max = c.max !== undefined ? num(c.max, p, `check ${c.name}.max`) : Infinity
@@ -1962,8 +2264,27 @@ export class Kernel {
    * models replaces part_* blocks with the vendor meshes (OBJ text by
    * part ref), sewn into faces.
    */
-  export(format: 'step' | 'stl', names: string[], models: Record<string, string> = {}): Blob {
+  async export(format: 'step' | 'stl' | '3mf', names: string[], models: Record<string, string> = {}): Promise<Blob> {
     if (!names.length) throw new Error('nothing to export: the model has no bodies')
+    if (format !== 'step') {
+      // Triangles: mesh bodies as they are, B-rep bodies tessellated finely.
+      const objects = names.map((n) => {
+        const c = this.cache.get(n)
+        if (!c) throw new Error(`no feature "${n}"`)
+        let mesh: TriMesh
+        if (isMesh(c.shape)) mesh = c.shape.triMesh()
+        else {
+          const m = (c.shape as Shape3D).mesh({ tolerance: 0.01, angularTolerance: 0.1 })
+          mesh = { positions: Float32Array.from(m.vertices), triangles: Uint32Array.from(m.triangles) }
+        }
+        const f = this.doc?.features.find((x) => x.name === n)
+        const material = f?.material ? this.doc?.materials?.find((x) => x.name === f.material) : undefined
+        return { name: n, mesh, color: material?.color ?? f?.color }
+      })
+      return format === 'stl' ? writeSTL(objects.map((o) => o.mesh)) : write3MF(objects)
+    }
+    const meshy = names.filter((n) => this.isMeshBody(n))
+    if (meshy.length) throw new Error(`${meshy.join(', ')} ${meshy.length === 1 ? 'is a triangle mesh' : 'are triangle meshes'} (imported STL / 3MF): STEP holds B-rep solids; export them as STL or 3MF, or leave them out with names`)
     const shapes = names.map((n) => {
       const ref = n.startsWith(PART_PREFIX) ? n.slice(PART_PREFIX.length) : undefined
       const obj = ref ? models[ref] : undefined
@@ -1979,7 +2300,7 @@ export class Kernel {
     })
     const compound = shapes.length === 1 ? shapes[0] : (R.makeCompound(shapes) as Shape3D)
     try {
-      return format === 'step' ? compound.blobSTEP() : compound.blobSTL({ binary: true })
+      return compound.blobSTEP()
     } finally {
       compound.delete()
     }

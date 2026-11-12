@@ -138,7 +138,7 @@ export class KernelClient {
       checks: () => query<CheckResult[]>({ type: 'checks' }),
       sketch: (name: string) => query<SolvedSketch>({ type: 'sketch', name }),
       board: (o?: { drc?: boolean }) => query<BoardState | undefined>({ type: 'board', drc: o?.drc }),
-      export: (format: 'step' | 'stl', names: string[], models?: Record<string, string>) => query<Blob>({ type: 'export', format, names, models }),
+      export: (format: 'step' | 'stl' | '3mf', names: string[], models?: Record<string, string>) => query<Blob>({ type: 'export', format, names, models }),
       gears: () => query<Record<string, unknown>[]>({ type: 'gears' }),
       motion: () => query<MotionPlan>({ type: 'motion' }),
       simulate: (seconds: number, samples: number) => query<Record<string, unknown>>({ type: 'simulate', seconds, samples }),

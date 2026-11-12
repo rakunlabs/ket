@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/rakunlabs/into"
 	"github.com/rakunlabs/logi"
@@ -51,6 +52,17 @@ func run(ctx context.Context) error {
 
 	h := hub.New(st, cfg.Hub)
 	tools := mcpserver.NewTools(cat, h, st)
+	tickets := parts.NewTickets()
+	tools.SetUploads(tickets, func(ctx context.Context) string {
+		// The configured public URL wins (behind a proxy); else the address the MCP client used.
+		if u := strings.TrimRight(set.Get().PublicURL, "/"); u != "" {
+			return u
+		}
+		if u := mcpserver.BaseFromContext(ctx); u != "" {
+			return u
+		}
+		return "http://localhost:" + cfg.Server.Port + cfg.Server.BasePath
+	})
 	ag := agent.New(set, tools, st)
 	ag.OnBranch = func(ctx context.Context, projectID string, b *store.Branch) {
 		h.Notify(ctx, projectID, map[string]any{"t": "branch", "event": "proposed", "branch": b.ID, "name": b.Name})
@@ -77,6 +89,7 @@ func run(ctx context.Context) error {
 		Agent:    ag,
 		Catalog:  cat,
 		Parts:    parts.New(st),
+		Tickets:  tickets,
 		Settings: set,
 		UI:       ui,
 	}); err != nil {
