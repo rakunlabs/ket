@@ -26,19 +26,18 @@ jobs:
     env:
       KET_TEST_DSN: postgres://ket:ket@localhost:5432/ket_test?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      - uses: pnpm/action-setup@v4
+      # pnpm and Node.js come from _ui/package.json (packageManager and
+      # devEngines.runtime), so CI builds with the same versions as local.
+      - uses: pnpm/setup@v3
         with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: _ui/pnpm-lock.yaml
+          working-directory: _ui
+          cache: true
+          require-lockfile: true
       - run: pnpm install --frozen-lockfile
         working-directory: _ui
       - run: pnpm check
@@ -49,7 +48,9 @@ jobs:
         working-directory: _ui
       - name: Command catalog must match the registry
         run: git diff --exit-code -- internal/catalog/catalog.json
-      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14
       - run: go test -race -count=1 ./...
 
   kicad:
@@ -58,15 +59,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
         with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: _ui/pnpm-lock.yaml
+          working-directory: _ui
+          cache: true
+          require-lockfile: true
       - run: pnpm install --frozen-lockfile
         working-directory: _ui
       - run: pnpm exec tsx scripts/kicad-fixtures.ts kicad-out
@@ -107,19 +105,16 @@ jobs:
     env:
       KET_E2E_DSN: postgres://ket:ket@localhost:5432/ket_e2e?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/setup@v3
         with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: _ui/pnpm-lock.yaml
+          working-directory: _ui
+          cache: true
+          require-lockfile: true
       - run: make build
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: _ui

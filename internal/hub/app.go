@@ -30,7 +30,7 @@ import (
 
 // ErrNoApp is returned when an agent wants to open a project and the user
 // has no Ket window open.
-var ErrNoApp = errors.New("Ket is not open in the user's browser: ask the user to open Ket (any page), then call open_project again")
+var ErrNoApp = errors.New("Ket is not open in the user's browser: ask the user to open Ket (any page), then call open_project again") //nolint:staticcheck // starts with the product name
 
 // OpenTimeout bounds how long open_project waits for the new tab to connect.
 var OpenTimeout = 30 * time.Second

@@ -96,7 +96,7 @@ func TestHandlerServesCoreMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer s.Close()
+		defer s.Close() //nolint:errcheck // test cleanup
 		r, err := s.ListTools(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)

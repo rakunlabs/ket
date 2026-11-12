@@ -1,0 +1,100 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+
+version: 2
+
+project_name: ket
+
+release:
+  footer: |
+    **Full Changelog**: https://github.com/rakunlabs/ket/compare/{{ .PreviousTag }}...{{ .Tag }}
+before:
+  hooks:
+    - go mod tidy
+# The UI is embedded: build it first (make build-ui), as the workflow does.
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    main: ./cmd/ket
+    ldflags:
+      - -s -w -X github.com/rakunlabs/ket/internal/config.Version=v{{.Version}} -X github.com/rakunlabs/ket/internal/config.Commit={{.ShortCommit}} -X github.com/rakunlabs/ket/internal/config.BuildDate={{.Date}}
+    flags:
+      - -trimpath
+archives:
+  - name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - ket.example.yaml
+checksum:
+  name_template: '{{ .ProjectName }}-{{ .Version }}-checksums.txt'
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+    - '^docs:'
+    - '^test:'
+    - '^chore'
+    - 'merge conflict'
+    - Merge pull request
+    - Merge remote-tracking branch
+    - Merge branch
+    - go mod tidy
+  groups:
+    - title: Dependency updates
+      regexp: "^.*feat\\(deps\\)*:+.*$"
+      order: 300
+    - title: 'New Features'
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 100
+    - title: 'Bug fixes'
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 200
+    - title: 'Documentation updates'
+      regexp: "^.*docs[(\\w)]*:+.*$"
+      order: 400
+    - title: Other work
+      order: 9999
+
+# One multi-arch image (linux/amd64 and linux/arm64) built with buildx from
+# the binaries above.
+dockers_v2:
+  - images:
+      - ghcr.io/rakunlabs/ket
+    tags:
+      - "{{ .Tag }}"
+      - latest
+    dockerfile: ci/Dockerfile
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      "io.artifacthub.package.readme-url": "https://raw.githubusercontent.com/rakunlabs/ket/main/README.md"
+      "io.artifacthub.package.maintainers": '[{"name":"Eray Ates","email":"eates23@gmail.com"}]'
+      "io.artifacthub.package.license": "MIT"
+      "org.opencontainers.image.description": "Parametric CAD and PCB design in one document, built to be driven by AI"
+      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.name": "{{ .ProjectName }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.source": "{{ .GitURL }}"
+    annotations:
+      "org.opencontainers.image.description": "Parametric CAD and PCB design in one document, built to be driven by AI"
+      "org.opencontainers.image.source": "{{ .GitURL }}"
+      "org.opencontainers.image.licenses": "MIT"

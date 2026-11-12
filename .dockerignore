@@ -4,6 +4,7 @@ _ui/playwright-report
 _ui/e2e-logs
 internal/server/dist
 bin
+dist
 .git
 ket.yaml
 .env

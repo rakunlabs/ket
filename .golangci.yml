@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Closing something that was only read, and writes to an HTTP response
+      # or a test recorder: there is nothing to do with these errors.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - (*github.com/coder/websocket.Conn).CloseNow
+        - fmt.Fprint
+        - fmt.Fprintf
+    staticcheck:
+      checks:
+        # The defaults...
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        # ...and a negated condition often reads better than its De Morgan form.
+        - -QF1001
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -52,6 +52,12 @@ the settings once, on first start.
 Development: `make run` (backend on :8080) and `make run-ui` (Vite with
 hot reload, proxies the API). `make e2e` runs the browser tests against
 `bin/ket` on a separate `ket_e2e` database, which it empties first.
+`make lint` needs golangci-lint and goreleaser.
+
+Releases are made by GoReleaser on a `v*` tag: archives for Linux, macOS
+and Windows (amd64, arm64) and a multi-arch image on ghcr.io. `make
+snapshot` builds all of it locally without publishing; `make
+build-container` only the image, as `ket:test`.
 
 Connect an external agent (open the project in the browser first: the
 geometry kernel runs there):

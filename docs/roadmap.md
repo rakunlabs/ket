@@ -86,7 +86,8 @@ is covered only by unit tests.
   the development one in `env/compose.yaml`.
 - A release workflow on `v*` tags: binaries for linux and darwin
   (amd64, arm64) and an image on ghcr. The Makefile already sets the
-  version ldflags.
+  version ldflags. (Done with GoReleaser, `.goreleaser.yaml`, which adds
+  Windows; the image is built from `ci/Dockerfile`.)
 - README quick start gains the Docker route.
 
 ## Phase 1: quick wins

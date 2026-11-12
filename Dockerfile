@@ -1,8 +1,10 @@
-# Ket: one binary with the API, MCP and the embedded UI.
+# Ket from a checkout, with nothing but Docker: one binary with the API, MCP
+# and the embedded UI. Releases are built by GoReleaser with ci/Dockerfile.
 #   docker build -t ket .
 #   docker compose -f deploy/compose.yaml up -d
 
-FROM node:24-alpine AS ui
+# The Node.js of _ui/package.json (devEngines.runtime); pnpm comes from its packageManager.
+FROM node:24.22.0-alpine AS ui
 WORKDIR /src/_ui
 RUN corepack enable
 COPY _ui/package.json _ui/pnpm-lock.yaml _ui/pnpm-workspace.yaml ./
