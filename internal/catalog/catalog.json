@@ -13284,9 +13284,9 @@
         "type": "object",
         "properties": {
           "data": {
+            "description": "The block: the whole text of a .ket project file. Over MCP, give block: <name> of a server block instead (list_templates)",
             "type": "string",
-            "maxLength": 26214400,
-            "description": "The block: the whole text of a .ket project file. Over MCP, give block: <name> of a server block instead (list_templates)"
+            "maxLength": 26214400
           },
           "prefix": {
             "type": "string",
@@ -13312,7 +13312,6 @@
           }
         },
         "required": [
-          "data",
           "prefix"
         ]
       }

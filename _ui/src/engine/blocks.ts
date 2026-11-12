@@ -225,19 +225,39 @@ export function insertBlock(doc: Doc, block: Doc, prefix: string, offset: [numbe
   }
 }
 
+/** A block design from an op: the parts insertBlock reads must be there and of the right kind. */
+function checkBlockDoc(v: Record<string, unknown>): Doc {
+  for (const k of ['parameters', 'sketches', 'features', 'checks'] as const) if (!Array.isArray(v[k])) throw new Error(`insert_block: the block design has no ${k} list; insert the block again from its .ket file`)
+  const pcb = v.pcb as Record<string, unknown> | undefined
+  if (pcb) for (const k of ['components', 'nets', 'tracks', 'vias', 'classes'] as const) if (!Array.isArray(pcb[k])) throw new Error(`insert_block: the block's board has no ${k} list; insert the block again from its .ket file`)
+  return v as unknown as Doc
+}
+
 define({
   name: 'insert_block',
   group: 'project',
   kind: 'mutate',
   description:
     'Put a reusable block (the text of a .ket project file, e.g. a USB-C power input, a mounting boss pattern, a battery holder) into this design under a prefix, so it can go in more than once: its parameters, sketches, features, checks and materials get prefix_ in front, its part refs the prefix letters (J1 → PWRJ1), its nets prefix_ unless they are power or ground (GND, 3V3, VBUS join the design\'s nets). offset moves its bodies and board parts. Board-wide items of the block (outline, pours, keep-outs) are not taken. Fails on a name clash, naming it.',
-  args: z.object({
-    data: z.string().max(PROJECT_FILE_LIMIT).describe('The block: the whole text of a .ket project file. Over MCP, give block: <name> of a server block instead (list_templates)'),
-    prefix: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,15}$/, 'a prefix of letters, digits and _, starting with a letter'),
-    offset: z.tuple([z.number(), z.number(), z.number()]).optional().describe('Move the block by [x, y, z] mm (board parts by x, y)'),
-  }),
+  args: z
+    .object({
+      data: z.string().max(PROJECT_FILE_LIMIT).optional().describe('The block: the whole text of a .ket project file. Over MCP, give block: <name> of a server block instead (list_templates)'),
+      prefix: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,15}$/, 'a prefix of letters, digits and _, starting with a letter'),
+      offset: z.tuple([z.number(), z.number(), z.number()]).optional().describe('Move the block by [x, y, z] mm (board parts by x, y)'),
+      block_doc: z.record(z.string(), z.unknown()).optional().describe('(filled in automatically)'),
+    })
+    .refine((x) => x.data !== undefined || x.block_doc !== undefined, { message: 'give data: the text of a .ket project file' }),
+  internal: ['block_doc'],
+  // The block is replayed once here; the op keeps only the design it makes
+  // (compact JSON, no op log), so replays do not run the block's history again.
+  async prepare(_ctx, a) {
+    if (a.block_doc || a.data === undefined) return a
+    const { data: _drop, ...rest } = a
+    return { ...rest, block_doc: readProjectFile(a.data).doc as unknown as Record<string, unknown> }
+  },
   apply(doc, a) {
-    const block = readProjectFile(a.data).doc
+    // Older ops carry the file text; prepared ones the design.
+    const block = a.block_doc ? checkBlockDoc(a.block_doc) : readProjectFile(a.data!).doc
     const r = insertBlock(doc, block, a.prefix, a.offset)
     const what = Object.entries(r.added).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ')
     return { doc: r.doc, summary: `inserted block ${a.prefix}: ${what || 'nothing'}${r.skipped.length ? `; not taken: ${r.skipped.join(', ')}` : ''}` }

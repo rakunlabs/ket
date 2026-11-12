@@ -114,6 +114,13 @@ describe('insert_block', () => {
 
   it('replays from the op alone', async () => {
     const data = await bossBlock()
+    const op = await prepared(emptyDoc(), 'insert_block', { data, prefix: 'p' })
+    // The op keeps the design, not the block's history: smaller, and no replay of the block's ops.
+    expect((op.args as any).data).toBeUndefined()
+    expect(JSON.stringify(op.args).length).toBeLessThan(data.length)
+    // An old op with the file text still applies.
+    const old = applyOp((await build([['set_board', { outline: { rect: { w: 60, h: 40 } } }]])).doc, { cmd: 'insert_block', args: parseArgs(command('insert_block')!, { data, prefix: 'q' }) }).doc
+    expect(old.features.map((f) => f.name)).toEqual(['q_boss', 'q_pilot', 'q_boss_drilled'])
     const { ops } = await build([['set_board', { outline: { rect: { w: 60, h: 40 } } }], ['insert_block', { data, prefix: 'p' }]])
     const file = writeProjectFile(ops)
     const { readProjectFile } = await import('../src/engine/project-file')
