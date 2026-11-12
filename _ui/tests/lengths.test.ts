@@ -135,6 +135,25 @@ describe('differential pairs and lengths', () => {
     expect((await query(doc, k, 'get_board')).routing.routed).toBe('2/2 nets')
   }, 120_000)
 
+  it('a pair that cannot run coupled is still routed, as two nets', async () => {
+    const k = new Kernel()
+    let doc = emptyDoc()
+    doc = await run(doc, k, 'set_board', { outline: { rect: { w: 40, h: 20 } } })
+    for (const [ref, at] of [['R1', [-12, 2]], ['R2', [12, 2]], ['R3', [-12, -2]], ['R4', [12, -2]]] as const) doc = await run(doc, k, 'add_component', { footprint_name: '0603', ref, at: [...at] })
+    doc = await run(doc, k, 'connect', { nets: [{ name: 'DP', pins: ['R1.2', 'R2.1'] }, { name: 'DN', pins: ['R3.2', 'R4.1'] }] })
+    doc = await run(doc, k, 'set_diff_pair', { name: 'usb', p: 'DP', n: 'DN', width: 0.2, gap: 0.2 })
+    // No tracks on the top layer across the middle: both nets must change layer, which a coupled run does not do.
+    doc = await run(doc, k, 'add_keepout', { name: 'wall', rect: { at: [0, 0], w: 4, h: 30 }, layers: ['F.Cu'], forbid: ['tracks'] })
+    k.build(doc)
+    expect((await k.autoroute(doc, { timeout: 60 })).violations.join(' ')).toMatch(/usb routed as two separate nets: DP changes layer/)
+    doc = await run(doc, k, 'autoroute', { timeout: 60 })
+    k.build(doc)
+    expect((await query(doc, k, 'get_board')).routing.routed).toBe('2/2 nets')
+    expect(doc.pcb!.vias.length).toBeGreaterThanOrEqual(4)
+    const drc = await query(doc, k, 'run_drc')
+    expect(drc.violations.filter((v: any) => ['clearance', 'short', 'keepout'].includes(v.rule))).toEqual([])
+  }, 120_000)
+
   it('follow renames and drop with their nets', async () => {
     const k = new Kernel()
     let doc = await pairBoard(k, { gap: 0.15 })

@@ -121,6 +121,9 @@ describe('insert_block', () => {
     // An old op with the file text still applies.
     const old = applyOp((await build([['set_board', { outline: { rect: { w: 60, h: 40 } } }]])).doc, { cmd: 'insert_block', args: parseArgs(command('insert_block')!, { data, prefix: 'q' }) }).doc
     expect(old.features.map((f) => f.name)).toEqual(['q_boss', 'q_pilot', 'q_boss_drilled'])
+    // A damaged design says where, instead of failing inside the merge.
+    const bad = { ...(op.args as any), block_doc: { ...(op.args as any).block_doc, features: [{ type: 'box' }] } }
+    expect(() => applyOp(emptyDoc(), { cmd: 'insert_block', args: bad })).toThrow(/damaged \(features\.0\.name/)
     const { ops } = await build([['set_board', { outline: { rect: { w: 60, h: 40 } } }], ['insert_block', { data, prefix: 'p' }]])
     const file = writeProjectFile(ops)
     const { readProjectFile } = await import('../src/engine/project-file')

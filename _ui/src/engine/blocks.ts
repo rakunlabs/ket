@@ -225,11 +225,39 @@ export function insertBlock(doc: Doc, block: Doc, prefix: string, offset: [numbe
   }
 }
 
-/** A block design from an op: the parts insertBlock reads must be there and of the right kind. */
+// What insertBlock reads of a block design, so a damaged op fails with the
+// place that is wrong and not somewhere inside the merge. Other fields pass through.
+const named = z.looseObject({ name: z.string() })
+const xy = z.tuple([z.number(), z.number()])
+const blockDocSchema = z.looseObject({
+  parameters: z.array(named),
+  sketches: z.array(z.looseObject({ name: z.string(), on: z.looseObject({ feature: z.string() }).optional() })),
+  features: z.array(named),
+  checks: z.array(named),
+  materials: z.array(named).optional(),
+  decals: z.array(z.looseObject({ name: z.string(), target: z.string(), at: z.array(z.unknown()).length(3) })).optional(),
+  pcb: z
+    .looseObject({
+      layers: z.union([z.literal(2), z.literal(4), z.literal(6)]),
+      components: z.array(z.looseObject({ ref: z.string(), at: z.array(z.unknown()).length(2) })),
+      nets: z.array(z.looseObject({ name: z.string(), pins: z.array(z.string()) })),
+      classes: z.array(named),
+      tracks: z.array(z.looseObject({ net: z.string(), points: z.array(xy) })),
+      vias: z.array(z.looseObject({ net: z.string(), at: xy })),
+      diff_pairs: z.array(z.looseObject({ name: z.string(), p: z.string(), n: z.string() })).optional(),
+      length_groups: z.array(z.looseObject({ name: z.string(), nets: z.array(z.string()) })).optional(),
+      wires: z.array(z.looseObject({ a: z.string(), b: z.string() })).optional(),
+    })
+    .optional(),
+})
+
+/** A block design from an op, checked. */
 function checkBlockDoc(v: Record<string, unknown>): Doc {
-  for (const k of ['parameters', 'sketches', 'features', 'checks'] as const) if (!Array.isArray(v[k])) throw new Error(`insert_block: the block design has no ${k} list; insert the block again from its .ket file`)
-  const pcb = v.pcb as Record<string, unknown> | undefined
-  if (pcb) for (const k of ['components', 'nets', 'tracks', 'vias', 'classes'] as const) if (!Array.isArray(pcb[k])) throw new Error(`insert_block: the block's board has no ${k} list; insert the block again from its .ket file`)
+  const r = blockDocSchema.safeParse(v)
+  if (!r.success) {
+    const at = r.error.issues.slice(0, 3).map((i) => `${i.path.join('.') || 'design'}: ${i.message}`).join('; ')
+    throw new Error(`insert_block: the block design in this operation is damaged (${at}); insert the block again from its .ket file`)
+  }
   return v as unknown as Doc
 }
 

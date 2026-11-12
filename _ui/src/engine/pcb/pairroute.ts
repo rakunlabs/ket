@@ -41,17 +41,24 @@ function offsetPath(path: XY[], d: number): XY[] {
 
 /** Routes one pair. pcb holds the copper routed so far (obstacles). */
 export function routePair(pcb: Pcb, b: ResolvedBoard, d: DiffPair, budget: number): PairRoute {
-  const r = routeBoard(pcb, b, { only: new Set([d.p]), budget })
-  const pTracks = r.tracks.filter((t) => t.net === d.p)
   const padsP = b.pads.filter((p) => p.net === d.p)
   const padsN = b.pads.filter((p) => p.net === d.n)
-  const fallback = (why: string): PairRoute => {
-    const both = routeBoard(pcb, b, { only: new Set([d.p, d.n]), budget })
-    return { pair: d.name, tracks: both.tracks, vias: both.vias, coupled: false, note: `${d.name} routed as two separate nets: ${why}` }
+  const apart = (why: string, tracks: Track[], vias: Via[]): PairRoute => ({ pair: d.name, tracks, vias, coupled: false, note: `${d.name} routed as two separate nets: ${why}` })
+  const both = (why: string) => {
+    const r = routeBoard(pcb, b, { only: new Set([d.p, d.n]), budget })
+    return apart(why, r.tracks, r.vias)
   }
-  if (r.unrouted.length || !pTracks.length) return fallback(`${d.p} found no route`)
+  // Known before any search.
+  if (padsP.length !== 2 || padsN.length !== 2) return both('coupled routing joins two pads per net (point to point)')
+  const r = routeBoard(pcb, b, { only: new Set([d.p]), budget })
+  const pTracks = r.tracks.filter((t) => t.net === d.p)
+  if (r.unrouted.length || !pTracks.length) return both(`${d.p} found no route`)
+  // P is routed already: N goes around it. Only when that leaves N open are the two searched together.
+  const fallback = (why: string): PairRoute => {
+    const n = routeBoard({ ...pcb, tracks: [...pcb.tracks, ...r.tracks], vias: [...pcb.vias, ...r.vias] }, b, { only: new Set([d.n]), budget })
+    return n.unrouted.length ? both(why) : apart(why, [...r.tracks, ...n.tracks], [...r.vias, ...n.vias])
+  }
   if (r.vias.length || new Set(pTracks.map((t) => t.layer)).size > 1) return fallback(`${d.p} changes layer; coupled routing follows one layer`)
-  if (padsP.length !== 2 || padsN.length !== 2) return fallback('coupled routing joins two pads per net (point to point)')
   const start: XY = [padsP[0].center.x, padsP[0].center.y]
   const path = joinPieces(pTracks, start, 1e-3)
   if (!path || path.length < 2) return fallback(`${d.p}'s route is not one path`)
