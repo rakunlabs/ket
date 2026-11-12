@@ -1985,7 +1985,7 @@ export class Kernel {
       return material?.color ?? f?.color
     }
     const axes = ({ X: ['Y', 'Z'], Y: ['X', 'Z'], Z: ['X', 'Y'] } as const)[axis]
-    const image = await drawSection([...outlines].map(([name, loops]) => ({ name, loops, color: colorOf(name) })), [axes[0], axes[1]], `section ${axis} = ${at} mm`)
+    const image = await drawSection([...outlines].map(([name, loops]) => ({ name, loops, color: colorOf(name) })), [axes[0], axes[1]], `section ${axis} = ${Math.round(at * 1000) / 1000} mm`)
     return { bodies, image }
   }
 
