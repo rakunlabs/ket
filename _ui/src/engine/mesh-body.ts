@@ -7,7 +7,7 @@
 
 import type { Manifold, ManifoldToplevel } from 'manifold-3d'
 
-import type { TriMesh } from './model-files'
+import { type TriMesh, sequence } from './model-files'
 
 type V3 = [number, number, number]
 type BBox = [V3, V3]
@@ -38,6 +38,9 @@ const STATUS: Record<string, string> = {
 }
 
 export class MeshBody {
+  /** The paint id this body registered as an original (see painted), for forgetPaint. */
+  paintId?: number
+
   constructor(readonly m: Manifold) {}
 
   /** A copy that shares geometry (manifold transforms are lazy). */
@@ -517,15 +520,19 @@ export function meshBody(tri: TriMesh, what: string): MeshBody {
     m.delete()
     throw new Error(`${what}: the triangles face inward (negative volume); flip the normals and load it again`)
   }
-  if (id !== undefined) painted.set(id, { paint: tri.paint!, paints: tri.paints! })
-  return new MeshBody(m)
+  const body = new MeshBody(m)
+  if (id !== undefined) {
+    painted.set(id, { paint: tri.paint!, paints: tri.paints! })
+    body.paintId = id
+  }
+  return body
 }
 
-function sequence(n: number): Uint32Array {
-  const t = new Uint32Array(n)
-  for (let i = 0; i < n; i++) t[i] = i
-  return t
+/** Drops the paint of an imported mesh that nothing uses any more. */
+export function forgetPaint(id: number | undefined) {
+  if (id !== undefined) painted.delete(id)
 }
+
 
 /** A B-rep solid as a mesh body (tessellated within tolerance mm). */
 export function meshFromTriangles(vertices: ArrayLike<number>, triangles: ArrayLike<number>, what: string): MeshBody {

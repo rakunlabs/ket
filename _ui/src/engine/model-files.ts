@@ -70,6 +70,10 @@ export function isZip(b: ArrayBuffer | Uint8Array): boolean {
   return u.length > 4 && u[0] === 0x50 && u[1] === 0x4b && u[2] === 0x03 && u[3] === 0x04
 }
 
+// A 3MF can hold a big mesh, but a small archive that inflates to gigabytes is a zip bomb.
+const MAX_ENTRY = 1 << 30
+const MAX_TOTAL = 2 ** 32
+
 /** The files of a zip by name; each is inflated when read. */
 export function unzip(buf: ArrayBuffer | Uint8Array): Map<string, () => Promise<Uint8Array>> {
   const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
@@ -84,6 +88,7 @@ export function unzip(buf: ArrayBuffer | Uint8Array): Map<string, () => Promise<
   if (end < 0) throw new Error('not a zip file (no central directory)')
   const count = dv.getUint16(end + 10, true)
   let p = dv.getUint32(end + 16, true)
+  let total = 0
   if (p === 0xffffffff) throw new Error('zip64 archives are not supported; save the 3MF again from the slicer')
   const dec = new TextDecoder()
   const out = new Map<string, () => Promise<Uint8Array>>()
@@ -91,6 +96,7 @@ export function unzip(buf: ArrayBuffer | Uint8Array): Map<string, () => Promise<
     if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('broken zip central directory')
     const method = dv.getUint16(p + 10, true)
     const size = dv.getUint32(p + 20, true)
+    const unpacked = dv.getUint32(p + 24, true)
     const nameLen = dv.getUint16(p + 28, true)
     const extraLen = dv.getUint16(p + 30, true)
     const commentLen = dv.getUint16(p + 32, true)
@@ -98,11 +104,18 @@ export function unzip(buf: ArrayBuffer | Uint8Array): Map<string, () => Promise<
     const name = dec.decode(u.subarray(p + 46, p + 46 + nameLen))
     p += 46 + nameLen + extraLen + commentLen
     if (name.endsWith('/')) continue
+    total += unpacked
+    if (unpacked > MAX_ENTRY || total > MAX_TOTAL) throw new Error(`the archive inflates to more than ${Math.round((unpacked > MAX_ENTRY ? MAX_ENTRY : MAX_TOTAL) / 2 ** 20)} MB (${name}); it is too large to open`)
     out.set(name, async () => {
       const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true)
       const raw = u.subarray(start, start + size)
       if (method === 0) return raw
-      if (method === 8) return pipe(raw, new DecompressionStream('deflate-raw'))
+      if (method === 8) {
+        const out = await pipe(raw, new DecompressionStream('deflate-raw'))
+        // The directory can lie about sizes: check what came out.
+        if (out.length !== unpacked) throw new Error(`zip entry ${name} is damaged (inflates to ${out.length} bytes, not ${unpacked})`)
+        return out
+      }
       throw new Error(`zip entry ${name} uses compression method ${method}; only stored and deflate are supported`)
     })
   }
@@ -112,14 +125,37 @@ export function unzip(buf: ArrayBuffer | Uint8Array): Map<string, () => Promise<
 /** A zip of the files, deflated (stored when the runtime cannot compress). */
 export async function zipFiles(files: Record<string, string | Uint8Array>): Promise<Blob> {
   const enc = new TextEncoder()
+  const canDeflate = typeof CompressionStream !== 'undefined'
+  const entries: ZipEntry[] = []
+  for (const [name, content] of Object.entries(files)) {
+    const data = typeof content === 'string' ? enc.encode(content) : content
+    entries.push({ name, data, packed: canDeflate ? await pipe(data, new CompressionStream('deflate-raw')) : data, method: canDeflate ? 8 : 0 })
+  }
+  return writeZip(entries)
+}
+
+/** A zip of the files, stored without compression (synchronous; small text files such as Gerbers). */
+export function zipStored(files: Record<string, string | Uint8Array>): Blob {
+  const enc = new TextEncoder()
+  return writeZip(Object.entries(files).map(([name, content]) => {
+    const data = typeof content === 'string' ? enc.encode(content) : content
+    return { name, data, packed: data, method: 0 }
+  }))
+}
+
+interface ZipEntry {
+  name: string
+  data: Uint8Array
+  packed: Uint8Array
+  method: 0 | 8
+}
+
+function writeZip(entries: ZipEntry[]): Blob {
+  const enc = new TextEncoder()
   const parts: Uint8Array[] = []
   const central: Uint8Array[] = []
   let offset = 0
-  const canDeflate = typeof CompressionStream !== 'undefined'
-  for (const [name, content] of Object.entries(files)) {
-    const data = typeof content === 'string' ? enc.encode(content) : content
-    const packed = canDeflate ? await pipe(data, new CompressionStream('deflate-raw')) : data
-    const method = canDeflate ? 8 : 0
+  for (const { name, data, packed, method } of entries) {
     const n = enc.encode(name)
     const crc = crc32(data)
     const local = new DataView(new ArrayBuffer(30))
@@ -147,11 +183,11 @@ export async function zipFiles(files: Record<string, string | Uint8Array>): Prom
   const size = central.reduce((s, b) => s + b.length, 0)
   const end = new DataView(new ArrayBuffer(22))
   end.setUint32(0, 0x06054b50, true)
-  end.setUint16(8, Object.keys(files).length, true)
-  end.setUint16(10, Object.keys(files).length, true)
+  end.setUint16(8, entries.length, true)
+  end.setUint16(10, entries.length, true)
   end.setUint32(12, size, true)
   end.setUint32(16, offset, true)
-  return new Blob([...parts, ...central, new Uint8Array(end.buffer)] as BlobPart[])
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)] as BlobPart[], { type: 'application/zip' })
 }
 
 // ── STL ─────────────────────────────────────────────────────────────────
@@ -184,7 +220,8 @@ export function parseSTL(b: ArrayBuffer): TriMesh {
   return { positions: Float32Array.from(pts.slice(0, n * 9)), triangles: sequence(n * 3) }
 }
 
-function sequence(n: number): Uint32Array {
+/** 0, 1, ..., n - 1. */
+export function sequence(n: number): Uint32Array {
   const t = new Uint32Array(n)
   for (let i = 0; i < n; i++) t[i] = i
   return t
@@ -256,9 +293,17 @@ export interface ThreeMF {
 const UNITS: Record<string, number> = { micron: 0.001, millimeter: 1, centimeter: 10, inch: 25.4, foot: 304.8, meter: 1000 }
 const IDENTITY = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
 
+const attrRe = new Map<string, RegExp>()
+
+/** An attribute of an XML tag, in double or single quotes. */
 function attr(tag: string, name: string): string | undefined {
-  const re = new RegExp(`(?:^|\\s)${name.replace(':', '\\:')}\\s*=\\s*"([^"]*)"`)
-  return re.exec(tag)?.[1]
+  let re = attrRe.get(name)
+  if (!re) {
+    re = new RegExp(`(?:^|\\s)${name.replace(':', '\\:')}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`)
+    attrRe.set(name, re)
+  }
+  const m = re.exec(tag)
+  return m ? (m[1] ?? m[2]) : undefined
 }
 
 function unescapeXml(s: string): string {
@@ -369,8 +414,21 @@ function parseMesh(xml: string, start: number, end: number): TriMesh {
   return out
 }
 
-/** Reads a 3MF: its build items, and their triangles on demand. */
-export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
+/** An opened 3MF archive: its files, the root model, units, build items and model files on demand. */
+interface Archive {
+  files: Map<string, () => Promise<Uint8Array>>
+  text(path: string): Promise<string>
+  root: string
+  rootXml: string
+  unit: number
+  items: { id: string; path: string; transform: number[] }[]
+  /** A model file (cached) with its objects. */
+  model(path: string): Promise<{ xml: string; objects: Map<string, ObjectDef> }>
+  /** The mesh parts of an object with their transforms to the plate. */
+  partsOf(path: string, id: string, transform: number[]): Promise<MeshPart[]>
+}
+
+async function openArchive(buf: ArrayBuffer | Uint8Array): Promise<Archive> {
   const files = unzip(buf)
   const dec = new TextDecoder()
   const text = async (path: string) => {
@@ -380,8 +438,7 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
   }
   let root = '/3D/3dmodel.model'
   if (files.has('_rels/.rels')) {
-    const rels = await text('_rels/.rels')
-    const m = /<Relationship\b[^>]*Target="([^"]+)"[^>]*Type="[^"]*3dmodel"|<Relationship\b[^>]*Type="[^"]*3dmodel"[^>]*Target="([^"]+)"/.exec(rels)
+    const m = /<Relationship\b[^>]*Target="([^"]+)"[^>]*Type="[^"]*3dmodel"|<Relationship\b[^>]*Type="[^"]*3dmodel"[^>]*Target="([^"]+)"/.exec(await text('_rels/.rels'))
     if (m) root = m[1] ?? m[2]
   }
   if (!root.startsWith('/')) root = '/' + root
@@ -396,6 +453,26 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
     }
     return m
   }
+  const build = /<build\b[^>]*>([\s\S]*?)<\/build>/.exec(rootXml)?.[1] ?? ''
+  const items = [...build.matchAll(/<item\b([^>]*)\/?>/g)].map((m) => ({ id: attr(m[1], 'objectid') ?? '', path: attr(m[1], 'p:path') ?? root, transform: parseTransform(attr(m[1], 'transform')) }))
+  const partsOf = async (path: string, id: string, transform: number[]) => {
+    const out: MeshPart[] = []
+    const walk = async (path: string, id: string, transform: number[], depth: number) => {
+      if (depth > 16) throw new Error('3MF components nest too deep')
+      const def = (await model(path)).objects.get(id)
+      if (!def) throw new Error(`the 3MF has no object ${id} in ${path}`)
+      if (def.mesh) out.push({ path, id, transform })
+      for (const c of def.components ?? []) await walk(c.path ?? path, c.id, compose(c.transform, transform), depth + 1)
+    }
+    await walk(path, id, transform, 0)
+    return out
+  }
+  return { files, text, root, rootXml, unit, items, model, partsOf }
+}
+
+/** Reads a 3MF: its build items, and their triangles on demand. */
+export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
+  const { files, text, root, unit, items, model, partsOf } = await openArchive(buf)
   const rootObjects = (await model(root)).objects
 
   // Slicers (Bambu Studio, Orca, Prusa) keep object names in their own config.
@@ -423,21 +500,9 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
     }
   }
 
-  const build = /<build\b[^>]*>([\s\S]*?)<\/build>/.exec(rootXml)?.[1] ?? ''
-  const items: { id: string; path: string; transform: number[] }[] = []
-  for (const m of build.matchAll(/<item\b([^>]*)\/?>/g)) {
-    items.push({ id: attr(m[1], 'objectid') ?? '', path: attr(m[1], 'p:path') ?? root, transform: parseTransform(attr(m[1], 'transform')) })
-  }
   if (!items.length) throw new Error('the 3MF has no build items (nothing to print)')
   const objects = items.map((it) => ({ id: it.id, name: names.get(it.id) ?? rootObjects.get(it.id)?.name ?? `object ${it.id}`, ...(extruders.has(it.id) ? { filament: extruders.get(it.id) } : {}) }))
 
-  const parts = async (path: string, id: string, transform: number[], depth: number, out: MeshPart[]) => {
-    if (depth > 16) throw new Error('3MF components nest too deep')
-    const def = (await model(path)).objects.get(id)
-    if (!def) throw new Error(`the 3MF has no object ${id} in ${path}`)
-    if (def.mesh) out.push({ path, id, transform })
-    for (const c of def.components ?? []) await parts(c.path ?? path, c.id, compose(c.transform, transform), depth + 1, out)
-  }
   const meshes = new Map<string, TriMesh>()
 
   return {
@@ -447,8 +512,7 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
     async mesh(id: string) {
       const item = items.find((it) => it.id === id)
       if (!item) throw new Error(`the 3MF has no build item for object ${id}`)
-      const list: MeshPart[] = []
-      await parts(item.path, item.id, item.transform, 0, list)
+      const list = await partsOf(item.path, item.id, item.transform)
       if (!list.length) throw new Error(`object ${id} of the 3MF has no mesh`)
       const pieces: TriMesh[] = []
       for (const p of list) {
@@ -610,49 +674,14 @@ export interface Replace3MF {
  * is told which ids that touched.
  */
 export async function update3MF(original: ArrayBuffer | Uint8Array, replace: Replace3MF[]): Promise<{ blob: Blob; touched: string[] }> {
-  const files = unzip(original)
-  const dec = new TextDecoder()
+  const { files, text, unit, items, model, partsOf } = await openArchive(original)
   const enc = new TextEncoder()
-  const text = async (path: string) => {
-    const f = files.get(path.replace(/^\//, ''))
-    if (!f) throw new Error(`the 3MF has no ${path}`)
-    return dec.decode(await f())
-  }
-  let root = '/3D/3dmodel.model'
-  if (files.has('_rels/.rels')) {
-    const m = /<Relationship\b[^>]*Target="([^"]+)"[^>]*Type="[^"]*3dmodel"|<Relationship\b[^>]*Type="[^"]*3dmodel"[^>]*Target="([^"]+)"/.exec(await text('_rels/.rels'))
-    if (m) root = m[1] ?? m[2]
-  }
-  if (!root.startsWith('/')) root = '/' + root
-  const xmlOf = new Map<string, string>()
-  const load = async (p: string) => {
-    let x = xmlOf.get(p)
-    if (x === undefined) {
-      x = await text(p)
-      xmlOf.set(p, x)
-    }
-    return x
-  }
-  const rootXml = await load(root)
-  const unit = UNITS[attr(/<model\b[^>]*>/.exec(rootXml)?.[0] ?? '', 'unit') ?? 'millimeter'] ?? 1
-  const build = /<build\b[^>]*>([\s\S]*?)<\/build>/.exec(rootXml)?.[1] ?? ''
-  const items = [...build.matchAll(/<item\b([^>]*)\/?>/g)].map((m) => ({ id: attr(m[1], 'objectid') ?? '', path: attr(m[1], 'p:path') ?? root, transform: parseTransform(attr(m[1], 'transform')) }))
-
-  // The mesh parts of an item, with their transforms to the plate.
-  const partsOf = async (path: string, id: string, transform: number[], depth: number, out: MeshPart[]) => {
-    if (depth > 16) throw new Error('3MF components nest too deep')
-    const def = scanObjects(await load(path)).get(id)
-    if (!def) throw new Error(`the 3MF has no object ${id} in ${path}`)
-    if (def.mesh) out.push({ path, id, transform })
-    for (const c of def.components ?? []) await partsOf(c.path ?? path, c.id, compose(c.transform, transform), depth + 1, out)
-  }
 
   const edits = new Map<string, { path: string; id: string; mesh: TriMesh }>()
   for (const r of replace) {
     const item = items.find((it) => it.id === r.id)
     if (!item) throw new Error(`the 3MF has no build item for object ${r.id}`)
-    const parts: MeshPart[] = []
-    await partsOf(item.path, item.id, item.transform, 0, parts)
+    const parts = await partsOf(item.path, item.id, item.transform)
     if (parts.length !== 1) throw new Error(`object ${r.id} is made of ${parts.length} mesh parts; only objects with one mesh can be written back (export a new 3MF instead)`)
     const p = parts[0]
     // plate = (local · T) · unit, so local = (plate / unit) · T⁻¹.
@@ -662,18 +691,18 @@ export async function update3MF(original: ArrayBuffer | Uint8Array, replace: Rep
 
   // Which items use the rewritten mesh parts (also ones not asked for).
   const touched: string[] = []
+  const partsByItem = new Map<string, MeshPart[]>()
   for (const it of items) {
-    const parts: MeshPart[] = []
-    await partsOf(it.path, it.id, it.transform, 0, parts)
+    const parts = await partsOf(it.path, it.id, it.transform)
+    partsByItem.set(it.id, parts)
     if (parts.some((p) => edits.has(`${p.path}#${p.id}`))) touched.push(it.id)
   }
 
   const out: Record<string, string | Uint8Array> = {}
   const counts = new Map<string, number>()
-  for (const [path, xml] of xmlOf) {
+  for (const path of new Set([...edits.values()].map((e) => e.path))) {
     const mine = [...edits.values()].filter((e) => e.path === path)
-    if (!mine.length) continue
-    let next = xml
+    let next = (await model(path)).xml
     for (const e of mine) {
       const def = scanObjects(next).get(e.id)!
       const meshEnd = next.indexOf('</mesh>', def.mesh!.start) + '</mesh>'.length
@@ -681,19 +710,14 @@ export async function update3MF(original: ArrayBuffer | Uint8Array, replace: Rep
     }
     out[path.replace(/^\//, '')] = enc.encode(next)
   }
-  for (const e of edits.values()) counts.set(e.id, e.mesh.triangles.length / 3)
+  for (const [key, e] of edits) counts.set(key, e.mesh.triangles.length / 3)
 
   // Slicer configs keep a face count per object and part; keep them true.
   for (const cfg of ['Metadata/model_settings.config', 'Metadata/Slic3r_PE_model.config']) {
     if (!files.has(cfg)) continue
     let x = await text(cfg)
     const faces = new Map<string, number>()
-    for (const id of touched) {
-      const it = items.find((i) => i.id === id)!
-      const parts: MeshPart[] = []
-      await partsOf(it.path, it.id, it.transform, 0, parts)
-      faces.set(id, parts.reduce((s, p) => s + (counts.get(p.id) ?? 0), 0))
-    }
+    for (const id of touched) faces.set(id, partsByItem.get(id)!.reduce((s, p) => s + (counts.get(`${p.path}#${p.id}`) ?? 0), 0))
     x = x.replace(/<object\s+id="([^"]+)"[^>]*>[\s\S]*?<\/object>/g, (block, id: string) => {
       const n = faces.get(id)
       if (n === undefined) return block
@@ -755,7 +779,8 @@ export function paintFilament(attrs: string): number | undefined {
   const next = () => (pos >= 0 ? parseInt(hex[pos--], 16) : 0)
   const share = new Map<number, number>()
   const walk = (weight: number, depth: number) => {
-    if (depth > 12) return
+    // Every node takes at least one nibble, so the walk ends with the string.
+    if (pos < 0) return
     const code = next()
     const split = code & 3
     if (split === 0) {

@@ -176,6 +176,10 @@ describe('mesh bodies (STL, 3MF)', () => {
 
     // Deleting the source needs cascade: solids depends on it.
     expect(() => run(doc, 'delete_features', { names: ['set'] })).toThrow(/tall uses set/)
+    // Renaming the source keeps the solids that read it.
+    const renamed = run(doc, 'rename_feature', { name: 'set', to: 'piece_set' })
+    expect(renamed.features.find((f) => f.name === 'tall')).toMatchObject({ source: 'piece_set' })
+    expect(k.build(renamed).features.every((f) => f.ok)).toBe(true)
   }, 120_000)
 
   it('writes an edited object back into the slicer 3MF, keeping its frame, paint and the other files', async () => {

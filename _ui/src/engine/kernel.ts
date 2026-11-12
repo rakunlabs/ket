@@ -41,7 +41,7 @@ import { type ZoneFill, fillZones } from './pcb/zones'
 import type { BoardState } from './pcb/state'
 import { type Loop, type SolvedSketch, loopInside, solveSketch } from './sketch'
 import { drawSection } from './section-draw'
-import { MeshBody, composeBodies, displayMesh, meshBody, meshCube, meshFromTriangles } from './mesh-body'
+import { MeshBody, composeBodies, displayMesh, forgetPaint, meshBody, meshCube, meshFromTriangles } from './mesh-body'
 import { type ThreeMF, type TriMesh, fetchKey, isZip, paintFilament, parseSTL, pickObject, read3MF, update3MF, urlFile, urlFragment, write3MF, writeSTL } from './model-files'
 
 /** A built feature: an OpenCascade solid, or a triangle-mesh solid (imported STL / 3MF and what is built from it). */
@@ -55,10 +55,27 @@ const SOLID_STL_TRIANGLES = 20_000
 /** A downloaded model file, by URL (with #fragment). */
 type Loaded = { shape: Shape3D } | { tri: TriMesh; solid?: Shape3D | Error; mesh?: MeshBody }
 
+/** Every model URL a document imports (import features and board part models). */
+function importUrls(doc: Doc): Set<string> {
+  return new Set([...doc.features.flatMap((f) => (f.type === 'import' ? [f.url] : [])), ...(doc.pcb?.components ?? []).flatMap((c) => (c.model ? [c.model.url] : []))])
+}
+
 /** The triangles of a B-rep solid as a mesh body (fine tessellation: booleans with meshes, mesh checks). */
 function brepToMesh(s: Shape3D, what: string): MeshBody {
   const m = s.mesh({ tolerance: 0.01, angularTolerance: 0.1 })
   return meshFromTriangles(m.vertices, m.triangles, what)
+}
+
+/** True when two boxes are more than tol apart on some axis. */
+export function boxesApart(a: BBox, b: BBox, tol = 0): boolean {
+  return a[0].some((lo, k) => lo > b[1][k] + tol || b[0][k] > a[1][k] + tol)
+}
+
+/** The gap between two boxes (0 when they touch or overlap). */
+function boxGap(a: BBox, b: BBox): number {
+  let gap = 0
+  for (let k = 0; k < 3; k++) gap = Math.max(gap, a[0][k] - b[1][k], b[0][k] - a[1][k])
+  return gap
 }
 
 function bodyBox(b: Body): BBox {
@@ -702,9 +719,45 @@ export class Kernel {
 
   /** URLs to fetch before building doc: 3MF files once, whatever objects are taken from them. */
   missingImports(doc: Doc): string[] {
-    const urls = [...doc.features.flatMap((f) => (f.type === 'import' ? [f.url] : [])), ...(doc.pcb?.components ?? []).flatMap((c) => (c.model ? [c.model.url] : []))]
-    const want = urls.filter((u) => !this.imported.has(u) && !this.threeMF.has(fetchKey(u)))
+    const urls = importUrls(doc)
+    this.forgetImports(urls)
+    // A failed download is tried again on the next build (the network may be back).
+    for (const key of this.importErrors) {
+      this.imported.delete(key)
+      this.threeMF.delete(key)
+      // Objects of a 3MF whose download failed carry its error too.
+      for (const u of [...this.imported.keys()]) if (fetchKey(u) === key) this.imported.delete(u)
+    }
+    this.importErrors.clear()
+    const want = [...urls].filter((u) => !this.imported.has(u) && !this.threeMF.has(fetchKey(u)))
     return [...new Set(want.map(fetchKey))]
+  }
+
+  /** URLs whose download failed (not ones that were read and found broken): retried on the next build. */
+  private importErrors = new Set<string>()
+
+  /** Frees files no import uses any more. */
+  private forgetImports(used: Set<string>) {
+    const keys = new Set([...used].map(fetchKey))
+    for (const [u, e] of this.imported) {
+      if (used.has(u)) continue
+      if (!(e instanceof Error)) {
+        if ('shape' in e) e.shape.delete()
+        else {
+          if (e.solid && !(e.solid instanceof Error)) e.solid.delete()
+          forgetPaint(e.mesh?.paintId)
+          e.mesh?.delete()
+        }
+      }
+      this.imported.delete(u)
+      this.importErrors.delete(u)
+    }
+    for (const k of this.threeMF.keys()) {
+      if (!keys.has(k)) {
+        this.threeMF.delete(k)
+        this.importErrors.delete(k)
+      }
+    }
   }
 
   /**
@@ -713,13 +766,17 @@ export class Kernel {
    * when a feature asks for them by #id or #name.
    */
   async loadImport(url: string, data: ArrayBuffer | Error): Promise<void> {
+    const is3MF = /\.3mf$/i.test(fetchKey(url))
     if (data instanceof Error) {
-      if (fetchKey(url) !== url || /\.3mf$/i.test(url)) this.threeMF.set(fetchKey(url), data)
+      this.importErrors.add(is3MF ? fetchKey(url) : url)
+      if (is3MF) this.threeMF.set(fetchKey(url), data)
       else this.imported.set(url, data)
       return
     }
+    this.importErrors.delete(is3MF ? fetchKey(url) : url)
     try {
-      if (isZip(data) && /\.3mf$/i.test(url.split('#')[0])) {
+      if (is3MF) {
+        if (!isZip(data)) throw new Error('it is not a 3MF file (a 3MF is a zip archive); upload the .3mf the slicer saved')
         this.threeMF.set(fetchKey(url), await read3MF(data))
         return
       }
@@ -740,13 +797,15 @@ export class Kernel {
       }
       this.imported.set(url, entry)
     } catch (e) {
-      this.imported.set(url, new Error(`could not read ${url}: ${kernelMessage(e)}`))
+      const err = new Error(`could not read ${urlFile(url) || url}: ${kernelMessage(e)}`)
+      if (is3MF) this.threeMF.set(fetchKey(url), err)
+      else this.imported.set(url, err)
     }
   }
 
   /** Reads the #objects of opened 3MF files that doc uses (synchronous builds need them ready). */
   async prepareImports(doc: Doc): Promise<void> {
-    const urls = new Set([...doc.features.flatMap((f) => (f.type === 'import' ? [f.url] : [])), ...(doc.pcb?.components ?? []).flatMap((c) => (c.model ? [c.model.url] : []))])
+    const urls = importUrls(doc)
     for (const url of urls) {
       if (this.imported.has(url)) continue
       const file = this.threeMF.get(fetchKey(url))
@@ -1285,9 +1344,7 @@ export class Kernel {
           // First contact: confirm with the exact solids.
           const A = get(a)
           const B = get(b)
-          const [la, ha] = bodyBox(A)
-          const [lb, hb] = bodyBox(B)
-          if (la.some((x, k) => x > hb[k] || lb[k] > ha[k])) continue
+          if (boxesApart(bodyBox(A), bodyBox(B))) continue
           let vol: number
           if (isMesh(A) || isMesh(B)) {
             const ma = isMesh(A) ? A : brepToMesh(A, a)
@@ -1374,18 +1431,19 @@ export class Kernel {
   /** A fresh copy of a built feature as a mesh body (B-rep solids are tessellated once and kept). */
   meshOf(name: string): MeshBody {
     const c = this.cache.get(name)
-    if (!c) return this.body(name) as MeshBody
+    // Not built: body() says which features there are.
+    if (!c) return this.body(name) as never
     if (isMesh(c.shape)) return c.shape.clone()
     c.meshed ??= brepToMesh(c.shape, name)
     return c.meshed.clone()
   }
 
   /** A fresh copy of a built B-rep feature; says what to do when it is a mesh body. */
-  shape(name: string, why = 'this operation'): Shape3D {
+  shape(name: string): Shape3D {
     const b = this.body(name)
     if (isMesh(b)) {
       b.delete()
-      throw new Error(`"${name}" is a triangle mesh (imported STL / 3MF), and ${why} needs a B-rep solid with faces and edges; use boolean, transform, pattern or mirror on it, or model this part as a B-rep (box, extrude, ...) and combine it with the mesh`)
+      throw new Error(`"${name}" is a triangle mesh (imported STL / 3MF), and this operation needs a B-rep solid with faces and edges; use boolean, transform, pattern or mirror on it, or model this part as a B-rep (box, extrude, ...) and combine it with the mesh`)
     }
     return b
   }
@@ -1550,7 +1608,7 @@ export class Kernel {
             const shape = this.shape(name)
             return { name, shape, box: bboxOf(shape) }
           })
-          const clear = (a: BBox, b: BBox) => a[0].some((lo, k) => lo > b[1][k] + 0.01 || b[0][k] > a[1][k] + 0.01)
+          const clear = (a: BBox, b: BBox) => boxesApart(a, b, 0.01)
           const groups: (typeof tools)[] = []
           for (const t of tools) {
             const g = groups.find((g) => g.every((o) => clear(o.box, t.box)))
@@ -1706,17 +1764,23 @@ export class Kernel {
       case 'boolean': {
         if (!f.tools.length) throw new Error('tools must name at least one feature')
         const target = this.meshOf(f.target)
+        const tools: { name: string; body: MeshBody }[] = []
+        try {
+          for (const t of f.tools) tools.push({ name: t, body: this.meshOf(t) })
+        } catch (e) {
+          target.delete()
+          for (const t of tools) t.body.delete()
+          throw e
+        }
         const before = target.volume()
         const targetBox = target.bbox()
-        const tools = f.tools.map((t) => ({ name: t, body: this.meshOf(t) }))
-        const clear = (a: BBox, b: BBox) => a[0].some((lo, k) => lo > b[1][k] + 0.01 || b[0][k] > a[1][k] + 0.01)
         if (f.op === 'cut') {
-          for (const t of tools) {
-            if (clear(t.body.bbox(), targetBox) || target.overlap(t.body).volume < 1e-6) warnings.push(`cutting "${t.name}" removed no material: it does not overlap "${f.target}"`)
-          }
+          // Only tools whose box meets the target can cut; one that misses removes nothing.
+          for (const t of tools) if (boxesApart(t.body.bbox(), targetBox, 0.01)) warnings.push(`cutting "${t.name}" removed no material: it does not overlap "${f.target}"`)
         }
         const solids0 = f.op === 'union' && !f.separate ? target.solids() : 0
         const out = target.boolean(f.op, tools.map((t) => t.body))
+        if (f.op === 'cut' && tools.length && !warnings.length && Math.abs(out.volume() - before) < 1e-6) warnings.push(`cutting ${f.tools.map((t) => `"${t}"`).join(', ')} removed no material: ${f.tools.length > 1 ? 'they do' : 'it does'} not overlap "${f.target}"`)
         const after = out.volume()
         if (f.op === 'intersect' && after < 1e-9) warnings.push('the intersection is empty')
         if (f.op === 'union' && before > 0 && Math.abs(after - before) < 1e-6) warnings.push('the union added no material')
@@ -1801,8 +1865,14 @@ export class Kernel {
       b.delete()
     } else {
       const s = (b as unknown as { solids?: Shape3D[] }).solids
-      parts = s && s.length > 1 ? s.map((x) => x.clone() as Shape3D) : [b]
-      if (parts[0] !== b) b.delete()
+      if (s && s.length > 1) {
+        parts = s.map((x) => x.clone() as Shape3D)
+        for (const x of s) x.delete()
+        b.delete()
+      } else {
+        for (const x of s ?? []) x.delete()
+        parts = [b]
+      }
     }
     return parts.map((body) => {
       const box = bodyBox(body)
@@ -1880,7 +1950,9 @@ export class Kernel {
       bodies.forEach((b, i) => b !== meshes[i] && b.delete())
       return composeBodies(meshes)
     }
-    return R.makeCompound(bodies as Shape3D[]) as unknown as Shape3D
+    const compound = R.makeCompound(bodies as Shape3D[]) as unknown as Shape3D
+    for (const b of bodies) b.delete()
+    return compound
   }
 
   /**
@@ -1928,13 +2000,30 @@ export class Kernel {
   }
 
   /**
-   * Colors for slicer paint: the filament colors of the opened 3MF projects
-   * (a triangle painted with filament n shows filament n's color). Paint
-   * state 0 is "the object's own filament": left to the body color.
+   * The 3MF project a body comes from and the object in it, following
+   * inputs back to the import (the first input of a boolean, the source of
+   * solids): its filament colors show the body's paint.
    */
-  private paintColors(): ((attrs: string) => [number, number, number] | undefined) | undefined {
-    const filaments = [...this.threeMF.values()].find((f): f is ThreeMF => !(f instanceof Error) && f.filaments.length > 0)?.filaments
-    if (!filaments) return undefined
+  private sourceOf(name: string, depth = 0): { file: ThreeMF; object?: ThreeMF['objects'][number] } | undefined {
+    const f = this.doc?.features.find((x) => x.name === name)
+    if (!f || depth > 64) return undefined
+    if (f.type === 'import') {
+      const file = this.threeMF.get(fetchKey(f.url))
+      if (!file || file instanceof Error) return undefined
+      try {
+        return { file, object: pickObject(file, urlFragment(f.url), urlFile(f.url)) }
+      } catch {
+        return { file }
+      }
+    }
+    const src = f.type === 'solids' ? f.source : inputsOf(f)[0]
+    return src ? this.sourceOf(src, depth + 1) : undefined
+  }
+
+  /** Paint state → RGB for a body: its 3MF's filament colors (state 0, "the object's own", is left to the body color). */
+  private paintColors(name: string): ((attrs: string) => [number, number, number] | undefined) | undefined {
+    const filaments = this.sourceOf(name)?.file.filaments
+    if (!filaments?.length) return undefined
     const rgb = filaments.map((c) => {
       const m = /^#?([0-9a-f]{6})/i.exec(c)
       if (!m) return undefined
@@ -1951,22 +2040,10 @@ export class Kernel {
     }
   }
 
-  /** The color of the filament a 3MF object prints with, for the body built from it (following inputs back to the import). */
-  private filamentOf(name: string, depth = 0): string | undefined {
-    const f = this.doc?.features.find((x) => x.name === name)
-    if (!f || depth > 64) return undefined
-    if (f.type === 'import') {
-      const file = this.threeMF.get(fetchKey(f.url))
-      if (!file || file instanceof Error) return undefined
-      try {
-        const obj = pickObject(file, urlFragment(f.url), '')
-        return obj.filament ? file.filaments[obj.filament - 1] : undefined
-      } catch {
-        return undefined
-      }
-    }
-    const src = f.type === 'solids' ? f.source : inputsOf(f)[0]
-    return src ? this.filamentOf(src, depth + 1) : undefined
+  /** The color of the filament a 3MF object prints with where it is not painted. */
+  private filamentOf(name: string): string | undefined {
+    const src = this.sourceOf(name)
+    return src?.object?.filament ? src.file.filaments[src.object.filament - 1] : undefined
   }
 
   /** section with a picture of the cut (PNG base64) when a canvas is available. */
@@ -2005,7 +2082,7 @@ export class Kernel {
       st.volume = round(s.volume(), 3)
       st.solids = s.solids()
       st.triangles = s.triangles
-      if (st.solids > 1 && f.type !== 'pattern' && f.type !== 'mirror' && f.type !== 'import' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
+      if (st.solids > 1 && f.type !== 'pattern' && f.type !== 'mirror' && f.type !== 'import' && f.type !== 'solids' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
       if (st.volume <= 0) warnings.push('the result has no volume')
       if (warnings.length) st.warnings = warnings
       return st
@@ -2024,7 +2101,7 @@ export class Kernel {
     } catch {
       // A shape without a bounding box is still valid (empty intersect).
     }
-    if ((st.solids ?? 1) > 1 && f.type !== 'pattern' && f.type !== 'mirror' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
+    if ((st.solids ?? 1) > 1 && f.type !== 'pattern' && f.type !== 'mirror' && f.type !== 'solids' && !(f.type === 'boolean' && (f.separate || warnings.some((w) => w.includes('separate solids'))))) warnings.push(`the result has ${st.solids} separate solids`)
     if (st.volume !== undefined && st.volume <= 0) warnings.push('the result has no volume')
     if (warnings.length) st.warnings = warnings
     return st
@@ -2088,11 +2165,13 @@ export class Kernel {
     for (const name of result.bodies) {
       const c = this.cache.get(name)
       if (!c) continue
-      const key = c.key + '#' + name
+      // Paint shows in the source project's filament colors: they are part of the key.
+      const palette = isMesh(c.shape) ? this.sourceOf(name)?.file.filaments.join(',') ?? '' : ''
+      const key = c.key + '#' + name + '#' + palette
       live.add(key)
       let m = this.meshCache.get(key)
       if (!m && isMesh(c.shape)) {
-        const d = displayMesh(c.shape, 30, this.paintColors())
+        const d = displayMesh(c.shape, 30, this.paintColors(name))
         m = { name, key, vertices: d.vertices, normals: d.normals, triangles: d.triangles, edges: d.edges, edgeGroups: new Uint32Array(0), faceGroups: new Uint32Array([0, d.triangles.length / 3]), ...(d.colors ? { colors: d.colors } : {}) }
         this.meshCache.set(key, m)
       }
@@ -2375,8 +2454,7 @@ export class Kernel {
     const bb = cb.status.bbox
     if (ba && bb) {
       // Gap between the boxes: > 0 means they cannot touch.
-      let gap = 0
-      for (let i = 0; i < 3; i++) gap = Math.max(gap, ba[0][i] - bb[1][i], bb[0][i] - ba[1][i])
+      const gap = boxGap(ba, bb)
       if (kind === 'overlap' && gap > 1e-3) v = 0
       // A distance check only needs the exact value when the boxes are closer than the limit.
       if (kind === 'distance' && gap > min + 1e-3) v = gap
@@ -2391,9 +2469,7 @@ export class Kernel {
     const ba = this.cache.get(a)?.status.bbox
     const bb = this.cache.get(b)?.status.bbox
     if (!ba || !bb) return false
-    let gap = 0
-    for (let i = 0; i < 3; i++) gap = Math.max(gap, ba[0][i] - bb[1][i], bb[0][i] - ba[1][i])
-    return gap > min + 1e-3
+    return boxGap(ba, bb) > min + 1e-3
   }
 
   checks(doc: Doc): CheckResult[] {
@@ -2541,7 +2617,13 @@ export class Kernel {
       const obj = pickObject(opened, urlFragment(f.url), urlFile(f.url))
       const c = this.cache.get(pr.body)
       if (!c) throw new Error(`no body "${pr.body}"`)
-      const mesh = isMesh(c.shape) ? c.shape.triMesh() : this.meshOf(pr.body).triMesh()
+      let mesh: TriMesh
+      if (isMesh(c.shape)) mesh = c.shape.triMesh()
+      else {
+        const m = this.meshOf(pr.body)
+        mesh = m.triMesh()
+        m.delete()
+      }
       replace.push({ id: obj.id, mesh })
       objectNames.set(obj.id, obj.name)
     }

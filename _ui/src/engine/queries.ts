@@ -4,7 +4,7 @@
 
 import { z } from 'zod'
 
-import { type Doc, bodies, inputsOf } from './doc'
+import { type Doc, bodies, dependsOn, inputsOf } from './doc'
 import type { BuildResult } from './kernel'
 import { urlFile } from './model-files'
 import { explodeOffset } from './explode'
@@ -82,7 +82,7 @@ define({
     const f = ctx.doc.features.find((x) => x.name === a.name)
     if (!f) throw new Error(`no feature "${a.name}"; features are: ${ctx.doc.features.map((x) => x.name).join(', ') || '(none)'}`)
     const st = (await ctx.kernel.build()).features.find((x) => x.name === a.name)
-    const usedBy = ctx.doc.features.filter((x) => inputsOf(x).includes(a.name)).map((x) => x.name)
+    const usedBy = ctx.doc.features.filter((x) => dependsOn(x).includes(a.name)).map((x) => x.name)
     return { definition: f, status: st, used_by: usedBy }
   },
 })

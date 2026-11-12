@@ -5,7 +5,7 @@
 import { z } from 'zod'
 
 import { type Doc, type Feature, dependsOn, findFeature, inputsOf, normalizeDoc, refsOf, sketchesOf } from './doc'
-import { namesIn } from './expr'
+import { namesIn, num } from './expr'
 import { define, applyOp } from './registry'
 import { checkDef, common, expr, featureName, featureRef, ident, placement, plane, profile, selector, vec2, vec3 } from './schema'
 
@@ -580,7 +580,7 @@ define({
       i = at + members.length
     }
     const before = new Set(next.features.slice(0, i).map((x) => x.name))
-    for (const input of inputsOf(next.features[i])) {
+    for (const input of dependsOn(next.features[i])) {
       if (before.has(input)) continue
       const later = next.features.some((x) => x.name === input)
       throw new Error(
@@ -648,6 +648,13 @@ define({
       const g = { ...f, name: ren(f.name) } as Record<string, unknown>
       if (typeof g.target === 'string') g.target = ren(g.target)
       if (Array.isArray(g.tools)) g.tools = (g.tools as string[]).map(ren)
+      if (typeof g.source === 'string') g.source = ren(g.source)
+      // Gears follow the gear they mesh with or share a shaft with; a geneva wheel its drive.
+      for (const k of ['mesh', 'coaxial'] as const) {
+        const m = g[k] as { with?: string } | undefined
+        if (m && typeof m.with === 'string') g[k] = { ...m, with: ren(m.with) }
+      }
+      if (typeof g.drive === 'string') g.drive = ren(g.drive)
       return g as unknown as Feature
     })
     if (a.keep_checks) return { doc: next, summary: `renamed ${a.name} → ${a.to} (checks and decals stay on ${a.name})` }
@@ -765,7 +772,7 @@ define({
   group: 'cad',
   kind: 'mutate',
   description:
-    'Lay bodies out on a print plate: each one is placed flat on z = 0 inside the plate (width × depth, default 256 × 256 mm, Bambu A1/X1/P1), left to right in rows with gap mm between them, as new transform features named <body>_placed (the originals are consumed, like transform). rotate (optional, per body) turns a part first, e.g. [180, 0, 0] to print a cover face down. Bodies that do not fit the plate are reported, not placed. Positions are worked out once from the current boxes and stored as numbers, so the result is a normal transform you can change.',
+    'Lay bodies out on a print plate: each one is placed flat on z = 0 inside the plate (width × depth, default 256 × 256 mm, Bambu A1/X1/P1), left to right in rows with gap mm between them, as new transform features named <body>_placed (the originals are consumed, like transform). rotate (optional, per body) turns a part first, e.g. [180, 0, 0] to print a cover face down. When a body does not fit, nothing is placed and the error lists what does not fit, so you can rotate it, pick a bigger plate or arrange it on a second plate (origin). Positions are worked out once from the current boxes and stored as numbers, so the result is a normal transform you can change.',
   args: z.object({
     names: z.array(featureRef).min(1).describe('Bodies to place'),
     plate: z.tuple([z.number().positive(), z.number().positive()]).optional().describe('Plate width and depth in mm (default [256, 256])'),
@@ -794,7 +801,8 @@ define({
       if (!st?.ok || !st.bbox) throw new Error(`"${name}" is not built (${st?.error ?? 'no such feature'}); fix it before arranging`)
       const rot = a.rotate?.[name]
       // Size after the rotation: rotate the box corners (exact for 90° turns, a bound otherwise).
-      const r = (rot ?? [0, 0, 0]).map((v) => Number(v) || 0) as [number, number, number]
+      const params = new Map(Object.entries(build.parameters))
+      const r = (rot ?? [0, 0, 0]).map((v, i) => num(v, params, `rotate.${name}[${i}]`)) as [number, number, number]
       const [lo, hi] = st.bbox
       const corners: [number, number, number][] = []
       for (const cx of [lo[0], hi[0]]) for (const cy of [lo[1], hi[1]]) for (const cz of [lo[2], hi[2]]) corners.push(rotXYZ([cx, cy, cz], r))

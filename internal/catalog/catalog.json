@@ -4602,7 +4602,7 @@
       "name": "arrange",
       "group": "cad",
       "kind": "mutate",
-      "description": "Lay bodies out on a print plate: each one is placed flat on z = 0 inside the plate (width × depth, default 256 × 256 mm, Bambu A1/X1/P1), left to right in rows with gap mm between them, as new transform features named <body>_placed (the originals are consumed, like transform). rotate (optional, per body) turns a part first, e.g. [180, 0, 0] to print a cover face down. Bodies that do not fit the plate are reported, not placed. Positions are worked out once from the current boxes and stored as numbers, so the result is a normal transform you can change.",
+      "description": "Lay bodies out on a print plate: each one is placed flat on z = 0 inside the plate (width × depth, default 256 × 256 mm, Bambu A1/X1/P1), left to right in rows with gap mm between them, as new transform features named <body>_placed (the originals are consumed, like transform). rotate (optional, per body) turns a part first, e.g. [180, 0, 0] to print a cover face down. When a body does not fit, nothing is placed and the error lists what does not fit, so you can rotate it, pick a bigger plate or arrange it on a second plate (origin). Positions are worked out once from the current boxes and stored as numbers, so the result is a normal transform you can change.",
       "schema": {
         "type": "object",
         "properties": {
