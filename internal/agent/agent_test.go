@@ -61,6 +61,50 @@ func TestUsageFromStream(t *testing.T) {
 	}
 }
 
+func TestRetriesWithoutStreamOptions(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var req chatRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.StreamOptions != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"Unrecognized request argument supplied: stream_options"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	c := &client{p: settings.Provider{Name: "strict", BaseURL: srv.URL, Model: "strict-m"}, http: http.DefaultClient}
+	for i := 0; i < 2; i++ {
+		m, u, err := c.completeUsage(context.Background(), []Message{{Role: "user", Content: textContent("hi")}}, nil, func(string) {})
+		if err != nil || m.Text() != "ok" || !u.Estimated {
+			t.Fatalf("round %d: %q %+v %v", i, m.Text(), u, err)
+		}
+	}
+	// The refusal is remembered: the second round asks without the option at once.
+	if calls != 3 {
+		t.Fatalf("%d requests, want 3", calls)
+	}
+}
+
+func TestAnsweredFillsMissingToolResults(t *testing.T) {
+	h := []Message{
+		{Role: "user", Content: textContent("go")},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "a"}, {ID: "b"}}},
+		{Role: "tool", ToolCallID: "a", Content: textContent("done")},
+		{Role: "user", Content: textContent("next")},
+	}
+	got := answered(h)
+	if len(got) != 5 || got[3].Role != "tool" || got[3].ToolCallID != "b" || got[4].Text() != "next" {
+		t.Fatalf("answered: %+v", got)
+	}
+	if len(answered(got)) != 5 {
+		t.Fatal("answered is not idempotent")
+	}
+}
+
 func TestUsageEstimatedWhenNotReported(t *testing.T) {
 	srv, _ := fakeProvider(t, func(chatRequest) string { return strings.Repeat("word ", 40) }, false)
 	c := &client{p: settings.Provider{Name: "fake", BaseURL: srv.URL, Model: "m"}, http: http.DefaultClient}

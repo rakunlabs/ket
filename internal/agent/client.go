@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/rakunlabs/ket/internal/settings"
 )
@@ -135,15 +137,45 @@ func (c *client) complete(ctx context.Context, msgs []Message, tools []toolDef, 
 // completeUsage is complete with the token usage of the request: as the
 // provider reports it (stream_options.include_usage), else estimated.
 func (c *client) completeUsage(ctx context.Context, msgs []Message, tools []toolDef, onText func(string)) (Message, Usage, error) {
-	m, u, err := c.request(ctx, msgs, tools, onText)
+	ask := !noUsageOption(c.p)
+	m, u, err := c.request(ctx, msgs, tools, onText, ask)
+	// A strict server refuses the stream_options field: ask once more without it, and remember.
+	var bad errBadRequest
+	if ask && errors.As(err, &bad) && (strings.Contains(strings.ToLower(bad.body), "stream_options") || strings.Contains(strings.ToLower(bad.body), "include_usage")) {
+		rememberNoUsageOption(c.p)
+		m, u, err = c.request(ctx, msgs, tools, onText, false)
+	}
 	if err == nil && u.PromptTokens == 0 && u.CompletionTokens == 0 {
 		u = Usage{PromptTokens: estimateTokens(msgs, tools), CompletionTokens: estimateTokens([]Message{m}, nil), Estimated: true}
 	}
 	return m, u, err
 }
 
-func (c *client) request(ctx context.Context, msgs []Message, tools []toolDef, onText func(string)) (Message, Usage, error) {
-	req := chatRequest{Model: c.p.Model, Messages: msgs, Tools: tools, Stream: true, StreamOptions: &streamOptions{IncludeUsage: true}}
+// errBadRequest is a 4xx answer, with its body for the caller to read.
+type errBadRequest struct {
+	msg  string
+	body string
+}
+
+func (e errBadRequest) Error() string { return e.msg }
+
+// Providers (base URL + model) that refused stream_options, for this process.
+var noUsage sync.Map
+
+func usageKey(p settings.Provider) string { return p.BaseURL + "|" + p.Model }
+
+func noUsageOption(p settings.Provider) bool {
+	_, ok := noUsage.Load(usageKey(p))
+	return ok
+}
+
+func rememberNoUsageOption(p settings.Provider) { noUsage.Store(usageKey(p), true) }
+
+func (c *client) request(ctx context.Context, msgs []Message, tools []toolDef, onText func(string), askUsage bool) (Message, Usage, error) {
+	req := chatRequest{Model: c.p.Model, Messages: msgs, Tools: tools, Stream: true}
+	if askUsage {
+		req.StreamOptions = &streamOptions{IncludeUsage: true}
+	}
 	if c.p.Temperature > 0 {
 		t := c.p.Temperature
 		req.Temperature = &t
@@ -172,7 +204,11 @@ func (c *client) request(ctx context.Context, msgs []Message, tools []toolDef, o
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Message{}, Usage{}, fmt.Errorf("%s answered %s: %s", c.p.Name, resp.Status, strings.TrimSpace(string(b)))
+		msg := fmt.Sprintf("%s answered %s: %s", c.p.Name, resp.Status, strings.TrimSpace(string(b)))
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return Message{}, Usage{}, errBadRequest{msg: msg, body: string(b)}
+		}
+		return Message{}, Usage{}, errors.New(msg)
 	}
 
 	// Some servers ignore stream:true and answer one JSON object.

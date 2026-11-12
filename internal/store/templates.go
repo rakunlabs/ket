@@ -2,10 +2,14 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Template is a .ket project file kept by the server: a template to start
@@ -50,13 +54,26 @@ func (s *Store) ListTemplates(ctx context.Context, kind string) ([]*Template, er
 	return out, rows.Err()
 }
 
-// GetTemplate finds one by id, or by kind and name.
+// GetTemplate finds one by id (of the kind, when given), or by kind and name.
+// A name that is both a template and a block needs the kind.
 func (s *Store) GetTemplate(ctx context.Context, kind, idOrName string) (*Template, error) {
 	var t Template
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, kind, name, description, data, length(data), COALESCE(created_by, ''), updated_at FROM templates
-		WHERE (id::text = $1 OR (name = $1 AND ($2 = '' OR kind = $2))) ORDER BY id::text = $1 DESC LIMIT 1`, idOrName, kind).
-		Scan(&t.ID, &t.Kind, &t.Name, &t.Description, &t.Data, &t.Bytes, &t.CreatedBy, &t.UpdatedAt)
+	idOrName = strings.TrimSpace(idOrName)
+	const cols = `SELECT id, kind, name, description, data, length(data), COALESCE(created_by, ''), updated_at FROM templates`
+	var row *sql.Row
+	if _, err := uuid.Parse(idOrName); err == nil {
+		row = s.db.QueryRowContext(ctx, cols+` WHERE id = $1::uuid AND ($2 = '' OR kind = $2)`, idOrName, kind)
+	} else {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM templates WHERE name = $1 AND ($2 = '' OR kind = $2)`, idOrName, kind).Scan(&n); err != nil {
+			return nil, fmt.Errorf("find template; %w", err)
+		}
+		if n > 1 {
+			return nil, fmt.Errorf("%q is both a template and a block: say which kind (or use its id)", idOrName)
+		}
+		row = s.db.QueryRowContext(ctx, cols+` WHERE name = $1 AND ($2 = '' OR kind = $2)`, idOrName, kind)
+	}
+	err := row.Scan(&t.ID, &t.Kind, &t.Name, &t.Description, &t.Data, &t.Bytes, &t.CreatedBy, &t.UpdatedAt)
 	if err != nil {
 		return nil, notFound(err, "template "+idOrName)
 	}
@@ -73,7 +90,7 @@ func (s *Store) SaveTemplate(ctx context.Context, t *Template, replace bool) (*T
 	q += ` RETURNING id`
 	var id string
 	if err := s.db.QueryRowContext(ctx, q, t.Kind, t.Name, t.Description, t.Data, t.CreatedBy).Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+		if uniqueViolation(err) {
 			return nil, fmt.Errorf("a %s named %q %w", t.Kind, t.Name, ErrExists)
 		}
 		return nil, fmt.Errorf("save template; %w", err)
@@ -83,10 +100,24 @@ func (s *Store) SaveTemplate(ctx context.Context, t *Template, replace bool) (*T
 }
 
 func (s *Store) DeleteTemplate(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM templates WHERE id::text = $1`, id)
+	if _, err := uuid.Parse(id); err != nil {
+		return fmt.Errorf("template %s; %w", id, ErrNotFound)
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM templates WHERE id = $1::uuid`, id)
 	if err != nil {
 		return fmt.Errorf("delete template; %w", err)
 	}
 
 	return expectRow(res, "template "+id)
+}
+
+// TemplateOp is the first op of a project started from t: an import_project
+// of its file, replayed in the browser like any other op. nil for no template.
+func TemplateOp(t *Template) json.RawMessage {
+	if t == nil {
+		return nil
+	}
+	op, _ := json.Marshal(map[string]any{"cmd": "import_project", "args": map[string]any{"data": t.Data}})
+
+	return op
 }

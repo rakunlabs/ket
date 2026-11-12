@@ -83,6 +83,13 @@ func (s *Store) FindProject(ctx context.Context, idOrName string) (*Project, err
 // CreateProject creates the project and its main branch. ownerID is the
 // creating user, or "" without accounts.
 func (s *Store) CreateProject(ctx context.Context, name, description, ownerID string) (*Project, error) {
+	return s.CreateProjectWith(ctx, name, description, ownerID, nil, "")
+}
+
+// CreateProjectWith creates a project whose main branch starts with first
+// (e.g. an import_project op from a template), in one transaction: either
+// the project exists with its first op, or not at all.
+func (s *Store) CreateProjectWith(ctx context.Context, name, description, ownerID string, first json.RawMessage, author string) (*Project, error) {
 	var id string
 	var owner any
 	if ownerID != "" {
@@ -93,9 +100,19 @@ func (s *Store) CreateProject(ctx context.Context, name, description, ownerID st
 			`INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING id`, name, description, owner).Scan(&id); err != nil {
 			return fmt.Errorf("insert project; %w", err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO branches (project_id, name) VALUES ($1, 'main')`, id); err != nil {
+		var branch string
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO branches (project_id, name) VALUES ($1, 'main') RETURNING id`, id).Scan(&branch); err != nil {
 			return fmt.Errorf("insert branch; %w", err)
+		}
+		if first == nil {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ops (branch_id, seq, op, author, message) VALUES ($1, 1, $2, $3, '')`, branch, []byte(first), author); err != nil {
+			return fmt.Errorf("insert first op; %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE branches SET head_seq = 1 WHERE id = $1`, branch); err != nil {
+			return fmt.Errorf("move head; %w", err)
 		}
 
 		return nil

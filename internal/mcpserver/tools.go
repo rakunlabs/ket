@@ -354,16 +354,9 @@ func (t *Tools) call(ctx context.Context, name string, args json.RawMessage, cal
 				return Result{}, fmt.Errorf("no template %q; list_templates shows them", in.Template)
 			}
 		}
-		p, err := t.store.CreateProject(ctx, in.Name, in.Description, t.subject(ctx))
+		p, err := t.store.CreateProjectWith(ctx, in.Name, in.Description, t.subject(ctx), store.TemplateOp(tpl), call.Author)
 		if err != nil {
 			return Result{}, err
-		}
-		if tpl != nil {
-			op, _ := json.Marshal(map[string]any{"cmd": "import_project", "args": map[string]any{"data": tpl.Data}})
-			if _, err := t.store.AppendOp(ctx, p.MainBranch, 0, op, "mcp", "from template "+tpl.Name); err != nil {
-				_ = t.store.DeleteProject(ctx, p.ID)
-				return Result{}, err
-			}
 		}
 		out := map[string]any{"id": p.ID, "name": p.Name}
 		if _, err := t.hub.OpenProject(ctx, t.subject(ctx), p, in.Activate == nil || *in.Activate); err != nil {
@@ -445,12 +438,16 @@ func (t *Tools) call(ctx context.Context, name string, args json.RawMessage, cal
 	// insert_block with a server block by name: the block's text goes into the op.
 	if name == "insert_block" {
 		var b string
-		if raw, ok := m["block"]; ok && json.Unmarshal(raw, &b) == nil && b != "" && m["data"] == nil {
+		raw, has := m["block"]
+		delete(m, "block")
+		if has && json.Unmarshal(raw, &b) == nil && b != "" {
+			if d, ok := m["data"]; ok && string(d) != "null" {
+				return Result{}, errors.New("give block (a server block by name) or data (a .ket file text), not both")
+			}
 			tpl, err := t.store.GetTemplate(ctx, "block", b)
 			if err != nil {
 				return Result{}, fmt.Errorf("no block %q; list_templates kind block shows them", b)
 			}
-			delete(m, "block")
 			m["data"], _ = json.Marshal(tpl.Data)
 		}
 	}

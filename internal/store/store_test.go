@@ -508,4 +508,28 @@ func TestTemplates(t *testing.T) {
 	if !found {
 		t.Fatal("list misses the block or carries its data")
 	}
+
+	// The same name as a template too: by name it needs the kind.
+	tp, err := st.SaveTemplate(ctx, &Template{Kind: "template", Name: "usb power test", Data: data}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteTemplate(ctx, tp.ID) })
+	if _, err := st.GetTemplate(ctx, "", "usb power test"); err == nil || !strings.Contains(err.Error(), "say which kind") {
+		t.Fatalf("ambiguous name: %v", err)
+	}
+	if got, err := st.GetTemplate(ctx, "", tp.ID); err != nil || got.Kind != "template" {
+		t.Fatalf("by id: %+v %v", got, err)
+	}
+
+	// A project from it starts with its import, in one go.
+	p, err := st.CreateProjectWith(ctx, "from template test", "", "", TemplateOp(tp), "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteProject(ctx, p.ID) })
+	ops, err := st.Ops(ctx, p.MainBranch, 0, 10)
+	if err != nil || len(ops) != 1 || !strings.Contains(string(ops[0].Op), "import_project") || ops[0].Author != "tester" {
+		t.Fatalf("first op: %+v %v", ops, err)
+	}
 }

@@ -191,6 +191,10 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 			branchID = *conv.BranchID
 		}
 	}
+	// Before anything is created: an over-budget user gets no new proposal branch.
+	if err := a.checkBudget(ctx); err != nil {
+		return err
+	}
 	if propose && branchID == "" {
 		b, err := a.store.CreateBranch(ctx, project.MainBranch, "proposal-"+conv.ID[:8]+"-"+time.Now().Format("150405"))
 		if err != nil {
@@ -204,10 +208,6 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 		a.onBranch(ctx, project.ID, b)
 	}
 
-	if err := a.checkBudget(ctx); err != nil {
-		return err
-	}
-
 	all, err := a.history(ctx, conv.ID)
 	if err != nil {
 		return err
@@ -216,10 +216,10 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 	if err != nil {
 		return err
 	}
-	// Messages the summary covers are not sent again.
+	// Messages the summary covers are not sent again (upto counts messages of the history).
 	history := all
-	if upto > 0 && int(upto) <= len(all) {
-		history = all[upto:]
+	if upto > 0 {
+		history = all[min(int(upto), len(all)):]
 	}
 
 	if conv.Title == "" {
@@ -243,7 +243,7 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 	maxSteps := a.settings.Get().MaxSteps
 	for step := 0; step < maxSteps; step++ {
 		summary, upto, history = a.compact(ctx, conv, c, p, summary, upto, history, emit)
-		msgs := append([]Message{{Role: "system", Content: textContent(a.system(project, branchID != ""))}}, prune(withSummary(summary, history))...)
+		msgs := append([]Message{{Role: "system", Content: textContent(a.system(project, branchID != ""))}}, prune(answered(withSummary(summary, history)))...)
 
 		reply, usage, err := c.completeUsage(ctx, msgs, tools, func(delta string) {
 			emit(Event{Type: "text", Delta: delta})
@@ -258,7 +258,11 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 		emit(Event{Type: "usage", Usage: &usage})
 		if step > 0 {
 			if err := a.checkBudget(ctx); err != nil {
-				_ = a.save(ctx, conv.ID, reply)
+				// Its tool calls will not run: keep only the text, so the history stays valid.
+				reply.ToolCalls = nil
+				if reply.Text() != "" {
+					_ = a.save(context.WithoutCancel(ctx), conv.ID, reply)
+				}
 				emit(Event{Type: "text", Delta: "\n\n_" + err.Error() + "_"})
 				emit(Event{Type: "done"})
 				return nil
@@ -305,7 +309,8 @@ func (a *Agent) Run(ctx context.Context, conv *store.Conversation, providerName,
 			}
 
 			toolMsg := Message{Role: "tool", ToolCallID: tc.ID, Content: textContent(text)}
-			if err := a.save(ctx, conv.ID, toolMsg); err != nil {
+			// Saved even when the turn is being stopped: the call happened.
+			if err := a.save(context.WithoutCancel(ctx), conv.ID, toolMsg); err != nil {
 				return err
 			}
 			history = append(history, toolMsg)
@@ -418,6 +423,35 @@ func imageMessage(tool string, imgs []mcpserver.Image) Message {
 const keepImages = 2
 
 // prune drops images from all but the latest image messages.
+// answered makes the history valid for OpenAI-compatible servers: every
+// assistant tool call is followed by its tool result. A turn that was
+// stopped, ran out of budget or failed between a call and its result would
+// otherwise make every later request fail.
+func answered(history []Message) []Message {
+	out := make([]Message, 0, len(history))
+	for i := 0; i < len(history); i++ {
+		m := history[i]
+		out = append(out, m)
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		got := map[string]bool{}
+		j := i + 1
+		for ; j < len(history) && history[j].Role == "tool"; j++ {
+			got[history[j].ToolCallID] = true
+			out = append(out, history[j])
+		}
+		for _, tc := range m.ToolCalls {
+			if !got[tc.ID] {
+				out = append(out, Message{Role: "tool", ToolCallID: tc.ID, Content: textContent("not run: the turn was stopped before this call")})
+			}
+		}
+		i = j - 1
+	}
+
+	return out
+}
+
 func prune(history []Message) []Message {
 	out := make([]Message, len(history))
 	copy(out, history)

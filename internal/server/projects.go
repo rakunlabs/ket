@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -120,18 +119,9 @@ func (s *Server) createProject(c *ada.Context) error {
 			return httpErr(err)
 		}
 	}
-	p, err := s.Store.CreateProject(ctx, in.Name, in.Description, s.access.Subject(ctx))
+	p, err := s.Store.CreateProjectWith(ctx, in.Name, in.Description, s.access.Subject(ctx), store.TemplateOp(tpl), author(c.Request))
 	if err != nil {
 		return err
-	}
-	if tpl != nil {
-		// The template's design is the project's first operation: a plain
-		// import_project, replayed in the browser like any other op.
-		op, _ := json.Marshal(map[string]any{"cmd": "import_project", "args": map[string]any{"data": tpl.Data}})
-		if _, err := s.Store.AppendOp(ctx, p.MainBranch, 0, op, "user", "from template "+tpl.Name); err != nil {
-			_ = s.Store.DeleteProject(ctx, p.ID)
-			return err
-		}
 	}
 
 	return c.SetStatus(http.StatusCreated).SendJSON(p)

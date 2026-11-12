@@ -72,9 +72,11 @@ func (a *Agent) compact(ctx context.Context, conv *store.Conversation, c *client
 	if limit <= 0 || estimateTokens(history, nil) < limit || len(history) <= keepRecent+2 {
 		return summary, upto, history
 	}
-	// Cut so the kept part starts with a user message (never between a tool call and its result).
+	// Cut so the kept part starts at a user message or at an assistant message
+	// that opens a new round: never between a tool call and its result. One
+	// long tool loop has no user messages in it, so rounds count too.
 	cut := len(history) - keepRecent
-	for cut > 0 && history[cut].Role != "user" {
+	for cut > 0 && !(history[cut].Role == "user" || (history[cut].Role == "assistant" && history[cut-1].Role != "assistant")) {
 		cut--
 	}
 	if cut <= 0 {
@@ -139,6 +141,10 @@ func withSummary(summary string, history []Message) []Message {
 		return history
 	}
 	note := Message{Role: "user", Content: textContent("[Summary of the earlier conversation, written by you; the design itself is current: read it with get_document / get_board.]\n" + summary)}
+	// The kept part may start with the assistant (mid-turn): then the note goes straight before it.
+	if len(history) > 0 && history[0].Role == "assistant" {
+		return append([]Message{note}, history...)
+	}
 	ack := Message{Role: "assistant", Content: textContent("Understood; continuing from there.")}
 
 	return append([]Message{note, ack}, history...)
