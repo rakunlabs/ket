@@ -5,6 +5,13 @@
 export interface TriMesh {
   positions: Float32Array
   triangles: Uint32Array
+  /**
+   * Slicer paint per triangle, as in the 3MF (Bambu/Orca/Prusa paint_color,
+   * paint_supports, paint_seam...): an index into paints, 0 = unpainted.
+   */
+  paint?: Uint32Array
+  /** The distinct attribute strings paint indexes, e.g. 'paint_color="8"'; [0] is "". */
+  paints?: string[]
 }
 
 // ── Zip ─────────────────────────────────────────────────────────────────
@@ -208,6 +215,8 @@ interface MeshPart {
 
 export interface ThreeMF {
   objects: ThreeMFObject[]
+  /** The file as read, to write edits back into it. */
+  raw: Uint8Array
   /** The triangles of a build item in plate coordinates (mm). */
   mesh(id: string): Promise<TriMesh>
 }
@@ -300,15 +309,32 @@ function parseMesh(xml: string, start: number, end: number): TriMesh {
     pos.push(Number(attr(a, 'x')), Number(attr(a, 'y')), Number(attr(a, 'z')))
   }
   const tri: number[] = []
+  const paint: number[] = []
+  const paints = ['']
+  const paintIndex = new Map<string, number>([['', 0]])
   const tre = /<triangle\b([^>]*)\/?>/g
   tre.lastIndex = vEnd
   for (let m = tre.exec(xml); m && m.index < end; m = tre.exec(xml)) {
     const a = m[1]
     tri.push(Number(attr(a, 'v1')), Number(attr(a, 'v2')), Number(attr(a, 'v3')))
+    // Everything but the vertex indices is slicer data for this triangle (paint, material).
+    const extra = a.replace(/\s*\bv[123]\s*=\s*"[^"]*"/g, '').replace(/\/\s*$/, '').trim()
+    let k = paintIndex.get(extra)
+    if (k === undefined) {
+      k = paints.length
+      paints.push(extra)
+      paintIndex.set(extra, k)
+    }
+    paint.push(k)
   }
   const n = pos.length / 3
   for (const v of tri) if (!(v >= 0 && v < n)) throw new Error(`3MF triangle uses vertex ${v}, but the mesh has ${n}`)
-  return { positions: Float32Array.from(pos), triangles: Uint32Array.from(tri) }
+  const out: TriMesh = { positions: Float32Array.from(pos), triangles: Uint32Array.from(tri) }
+  if (paints.length > 1) {
+    out.paint = Uint32Array.from(paint)
+    out.paints = paints
+  }
+  return out
 }
 
 /** Reads a 3MF: its build items, and their triangles on demand. */
@@ -371,6 +397,7 @@ export async function read3MF(buf: ArrayBuffer | Uint8Array): Promise<ThreeMF> {
 
   return {
     objects,
+    raw: buf instanceof Uint8Array ? buf : new Uint8Array(buf),
     async mesh(id: string) {
       const item = items.find((it) => it.id === id)
       if (!item) throw new Error(`the 3MF has no build item for object ${id}`)
@@ -410,22 +437,38 @@ function transformMesh(m: TriMesh, t: number[], unit: number): TriMesh {
     tri = tri.slice()
     for (let i = 0; i < tri.length; i += 3) [tri[i + 1], tri[i + 2]] = [tri[i + 2], tri[i + 1]]
   }
-  return { positions: out, triangles: tri }
+  return { positions: out, triangles: tri, paint: m.paint, paints: m.paints }
 }
 
 export function mergeMeshes(list: TriMesh[]): TriMesh {
   if (list.length === 1) return list[0]
   const positions = new Float32Array(list.reduce((s, m) => s + m.positions.length, 0))
   const triangles = new Uint32Array(list.reduce((s, m) => s + m.triangles.length, 0))
+  const painted = list.some((m) => m.paint)
+  const paints = ['']
+  const index = new Map<string, number>([['', 0]])
+  const paint = painted ? new Uint32Array(triangles.length / 3) : undefined
   let pv = 0
   let pt = 0
   for (const m of list) {
     positions.set(m.positions, pv * 3)
     for (let i = 0; i < m.triangles.length; i++) triangles[pt + i] = m.triangles[i] + pv
+    if (paint && m.paint && m.paints) {
+      const remap = m.paints.map((p) => {
+        let k = index.get(p)
+        if (k === undefined) {
+          k = paints.length
+          paints.push(p)
+          index.set(p, k)
+        }
+        return k
+      })
+      for (let i = 0; i < m.paint.length; i++) paint[pt / 3 + i] = remap[m.paint[i]]
+    }
     pv += m.positions.length / 3
     pt += m.triangles.length
   }
-  return { positions, triangles }
+  return painted ? { positions, triangles, paint, paints } : { positions, triangles }
 }
 
 /** Picks the build item a #fragment names: an object id, or a name that is unique. */
@@ -499,4 +542,149 @@ function toColor(c: string): string {
   if (/^#[0-9a-f]{6}$/i.test(s)) return s.toUpperCase()
   if (/^#[0-9a-f]{3}$/i.test(s)) return ('#' + s.slice(1).split('').map((x) => x + x).join('')).toUpperCase()
   return '#C8C8C8'
+}
+
+// ── Writing back into a slicer project ──────────────────────────────────
+
+/** A new mesh for one build item of a 3MF, in plate coordinates (as read). */
+export interface Replace3MF {
+  /** Object id of the build item (#id). */
+  id: string
+  mesh: TriMesh
+}
+
+/**
+ * The original 3MF with the meshes of some build items replaced: slicer
+ * settings, plates, other objects, thumbnails and per-object settings stay
+ * as they were. Each replaced item's mesh part is rewritten in its own
+ * frame (the item and component transforms are undone), so the object
+ * stays where it was on its plate; mesh counts in Bambu/Orca/Prusa configs
+ * are updated. Item mesh parts shared with an item that is not replaced
+ * (two plates printing the same mesh) are rewritten for both: the caller
+ * is told which ids that touched.
+ */
+export async function update3MF(original: ArrayBuffer | Uint8Array, replace: Replace3MF[]): Promise<{ blob: Blob; touched: string[] }> {
+  const files = unzip(original)
+  const dec = new TextDecoder()
+  const enc = new TextEncoder()
+  const text = async (path: string) => {
+    const f = files.get(path.replace(/^\//, ''))
+    if (!f) throw new Error(`the 3MF has no ${path}`)
+    return dec.decode(await f())
+  }
+  let root = '/3D/3dmodel.model'
+  if (files.has('_rels/.rels')) {
+    const m = /<Relationship\b[^>]*Target="([^"]+)"[^>]*Type="[^"]*3dmodel"|<Relationship\b[^>]*Type="[^"]*3dmodel"[^>]*Target="([^"]+)"/.exec(await text('_rels/.rels'))
+    if (m) root = m[1] ?? m[2]
+  }
+  if (!root.startsWith('/')) root = '/' + root
+  const xmlOf = new Map<string, string>()
+  const load = async (p: string) => {
+    let x = xmlOf.get(p)
+    if (x === undefined) {
+      x = await text(p)
+      xmlOf.set(p, x)
+    }
+    return x
+  }
+  const rootXml = await load(root)
+  const unit = UNITS[attr(/<model\b[^>]*>/.exec(rootXml)?.[0] ?? '', 'unit') ?? 'millimeter'] ?? 1
+  const build = /<build\b[^>]*>([\s\S]*?)<\/build>/.exec(rootXml)?.[1] ?? ''
+  const items = [...build.matchAll(/<item\b([^>]*)\/?>/g)].map((m) => ({ id: attr(m[1], 'objectid') ?? '', path: attr(m[1], 'p:path') ?? root, transform: parseTransform(attr(m[1], 'transform')) }))
+
+  // The mesh parts of an item, with their transforms to the plate.
+  const partsOf = async (path: string, id: string, transform: number[], depth: number, out: MeshPart[]) => {
+    if (depth > 16) throw new Error('3MF components nest too deep')
+    const def = scanObjects(await load(path)).get(id)
+    if (!def) throw new Error(`the 3MF has no object ${id} in ${path}`)
+    if (def.mesh) out.push({ path, id, transform })
+    for (const c of def.components ?? []) await partsOf(c.path ?? path, c.id, compose(c.transform, transform), depth + 1, out)
+  }
+
+  const edits = new Map<string, { path: string; id: string; mesh: TriMesh }>()
+  for (const r of replace) {
+    const item = items.find((it) => it.id === r.id)
+    if (!item) throw new Error(`the 3MF has no build item for object ${r.id}`)
+    const parts: MeshPart[] = []
+    await partsOf(item.path, item.id, item.transform, 0, parts)
+    if (parts.length !== 1) throw new Error(`object ${r.id} is made of ${parts.length} mesh parts; only objects with one mesh can be written back (export a new 3MF instead)`)
+    const p = parts[0]
+    // plate = (local · T) · unit, so local = (plate / unit) · T⁻¹.
+    const scaled = unit === 1 ? r.mesh : { ...r.mesh, positions: r.mesh.positions.map((v) => v / unit) }
+    edits.set(`${p.path}#${p.id}`, { path: p.path, id: p.id, mesh: transformMesh(scaled, invert(p.transform), 1) })
+  }
+
+  // Which items use the rewritten mesh parts (also ones not asked for).
+  const touched: string[] = []
+  for (const it of items) {
+    const parts: MeshPart[] = []
+    await partsOf(it.path, it.id, it.transform, 0, parts)
+    if (parts.some((p) => edits.has(`${p.path}#${p.id}`))) touched.push(it.id)
+  }
+
+  const out: Record<string, string | Uint8Array> = {}
+  const counts = new Map<string, number>()
+  for (const [path, xml] of xmlOf) {
+    const mine = [...edits.values()].filter((e) => e.path === path)
+    if (!mine.length) continue
+    let next = xml
+    for (const e of mine) {
+      const def = scanObjects(next).get(e.id)!
+      const meshEnd = next.indexOf('</mesh>', def.mesh!.start) + '</mesh>'.length
+      next = next.slice(0, def.mesh!.start) + meshXml(e.mesh) + next.slice(meshEnd)
+    }
+    out[path.replace(/^\//, '')] = enc.encode(next)
+  }
+  for (const e of edits.values()) counts.set(e.id, e.mesh.triangles.length / 3)
+
+  // Slicer configs keep a face count per object and part; keep them true.
+  for (const cfg of ['Metadata/model_settings.config', 'Metadata/Slic3r_PE_model.config']) {
+    if (!files.has(cfg)) continue
+    let x = await text(cfg)
+    const faces = new Map<string, number>()
+    for (const id of touched) {
+      const it = items.find((i) => i.id === id)!
+      const parts: MeshPart[] = []
+      await partsOf(it.path, it.id, it.transform, 0, parts)
+      faces.set(id, parts.reduce((s, p) => s + (counts.get(p.id) ?? 0), 0))
+    }
+    x = x.replace(/<object\s+id="([^"]+)"[^>]*>[\s\S]*?<\/object>/g, (block, id: string) => {
+      const n = faces.get(id)
+      if (n === undefined) return block
+      return block.replace(/face_count="\d+"/g, `face_count="${n}"`)
+    })
+    out[cfg] = x
+  }
+
+  const all: Record<string, string | Uint8Array> = {}
+  for (const name of files.keys()) all[name] = name in out ? out[name] : await files.get(name)!()
+  return { blob: await zipFiles(all), touched }
+}
+
+/** The inverse of a row-vector affine 3MF transform. */
+function invert(t: number[]): number[] {
+  const [a, b, c, d, e, f, g, h, i] = t
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+  if (Math.abs(det) < 1e-12) throw new Error('a 3MF transform cannot be undone (it flattens the object)')
+  const m = [
+    (e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det,
+    (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det,
+    (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det,
+  ]
+  const [tx, ty, tz] = [t[9], t[10], t[11]]
+  return [...m, -(tx * m[0] + ty * m[3] + tz * m[6]), -(tx * m[1] + ty * m[4] + tz * m[7]), -(tx * m[2] + ty * m[5] + tz * m[8])]
+}
+
+function meshXml(m: TriMesh): string {
+  const out: string[] = ['<mesh>\n    <vertices>\n']
+  const p = m.positions
+  for (let k = 0; k < p.length; k += 3) out.push(`     <vertex x="${num(p[k])}" y="${num(p[k + 1])}" z="${num(p[k + 2])}"/>\n`)
+  out.push('    </vertices>\n    <triangles>\n')
+  const t = m.triangles
+  for (let k = 0, i = 0; k < t.length; k += 3, i++) {
+    const extra = m.paint && m.paints ? m.paints[m.paint[i]] : ''
+    out.push(`     <triangle v1="${t[k]}" v2="${t[k + 1]}" v3="${t[k + 2]}"${extra ? ' ' + extra : ''}/>\n`)
+  }
+  out.push('    </triangles>\n   </mesh>')
+  return out.join('')
 }

@@ -10538,6 +10538,54 @@
       }
     },
     {
+      "name": "export_slicer_3mf",
+      "group": "query",
+      "kind": "query",
+      "description": "Write edited bodies back into the slicer project (Bambu Studio, Orca, Prusa 3MF) they were imported from, and download it: each body replaces the mesh of the 3MF object its import names, where it was on its plate. Print settings, plates, other objects, per-object settings and the color/support paint stay; painted triangles keep their paint through cuts, and new faces (pocket walls and floors) take the paint of the nearest original faces facing the same way. Check the paint and re-slice in the slicer (thumbnails are the old ones). Objects that share the same mesh (one object on two plates) change together: the answer lists them.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "replace": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "description": "The edited body, e.g. \"cover_spares\""
+                },
+                "object": {
+                  "type": "string",
+                  "description": "The import feature of the 3MF object it replaces, e.g. \"cover\""
+                }
+              },
+              "required": [
+                "body",
+                "object"
+              ]
+            }
+          },
+          "filename": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "replace"
+        ]
+      },
+      "examples": [
+        {
+          "replace": [
+            {
+              "body": "cover_spares",
+              "object": "cover"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "cancel_operation",
       "group": "project",
       "kind": "query",

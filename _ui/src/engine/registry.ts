@@ -29,6 +29,8 @@ export interface KernelAPI {
   checks(): Promise<CheckResult[]>
   /** The separate solids of a body: index, box, center, volume. */
   solids(name: string): Promise<Record<string, unknown>[]>
+  /** The slicer 3MF an import came from, with some objects replaced by bodies. */
+  update3MF(pairs: { body: string; object: string }[]): Promise<{ blob: Blob; file: string; replaced: string[]; also_changed: string[] }>
   /** Cross-sections of bodies by a plane. */
   section(names: string[], axis: 'X' | 'Y' | 'Z', at: number): Promise<Record<string, unknown>[]>
   sketch(name: string): Promise<SolvedSketch>
@@ -90,6 +92,7 @@ export function localKernel(kernel: Kernel, doc: Doc): KernelAPI {
     between: async (a, b) => (await build(), kernel.between(a, b)),
     checks: async () => (await build(), kernel.checks(doc)),
     solids: async (n) => (await build(), kernel.listSolids(n)),
+    update3MF: async (pairs) => (await build(), kernel.update3MF(doc, pairs)),
     section: async (names, axis, at) => (await build(), kernel.section(names, axis, at)),
     sketch: async (n) => (await build(), kernel.sketch(n)),
     board: async (o) => (await build(), kernel.boardState(doc, o)),

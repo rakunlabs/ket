@@ -41,7 +41,7 @@ import { type ZoneFill, fillZones } from './pcb/zones'
 import type { BoardState } from './pcb/state'
 import { type Loop, type SolvedSketch, loopInside, solveSketch } from './sketch'
 import { MeshBody, composeBodies, displayMesh, meshBody, meshCube, meshFromTriangles } from './mesh-body'
-import { type ThreeMF, type TriMesh, isZip, parseSTL, pickObject, read3MF, write3MF, writeSTL } from './model-files'
+import { type ThreeMF, type TriMesh, isZip, parseSTL, pickObject, read3MF, update3MF, write3MF, writeSTL } from './model-files'
 
 /** A built feature: an OpenCascade solid, or a triangle-mesh solid (imported STL / 3MF and what is built from it). */
 export type Body = Shape3D | MeshBody
@@ -2460,6 +2460,41 @@ export class Kernel {
     } finally {
       compound.delete()
     }
+  }
+
+  /**
+   * The slicer project a 3MF import came from, with some of its objects'
+   * meshes replaced by built bodies: for each pair, the body's triangles
+   * (with the paint that followed them) take the place of the 3MF object
+   * that the import names. Everything else in the file stays.
+   */
+  async update3MF(doc: Doc, pairs: { body: string; object: string }[]): Promise<{ blob: Blob; file: string; replaced: string[]; also_changed: string[] }> {
+    const urls = new Set<string>()
+    const replace: { id: string; mesh: TriMesh }[] = []
+    let file: ThreeMF | undefined
+    const objectNames = new Map<string, string>()
+    for (const pr of pairs) {
+      const f = doc.features.find((x) => x.name === pr.object)
+      if (!f || f.type !== 'import') throw new Error(`"${pr.object}" is not an import feature; give the import of the 3MF object to replace (e.g. "cover")`)
+      const key = fetchKey(f.url)
+      if (!/\.3mf$/i.test(key)) throw new Error(`"${pr.object}" imports ${f.url}, not a 3MF; write back works only into a 3MF (use export for STL)`)
+      urls.add(key)
+      if (urls.size > 1) throw new Error('all objects must come from the same 3MF file')
+      const opened = this.threeMF.get(key)
+      if (!opened || opened instanceof Error) throw new Error(`${key} is not open: build the design first`)
+      file = opened
+      const obj = pickObject(opened, decodeURIComponent(f.url.split('#')[1] ?? ''), key)
+      const c = this.cache.get(pr.body)
+      if (!c) throw new Error(`no body "${pr.body}"`)
+      const mesh = isMesh(c.shape) ? c.shape.triMesh() : this.meshOf(pr.body).triMesh()
+      replace.push({ id: obj.id, mesh })
+      objectNames.set(obj.id, obj.name)
+    }
+    if (!file) throw new Error('nothing to write: give body/object pairs')
+    const { blob, touched } = await update3MF(file.raw, replace)
+    const asked = new Set(replace.map((r) => r.id))
+    const name = (id: string) => `#${id} (${file!.objects.find((o) => o.id === id)?.name ?? '?'})`
+    return { blob, file: [...urls][0], replaced: [...asked].map(name), also_changed: touched.filter((t) => !asked.has(t)).map(name) }
   }
 
   get parameters(): Map<string, number> {

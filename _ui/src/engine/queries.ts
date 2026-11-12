@@ -339,4 +339,34 @@ define({
   },
 })
 
+define({
+  name: 'export_slicer_3mf',
+  group: 'query',
+  kind: 'query',
+  description:
+    'Write edited bodies back into the slicer project (Bambu Studio, Orca, Prusa 3MF) they were imported from, and download it: each body replaces the mesh of the 3MF object its import names, where it was on its plate. Print settings, plates, other objects, per-object settings and the color/support paint stay; painted triangles keep their paint through cuts, and new faces (pocket walls and floors) take the paint of the nearest original faces facing the same way. Check the paint and re-slice in the slicer (thumbnails are the old ones). Objects that share the same mesh (one object on two plates) change together: the answer lists them.',
+  args: z.object({
+    replace: z
+      .array(z.object({ body: featureRef.describe('The edited body, e.g. "cover_spares"'), object: featureRef.describe('The import feature of the 3MF object it replaces, e.g. "cover"') }))
+      .min(1),
+    filename: z.string().optional(),
+  }),
+  examples: [{ replace: [{ body: 'cover_spares', object: 'cover' }] }],
+  async run(ctx, a) {
+    if (!ctx.download) throw new Error('export_slicer_3mf is only available in the browser')
+    requireHealthyHistory(ctx)
+    const r = await ctx.kernel.update3MF(a.replace)
+    const base = decodeURIComponent(r.file.split('/').pop() ?? 'project.3mf').replace(/\.3mf$/i, '')
+    const file = a.filename ?? `${base} (edited).3mf`
+    await ctx.download(file, r.blob)
+    return {
+      ok: true,
+      file,
+      bytes: r.blob.size,
+      replaced: r.replaced,
+      ...(r.also_changed.length ? { also_changed: r.also_changed, note: 'these objects use the same mesh in the 3MF, so they changed too' } : {}),
+    }
+  },
+})
+
 export { bodies }

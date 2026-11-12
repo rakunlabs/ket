@@ -137,6 +137,7 @@ export class KernelClient {
         query<Record<string, unknown>>({ type: 'between', a, b }),
       checks: () => query<CheckResult[]>({ type: 'checks' }),
       solids: (name: string) => query<Record<string, unknown>[]>({ type: 'solids', name }),
+      update3MF: (pairs: { body: string; object: string }[]) => query<{ blob: Blob; file: string; replaced: string[]; also_changed: string[] }>({ type: 'update3mf', pairs }),
       section: (names: string[], axis: 'X' | 'Y' | 'Z', at: number) => query<Record<string, unknown>[]>({ type: 'section', names, axis, at }),
       sketch: (name: string) => query<SolvedSketch>({ type: 'sketch', name }),
       board: (o?: { drc?: boolean }) => query<BoardState | undefined>({ type: 'board', drc: o?.drc }),

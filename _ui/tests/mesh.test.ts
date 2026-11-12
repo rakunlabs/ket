@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { applyOp, command, emptyDoc, parseArgs, type Doc } from '../src/engine'
 import { Kernel } from '../src/engine/kernel'
-import { type TriMesh, mergeMeshes, read3MF, unzip, write3MF, writeSTL } from '../src/engine/model-files'
+import { type TriMesh, mergeMeshes, read3MF, unzip, update3MF, write3MF, writeSTL, zipFiles } from '../src/engine/model-files'
 import './setup'
 
 function run(doc: Doc, cmd: string, args: unknown): Doc {
@@ -176,6 +176,57 @@ describe('mesh bodies (STL, 3MF)', () => {
 
     // Deleting the source needs cascade: solids depends on it.
     expect(() => run(doc, 'delete_features', { names: ['set'] })).toThrow(/tall uses set/)
+  }, 120_000)
+
+  it('writes an edited object back into the slicer 3MF, keeping its frame, paint and the other files', async () => {
+    // A slicer-style project: the object's mesh is in its own frame and moved by the build item; the top is painted.
+    const local = denseBox([-50, -10, 0], [100, 20, 10], 40)
+    const n = local.triangles.length / 3
+    const paint = new Uint32Array(n)
+    for (let t = 0; t < n; t++) {
+      const z = (local.positions[local.triangles[t * 3] * 3 + 2] + local.positions[local.triangles[t * 3 + 1] * 3 + 2] + local.positions[local.triangles[t * 3 + 2] * 3 + 2]) / 3
+      paint[t] = z > 9.99 ? 2 : 1
+    }
+    const meshXml = (m: TriMesh, p: Uint32Array) => {
+      const v: string[] = []
+      for (let i = 0; i < m.positions.length; i += 3) v.push(`<vertex x="${m.positions[i]}" y="${m.positions[i + 1]}" z="${m.positions[i + 2]}"/>`)
+      const t: string[] = []
+      for (let i = 0; i < m.triangles.length; i += 3) t.push(`<triangle v1="${m.triangles[i]}" v2="${m.triangles[i + 1]}" v3="${m.triangles[i + 2]}" paint_color="${p[i / 3] === 2 ? 8 : 4}"/>`)
+      return `<mesh><vertices>${v.join('')}</vertices><triangles>${t.join('')}</triangles></mesh>`
+    }
+    const settings = '<config>printer: test</config>'
+    const blob = await zipFiles({
+      '_rels/.rels': '<Relationships><Relationship Target="/3D/3dmodel.model" Id="r" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>',
+      '3D/3dmodel.model': `<model unit="millimeter"><resources><object id="1" type="model">${meshXml(local, paint)}</object></resources><build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 120 80 0"/></build></model>`,
+      'Metadata/model_settings.config': '<config><object id="1"><metadata key="name" value="Tray"/><metadata face_count="' + n + '"/></object></config>',
+      'Metadata/project_settings.config': settings,
+    })
+    const raw = new Uint8Array(await blob.arrayBuffer())
+    const k = new Kernel()
+    const url = 'ket:asset/t/tray.3mf'
+    await k.loadImport(url, raw.buffer as ArrayBuffer)
+    let doc = emptyDoc()
+    doc = run(doc, 'import', { name: 'tray', url: `${url}#Tray` })
+    doc = run(doc, 'box', { name: 'pocket', size: [20, 10, 10], translate: [120, 80, 5] })
+    doc = run(doc, 'boolean', { name: 'tray_cut', op: 'cut', target: 'tray', tools: ['pocket'] })
+    await k.prepareImports(doc)
+    expect(k.build(doc).features.every((f) => f.ok)).toBe(true)
+
+    const r = await k.update3MF(doc, [{ body: 'tray_cut', object: 'tray' }])
+    expect(r.replaced).toEqual(['#1 (Tray)'])
+    const files = unzip(await r.blob.arrayBuffer())
+    expect(new TextDecoder().decode(await files.get('Metadata/project_settings.config')!())).toBe(settings)
+    const back = await read3MF(await r.blob.arrayBuffer())
+    const m = await back.mesh('1')
+    // Still on the plate where it was: x 70..170, and the pocket is there.
+    const xs = m.positions.filter((_, i) => i % 3 === 0)
+    expect(Math.min(...xs)).toBeCloseTo(70, 3)
+    expect(Math.max(...xs)).toBeCloseTo(170, 3)
+    expect(m.paints).toContain('paint_color="8"')
+    // Every triangle is painted; the pocket floor (z = 5, facing up) is new and takes a color.
+    expect(m.paint!.every((p) => p > 0)).toBe(true)
+    const cfg = new TextDecoder().decode(await files.get('Metadata/model_settings.config')!())
+    expect(cfg).toContain(`face_count="${m.triangles.length / 3}"`)
   }, 120_000)
 
   it('says what is wrong with a mesh that is not closed', async () => {

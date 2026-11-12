@@ -24,6 +24,13 @@ export function manifoldLib(): ManifoldToplevel {
   return lib
 }
 
+/**
+ * Slicer paint of the meshes bodies were made from, by manifold original ID:
+ * a triangle of any later body that comes from that mesh keeps the paint of
+ * the source triangle it is part of (faceID is the source triangle index).
+ */
+const painted = new Map<number, { paint: Uint32Array; paints: string[] }>()
+
 const STATUS: Record<string, string> = {
   NotManifold: 'the triangles do not close into a solid (open edges, holes or edges shared by more than two triangles)',
   NonFiniteVertex: 'some vertices are not finite numbers',
@@ -231,7 +238,12 @@ export class MeshBody {
     }
   }
 
-  /** Triangles in place (welded), for export. */
+  /**
+   * Triangles in place (welded), for export; with paint when they come from
+   * a painted mesh. Triangles from elsewhere (a cut's new walls and floors)
+   * get the paint of the nearest painted triangle around them with a similar
+   * facing, so a new pocket wall takes the wall color.
+   */
   triMesh(): TriMesh {
     const g = this.m.getMesh()
     const k = g.numProp
@@ -242,7 +254,37 @@ export class MeshBody {
       positions[i * 3 + 1] = g.vertProperties[i * k + 1]
       positions[i * 3 + 2] = g.vertProperties[i * k + 2]
     }
-    return { positions, triangles: new Uint32Array(g.triVerts) }
+    const out: TriMesh = { positions, triangles: new Uint32Array(g.triVerts) }
+    const sources = [...g.runOriginalID].map((id) => painted.get(id))
+    if (!sources.some(Boolean)) return out
+    const paints = ['']
+    const index = new Map<string, number>([['', 0]])
+    const nt = g.triVerts.length / 3
+    const paint = new Uint32Array(nt)
+    const known = new Uint8Array(nt)
+    const remaps = sources.map((src) =>
+      src?.paints.map((p) => {
+        let x = index.get(p)
+        if (x === undefined) {
+          x = paints.length
+          paints.push(p)
+          index.set(p, x)
+        }
+        return x
+      }),
+    )
+    for (let r = 0; r < sources.length; r++) {
+      const src = sources[r]
+      if (!src) continue
+      for (let t = g.runIndex[r] / 3; t < g.runIndex[r + 1] / 3; t++) {
+        paint[t] = remaps[r]![src.paint[g.faceID[t]]]
+        known[t] = 1
+      }
+    }
+    inheritPaint(out, paint, known)
+    out.paint = paint
+    out.paints = paints
+    return out
   }
 }
 
@@ -300,13 +342,158 @@ export function weld(m: TriMesh): TriMesh {
   return { positions: out.slice(0, count * 3), triangles: tri }
 }
 
+/**
+ * Paint for triangles that came from no painted source (a cut's new walls
+ * and floors): the paint of the nearest source triangle facing the same way
+ * (a new pocket floor takes the nearby pocket floors' color, its walls the
+ * wall color); what has none within reach takes a painted neighbour's.
+ */
+function inheritPaint(m: TriMesh, paint: Uint32Array, known: Uint8Array) {
+  const T = m.triangles
+  const P = m.positions
+  const nt = T.length / 3
+  let todo = 0
+  for (let t = 0; t < nt; t++) if (!known[t]) todo++
+  if (!todo) return
+  const cen = new Float32Array(nt * 3)
+  const nor = new Float32Array(nt * 3)
+  for (let t = 0; t < nt; t++) {
+    const a = T[t * 3] * 3
+    const b = T[t * 3 + 1] * 3
+    const c = T[t * 3 + 2] * 3
+    for (let k = 0; k < 3; k++) cen[t * 3 + k] = (P[a + k] + P[b + k] + P[c + k]) / 3
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2]
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2]
+    const x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx
+    const l = Math.hypot(x, y, z) || 1
+    nor[t * 3] = x / l
+    nor[t * 3 + 1] = y / l
+    nor[t * 3 + 2] = z / l
+  }
+  // A new face takes the paint of original faces in the same plane (the
+  // floors at that height, the walls in that line), else the nearest original
+  // face that looks the same way. Planes: facing rounded, offset in 0.05 mm.
+  const plane = (t: number) => {
+    const nx = Math.round(nor[t * 3] * 20), ny = Math.round(nor[t * 3 + 1] * 20), nz = Math.round(nor[t * 3 + 2] * 20)
+    const d = Math.round((nor[t * 3] * cen[t * 3] + nor[t * 3 + 1] * cen[t * 3 + 1] + nor[t * 3 + 2] * cen[t * 3 + 2]) / 0.05)
+    return `${nx},${ny},${nz},${d}`
+  }
+  const byPlane = new Map<string, Map<number, number>>()
+  for (let t = 0; t < nt; t++) {
+    if (known[t] !== 1) continue
+    const k = plane(t)
+    let votes = byPlane.get(k)
+    if (!votes) byPlane.set(k, (votes = new Map()))
+    votes.set(paint[t], (votes.get(paint[t]) ?? 0) + 1)
+  }
+  for (let t = 0; t < nt; t++) {
+    if (known[t]) continue
+    const votes = byPlane.get(plane(t))
+    if (!votes) continue
+    let best = 0
+    let most = -1
+    for (const [p, n] of votes) if (n > most) [best, most] = [p, n]
+    paint[t] = best
+    known[t] = 2
+    todo--
+  }
+  if (!todo) return
+
+  const dot = (a: number, b: number) => nor[a * 3] * nor[b * 3] + nor[a * 3 + 1] * nor[b * 3 + 1] + nor[a * 3 + 2] * nor[b * 3 + 2]
+
+  // Source triangles in a grid of cells, by centroid.
+  const cell = 2
+  const grid = new Map<string, number[]>()
+  const key = (x: number, y: number, z: number) => `${x},${y},${z}`
+  for (let t = 0; t < nt; t++) {
+    if (known[t] !== 1) continue
+    const k = key(Math.floor(cen[t * 3] / cell), Math.floor(cen[t * 3 + 1] / cell), Math.floor(cen[t * 3 + 2] / cell))
+    let list = grid.get(k)
+    if (!list) grid.set(k, (list = []))
+    list.push(t)
+  }
+  const reach = 12
+  for (let t = 0; t < nt; t++) {
+    if (known[t]) continue
+    const cx = Math.floor(cen[t * 3] / cell)
+    const cy = Math.floor(cen[t * 3 + 1] / cell)
+    const cz = Math.floor(cen[t * 3 + 2] / cell)
+    let best = -1
+    let bestD = Infinity
+    for (let r = 0; r <= reach && best < 0; r++) {
+      for (let i = -r; i <= r; i++)
+        for (let j = -r; j <= r; j++)
+          for (let k = -r; k <= r; k++) {
+            if (Math.max(Math.abs(i), Math.abs(j), Math.abs(k)) !== r) continue
+            const list = grid.get(key(cx + i, cy + j, cz + k))
+            if (!list) continue
+            for (const o of list) {
+              if (dot(t, o) < 0.9) continue
+              const d = (cen[o * 3] - cen[t * 3]) ** 2 + (cen[o * 3 + 1] - cen[t * 3 + 1]) ** 2 + (cen[o * 3 + 2] - cen[t * 3 + 2]) ** 2
+              if (d < bestD) {
+                bestD = d
+                best = o
+              }
+            }
+          }
+    }
+    if (best >= 0) {
+      paint[t] = paint[best]
+      known[t] = 2
+      todo--
+    }
+  }
+  if (!todo) return
+
+  // Left over: flood from painted neighbours across shared edges.
+  const nv = P.length / 3
+  const edges = new Map<number, number>()
+  const nb = new Int32Array(nt * 3).fill(-1)
+  for (let t = 0; t < nt; t++)
+    for (let j = 0; j < 3; j++) {
+      const a = T[t * 3 + j]
+      const b = T[t * 3 + ((j + 1) % 3)]
+      const e = Math.min(a, b) * nv + Math.max(a, b)
+      const o = edges.get(e)
+      if (o === undefined) edges.set(e, t * 3 + j)
+      else {
+        nb[t * 3 + j] = Math.floor(o / 3)
+        nb[o] = t
+      }
+    }
+  let grew = true
+  while (grew && todo) {
+    grew = false
+    for (let t = 0; t < nt; t++) {
+      if (known[t]) continue
+      for (let j = 0; j < 3; j++) {
+        const o = nb[t * 3 + j]
+        if (o >= 0 && known[o]) {
+          paint[t] = paint[o]
+          known[t] = 2
+          todo--
+          grew = true
+          break
+        }
+      }
+    }
+  }
+}
+
 /** A mesh body from triangles; says what is wrong when they are not a closed solid. */
 export function meshBody(tri: TriMesh, what: string): MeshBody {
   if (!tri.triangles.length) throw new Error(`${what} has no triangles`)
   const L = manifoldLib()
   const w = weld(tri)
+  // Painted meshes get their own original ID, and each triangle its index as faceID, to follow paint through booleans.
+  const id = tri.paint && tri.paints ? L.Manifold.reserveIDs(1) : undefined
   const build = (merge: boolean): Manifold | string => {
-    const mesh = new L.Mesh({ numProp: 3, vertProperties: w.positions, triVerts: w.triangles })
+    const mesh = new L.Mesh({
+      numProp: 3,
+      vertProperties: w.positions,
+      triVerts: w.triangles,
+      ...(id !== undefined ? { faceID: sequence(w.triangles.length / 3), runOriginalID: new Uint32Array([id]), runIndex: new Uint32Array([0, w.triangles.length]) } : {}),
+    })
     if (merge) mesh.merge()
     try {
       const m = new L.Manifold(mesh)
@@ -328,7 +515,14 @@ export function meshBody(tri: TriMesh, what: string): MeshBody {
     m.delete()
     throw new Error(`${what}: the triangles face inward (negative volume); flip the normals and load it again`)
   }
+  if (id !== undefined) painted.set(id, { paint: tri.paint!, paints: tri.paints! })
   return new MeshBody(m)
+}
+
+function sequence(n: number): Uint32Array {
+  const t = new Uint32Array(n)
+  for (let i = 0; i < n; i++) t[i] = i
+  return t
 }
 
 /** A B-rep solid as a mesh body (tessellated within tolerance mm). */
