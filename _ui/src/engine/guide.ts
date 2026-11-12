@@ -166,7 +166,10 @@ it changes, so every dimension can be an expression over parameters.
    impedance) before autoroute, which routes the pair together and evens
    its lengths; buses: set_length_group. get_net_lengths reports lengths,
    skew and coupling; tune_length adds a meander by hand.
-12. A second opinion: export_kicad writes a .kicad_pcb (KiCad 8/9) to run
+12. The user can route by hand in the PCB view (Route, R): each leg is
+   planned around obstacles like the autorouter (route_leg, which you can
+   call too) and committed as add_track/add_via in one batch.
+13. A second opinion: export_kicad writes a .kicad_pcb (KiCad 8/9) to run
    KiCad's DRC on or to continue there; read its notes for what is not
    carried over (net classes, teardrops, own 3D models).
 

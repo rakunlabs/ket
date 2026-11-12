@@ -8,6 +8,7 @@ import { expr, ident, vec2 } from '../schema'
 import { tidyTracks } from './autoroute'
 import { DEFAULT_CLASS } from './board'
 import { fillZones, stitchPoints } from './zones'
+import { routeLeg } from './leg'
 import { clone, pcbOf } from './shared'
 
 // ── Copper ─────────────────────────────────────────────────────────────
@@ -386,3 +387,21 @@ function pourOnlyNets(pcb: Pcb): Set<string> {
   }
   return out
 }
+
+define({
+  name: 'route_leg',
+  group: 'pcb',
+  kind: 'query',
+  description:
+    'Plan one leg of a track for net on layer from a to b (board mm), around everything on the board, as the autorouter would: straight when clear, else 0/45/90° around obstacles. Returns the points (nothing is changed); commit them with add_track. The board view uses it for interactive routing: click a pad, click on, double-click to finish.',
+  args: z.object({ net: z.string(), layer: z.enum(COPPER_LAYERS), a: vec2n, b: vec2n, width: z.number().positive().optional() }),
+  async run(ctx, a) {
+    const st = await ctx.kernel.board()
+    if (!st || !ctx.doc.pcb) throw new Error('the project has no board yet; start with set_board')
+    if (!ctx.doc.pcb.nets.some((n) => n.name === a.net)) throw new Error(`no net "${a.net}"`)
+    if (!copperLayersOf(ctx.doc.pcb.layers).includes(a.layer)) throw new Error(`${a.layer} is not on a ${ctx.doc.pcb.layers}-layer board`)
+    const r = routeLeg(ctx.doc.pcb, st.board, a.net, a.layer, a.a, a.b, a.width)
+    if (!r) return { ok: false, note: `no way for ${a.net} from [${a.a}] to [${a.b}] on ${a.layer}: try another layer (a via), or a point in between` }
+    return { ok: true, ...r }
+  },
+})

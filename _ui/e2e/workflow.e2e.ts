@@ -97,3 +97,40 @@ test('an SVG logo converts to silkscreen artwork', async () => {
   await page.getByLabel('Logo image').setInputFiles({ name: 'logo.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(svg) })
   await expect(page.locator('img[src^="data:image/png"]').first()).toBeVisible()
 })
+
+test('a track is routed by hand: click a pad, click the other, it commits', async () => {
+  // A fresh unrouted net between two pads, clear of other copper.
+  await mcp.call('add_component', { project, footprint_name: '0603', ref: 'R9', at: [-5, 7], pin_names: { 1: 'A', 2: 'B' } })
+  await mcp.call('add_component', { project, footprint_name: '0603', ref: 'R10', at: [5, 7], pin_names: { 1: 'A', 2: 'B' } })
+  await mcp.call('connect', { project, nets: [{ name: 'HAND', pins: ['R9.2', 'R10.1'] }] })
+  const before = (await mcp.call('get_board', { project })).routing
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Route', exact: true }).click()
+  await expect(page.getByText(/click a pad to start/)).toBeVisible()
+  // Board coordinates → screen: the status bar shows the cursor; find the pads by moving there.
+  const canvas = page.locator('canvas').first()
+  const box = (await canvas.boundingBox())!
+  // The view is linear (scale, centre): read the board point under two screen points and solve.
+  const read = async (sx: number, sy: number) => {
+    await page.mouse.move(sx, sy)
+    const t = await page.getByText(/\[-?\d+\.\d+, -?\d+\.\d+\]/).first().innerText()
+    const m = /\[(-?\d+\.\d+), (-?\d+\.\d+)\]/.exec(t)!
+    return [Number(m[1]), Number(m[2])]
+  }
+  const s0 = { x: box.x + box.width * 0.3, y: box.y + box.height * 0.6 }
+  const s1 = { x: box.x + box.width * 0.7, y: box.y + box.height * 0.4 }
+  const [b0x, b0y] = await read(s0.x, s0.y)
+  const [b1x, b1y] = await read(s1.x, s1.y)
+  const kx = (s1.x - s0.x) / (b1x - b0x)
+  const ky = (s1.y - s0.y) / (b1y - b0y)
+  const toScreen = async (x: number, y: number) => ({ x: s0.x + (x - b0x) * kx, y: s0.y + (y - b0y) * ky })
+  const a = await toScreen(-5 + 0.825, 7)
+  const b = await toScreen(5 - 0.825, 7)
+  await page.mouse.click(a.x, a.y)
+  await expect(page.getByText(/Routing HAND on F.Cu/)).toBeVisible()
+  await page.mouse.click(b.x, b.y)
+  // Ending on the net's pad commits it.
+  await expect.poll(async () => (await mcp.call('get_board', { project })).routing.routed, { timeout: 15_000 }).not.toBe(before.routed)
+  const drc = await mcp.call('run_drc', { project })
+  expect(drc.violations.filter((v: any) => ['short', 'clearance'].includes(v.rule) && JSON.stringify(v).includes('HAND'))).toEqual([])
+})
