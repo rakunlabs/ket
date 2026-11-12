@@ -7,6 +7,7 @@ import { type ResolvedBoard } from './board'
 import { type Poly, distPointSeg, distPolyPoly, distSegPoly, distSegSeg, inside } from './geometry'
 import { area, circle, difference, inRegion, intersect, offset, overlaps, stroke } from './poly'
 import { boardDrills } from './drills'
+import type { Teardrop } from './teardrops'
 import type { ZoneFill } from './zones'
 
 export const JLCPCB = {
@@ -171,7 +172,7 @@ export function ratsnest(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Ra
 const f = (v: number) => v.toFixed(3)
 const pt = (p: { x: number; y: number }): [number, number] => [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000]
 
-export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violation[] {
+export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: Teardrop[] = []): Violation[] {
   const out: Violation[] = []
   const R = JLCPCB
 
@@ -266,6 +267,9 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
     cu.push({ kind: 'via', id: `via ${vi + 1}`, net: v.net, layers: b.layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu'], c, r: v.diameter / 2 })
   })
 
+  // Teardrops are copper of their net: they take part in clearance like a pad.
+  drops.forEach((d, i) => cu.push({ kind: 'pad', id: `teardrop ${i + 1} (${d.joins})`, net: d.net, layers: [d.layer], poly: d.outline }))
+
   const shapeDist = (x: Cu, y: Cu): number => {
     // Reduce every shape to segments/points with a radius.
     const asSegs = (s: Cu): { a: { x: number; y: number }; b: { x: number; y: number }; r: number }[] | Poly => {
@@ -293,7 +297,7 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
       if (x.net && x.net === y.net) continue
       // Pads within one footprint are spaced by the manufacturer's land
       // pattern; checking them against the board default only adds noise.
-      if (x.kind === 'pad' && y.kind === 'pad' && refOf(x) === refOf(y)) continue
+      if (x.kind === 'pad' && y.kind === 'pad' && refOf(x) === refOf(y) && !x.id.startsWith('teardrop')) continue
       if (!x.layers.some((l) => y.layers.includes(l))) continue
       const need = Math.max(b.netClass.get(x.net ?? '')?.clearance ?? R.minClearance, b.netClass.get(y.net ?? '')?.clearance ?? R.minClearance, R.minClearance)
       const d = shapeDist(x, y)
@@ -339,6 +343,39 @@ export function drc(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Violati
       out.push({ rule: 'outside_board', message: `pad ${p.ref}.${p.pin} copper leaves the board or crosses a cutout; move the component inwards`, at: pt(p.center), objects: [`${p.ref}.${p.pin}`] })
     else if (d < R.copperToEdge - 1e-6)
       out.push({ rule: 'copper_to_edge', message: `pad ${p.ref}.${p.pin} is ${f(d)} mm from the board edge; keep ${R.copperToEdge}`, at: pt(p.center), objects: [`${p.ref}.${p.pin}`] })
+  }
+
+  // Keep-outs: copper or parts where they are not allowed.
+  for (const k of b.keepouts) {
+    const ring = [k.polygon]
+    const id = `keepout ${k.name}`
+    const on = (layers: string[]) => layers.some((l) => k.layers.includes(l))
+    if (k.forbid.has('tracks'))
+      pcb.tracks.forEach((t, ti) => {
+        if (!on([t.layer])) return
+        for (let i = 0; i + 1 < t.points.length; i++) {
+          const seg = stroke([{ x: t.points[i][0], y: t.points[i][1] }, { x: t.points[i + 1][0], y: t.points[i + 1][1] }], t.width)
+          if (overlaps(seg, ring)) {
+            out.push({ rule: 'keepout', message: `track ${ti + 1} (${t.net}) runs through ${id}, which forbids tracks on ${t.layer}; reroute it around (autoroute keeps out) or move the keep-out`, at: t.points[i], objects: [`track ${ti + 1}`, id], fix: 'Reroute the track around the keep-out.' })
+            return
+          }
+        }
+      })
+    if (k.forbid.has('vias'))
+      pcb.vias.forEach((v, vi) => {
+        if (overlaps([circle({ x: v.at[0], y: v.at[1] }, v.diameter / 2)], ring)) out.push({ rule: 'keepout', message: `via ${vi + 1} (${v.net}) is inside ${id}, which forbids vias; move it out`, at: v.at, objects: [`via ${vi + 1}`, id], fix: 'Move the via out of the keep-out.' })
+      })
+    if (k.forbid.has('pours'))
+      for (const z of zones) {
+        if (!k.layers.includes(z.layer)) continue
+        if (overlaps(z.regions.flatMap((r) => r), ring)) out.push({ rule: 'keepout', message: `zone ${z.index + 1} (${z.net} on ${z.layer}) fills into ${id}`, objects: [`zone ${z.index + 1}`, id] })
+      }
+    if (k.forbid.has('parts'))
+      for (const c of b.components) {
+        const layer = c.side === 'bottom' ? 'B.Cu' : 'F.Cu'
+        if (!k.layers.includes(layer) && !k.layers.some((l) => l.startsWith('In'))) continue
+        if (overlaps([c.courtyard], ring)) out.push({ rule: 'keepout', message: `${c.ref} sits in ${id}, which forbids parts on the ${c.side}; move it out (move_component, or auto_place keeps out)`, at: [c.at.x, c.at.y], objects: [c.ref, id], fix: 'Move the part out of the keep-out.' })
+      }
   }
 
   // Holes.

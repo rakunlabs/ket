@@ -73,6 +73,10 @@ define({
     thickness: expr.optional().describe('Default 1.6'),
     layers: z.union([z.literal(2), z.literal(4)]).optional(),
     z: expr.optional().describe('Height of the bottom face, default 0'),
+    teardrops: z
+      .union([z.literal(false), z.literal(true), z.object({ length: z.number().min(0.3).max(3).optional(), width: z.number().min(0.3).max(1).optional() })])
+      .optional()
+      .describe('Teardrops where tracks meet pads and vias (true, or { length: × pad size, default 1; width: × pad size, default 0.9 }); false removes them. They are derived from the copper, so they follow every route change; Gerber, DRC, pours and the 3D board include them'),
   }),
   examples: [{ outline: { rect: { w: 'board_w', h: 'board_d', r: 1 } }, z: 'wall + standoff_h' }],
   apply(doc, a) {
@@ -88,6 +92,8 @@ define({
     if (a.thickness !== undefined) pcb.thickness = a.thickness
     if (a.layers) pcb.layers = a.layers
     if (a.z !== undefined) pcb.placement = { ...pcb.placement, z: a.z }
+    if (a.teardrops === false) delete pcb.teardrops
+    else if (a.teardrops) pcb.teardrops = a.teardrops === true ? {} : a.teardrops
     next.pcb = pcb
     return { doc: next, summary: created ? 'created the board' : 'updated the board' }
   },

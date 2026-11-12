@@ -80,6 +80,19 @@ function distEdge(x: number, y: number, poly: P[]): number {
   return d
 }
 
+/** True when an axis-aligned box and a polygon overlap (a corner inside the other, or edges crossing). */
+export function boxPolyOverlap([x0, y0, x1, y1]: [number, number, number, number], poly: P[]): boolean {
+  const box: P[] = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }]
+  if (poly.some((q) => q.x > x0 && q.x < x1 && q.y > y0 && q.y < y1)) return true
+  if (box.some((q) => insidePoly(q.x, q.y, poly))) return true
+  const cross = (a: P, b: P, c: P, d: P) => {
+    const o = (p: P, q: P, r: P) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+    return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0
+  }
+  for (let i = 0; i < 4; i++) for (let j = 0; j < poly.length; j++) if (cross(box[i], box[(i + 1) % 4], poly[j], poly[(j + 1) % poly.length])) return true
+  return false
+}
+
 export function placeParts(pcb: Pcb, b: ResolvedBoard, opts: PlaceOptions = {}): { placements: Placement[]; before: number; after: number } {
   const gap = opts.gap ?? 0.5
   const margin = opts.margin ?? 1
@@ -176,6 +189,7 @@ export function placeParts(pcb: Pcb, b: ResolvedBoard, opts: PlaceOptions = {}):
       if (!insidePoly(x, y, b.outline) || distEdge(x, y, b.outline) < margin) return false
       for (const c of b.cutouts) if (insidePoly(x, y, c) || distEdge(x, y, c) < margin) return false
     }
+    for (const k of partKeepouts(p)) if (boxPolyOverlap([x0 - gap, y0 - gap, x1 + gap, y1 + gap], k.polygon)) return false
     for (const h of b.holes) if (h.at.x > x0 - h.d / 2 - gap && h.at.x < x1 + h.d / 2 + gap && h.at.y > y0 - h.d / 2 - gap && h.at.y < y1 + h.d / 2 + gap) return false
     for (const ref of placed) {
       if (ref === p.ref) continue
@@ -186,6 +200,9 @@ export function placeParts(pcb: Pcb, b: ResolvedBoard, opts: PlaceOptions = {}):
     return true
   }
 
+  // Keep-outs that forbid parts, on the side a part sits on (F.Cu: top, B.Cu: bottom; inner layers count for both).
+  const sideOf = new Map(b.components.map((c) => [c.ref, c.side]))
+  const partKeepouts = (p: Part) => b.keepouts.filter((k) => k.forbid.has('parts') && k.layers.some((l) => l !== (sideOf.get(p.ref) === 'bottom' ? 'F.Cu' : 'B.Cu')))
   const xs = b.outline.map((q) => q.x)
   const ys = b.outline.map((q) => q.y)
   const [bx0, by0, bx1, by1] = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]

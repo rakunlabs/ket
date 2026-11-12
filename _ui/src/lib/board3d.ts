@@ -106,6 +106,7 @@ export function boardCopper(pcb: Pcb, st: BoardState): THREE.Group {
       if (t.layer !== layer) continue
       for (let i = 1; i < t.points.length; i++) tracks.push(shape(capsule({ x: t.points[i - 1][0], y: t.points[i - 1][1] }, { x: t.points[i][0], y: t.points[i][1] }, t.width)))
     }
+    for (const d of st.teardrops ?? []) if (d.layer === layer && d.outline.length >= 3) tracks.push(shape(d.outline, []))
     const tm = plates(tracks, pos.z, pos.d, mat.trace)
     if (tm) g.add(tm)
     const pads: THREE.Shape[] = []

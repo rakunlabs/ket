@@ -73,6 +73,7 @@ define({
       holes: board.holes.map((h) => ({ at: [r2(h.at.x), r2(h.at.y)], d: h.d, ...(h.ref ? { part: h.ref } : {}) })),
       drills: boardDrills(pcb, board).map((h) => ({ id: h.id, at: [r2(h.at.x), r2(h.at.y)], diameter: h.d, plated: h.plated, ...(Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y) > 1e-9 ? { slot: { from: h.from, to: h.to } } : {}) })),
       zones: st.zones.map((zf) => ({ number: zf.index + 1, net: zf.net, layer: zf.layer, area: zf.area, islands: zf.regions.length, dropped_islands: zf.dropped || undefined })),
+      keepouts: pcb.keepouts?.length ? pcb.keepouts.map((k) => ({ name: k.name, forbid: k.forbid, layers: k.layers ?? 'all', points: k.polygon.length, ...(k.note ? { note: k.note } : {}) })) : undefined,
       wires: pcb.wires?.length ? pcb.wires.map((w) => `${w.a} — ${w.b}`) : undefined,
     }
   },
@@ -149,7 +150,7 @@ define({
     if (problems && !a.force) {
       throw new Error(`the board is not ready: ${st.drc!.length} DRC violation(s), ${st.ratsnest.unrouted.length} unrouted net(s). Fix them (run_drc) or pass force: true.`)
     }
-    const files = fabFiles(ctx.doc.pcb!, st.board, st.zones)
+    const files = fabFiles(ctx.doc.pcb!, st.board, st.zones, st.teardrops)
     if (!ctx.download) return { files: Object.keys(files) }
     const { zip } = await import('./zip')
     const blob = zip(files)

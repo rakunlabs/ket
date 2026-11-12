@@ -152,6 +152,12 @@ it changes, so every dimension can be an expression over parameters.
    review. Gerbers carry the ink shapes; mask/ink colors are order
    preferences in export_manufacturing and must be selected explicitly
    with the manufacturer. This is single-color silk, not UV color printing.
+10. Keep-outs before routing: add_keepout for antenna ends of radio
+   modules (no tracks, vias, pours and parts, every layer), under crystals
+   and inductors (no pours), and where a case boss or connector body sits
+   (no parts). autoroute, pours and auto_place respect them; run_drc
+   reports what is inside. set_board teardrops: true adds teardrops at
+   pads and vias (derived copper: Gerber, DRC and pours include it).
 
 ## Editing print models (STL, 3MF)
 - Files come from Import model in Ket, or from upload_asset: call it with

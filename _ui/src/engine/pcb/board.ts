@@ -26,6 +26,13 @@ export interface ResolvedBoard {
   holes: { at: { x: number; y: number }; d: number; ref?: string }[]
   errors: string[]
   artwork?: ResolvedArtwork[]
+  /** Keep-out regions with their layers resolved (every copper layer when none were given). */
+  keepouts: { name: string; polygon: Poly; layers: string[]; forbid: Set<'tracks' | 'vias' | 'pours' | 'parts'> }[]
+}
+
+/** Copper layers of a board, top to bottom. */
+export function copperLayers(layers: 2 | 4): string[] {
+  return layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu']
 }
 
 export function emptyPcb(): Pcb {
@@ -196,6 +203,12 @@ export function resolveBoard(doc: Doc, params: Map<string, number>, sketch: (nam
     ],
     errors,
     artwork,
+    keepouts: (pcb.keepouts ?? []).map((k) => ({
+      name: k.name,
+      polygon: polyArea(k.polygon.map(([x, y]) => ({ x, y }))) < 0 ? k.polygon.map(([x, y]) => ({ x, y })).reverse() : k.polygon.map(([x, y]) => ({ x, y })),
+      layers: k.layers?.length ? k.layers : copperLayers(pcb.layers),
+      forbid: new Set(k.forbid),
+    })),
   }
 }
 

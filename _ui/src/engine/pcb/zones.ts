@@ -10,6 +10,7 @@
 import type { Pcb, Zone } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS } from './board'
+import { teardrops } from './teardrops'
 import { type Ring, area, circle, difference, inRegion, intersect, offset, overlaps, polygons, stroke, union, unionRegions } from './poly'
 
 export interface ZoneFill {
@@ -52,6 +53,12 @@ export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
       if (t.net === z.net) same.push(...stroke(pts, t.width))
       else avoid.push(...stroke(pts, t.width + 2 * clearance))
     }
+    // Teardrops are copper of their net: other nets' pours keep clearance from them.
+    for (const d of teardrops(pcb, b)) {
+      if (d.layer !== z.layer) continue
+      if (d.net === z.net) same.push(d.outline)
+      else avoid.push(...offset([d.outline], clearance))
+    }
     for (const v of pcb.vias) {
       const c = { x: v.at[0], y: v.at[1] }
       if (v.net === z.net) same.push(circle(c, v.diameter / 2))
@@ -59,6 +66,7 @@ export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
     }
     for (const h of b.holes) avoid.push(circle(h.at, h.d / 2 + clearance))
     for (const c of b.cutouts) avoid.push(...offset([c], edge))
+    for (const k of b.keepouts) if (k.forbid.has('pours') && k.layers.includes(z.layer)) avoid.push(k.polygon)
     for (const p of b.pads) if (p.drill && (p.net !== z.net || p.drillPlated === false)) avoid.push(...stroke(p.drillSlot ?? [p.center], p.drill + clearance * 2))
     const earlier: Ring[] = []
     for (const f of fills) {

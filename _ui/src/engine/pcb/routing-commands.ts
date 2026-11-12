@@ -4,7 +4,7 @@ import { z } from 'zod'
 
 import type { Pcb, Track, Via } from '../doc'
 import { define } from '../registry'
-import { expr, vec2} from '../schema'
+import { expr, ident, vec2 } from '../schema'
 import { tidyTracks } from './autoroute'
 import { DEFAULT_CLASS } from './board'
 import { fillZones, stitchPoints } from './zones'
@@ -134,6 +134,59 @@ define({
     if ((a.layer === 'In1.Cu' || a.layer === 'In2.Cu') && pcb.layers !== 4) throw new Error(`${a.layer} needs a 4-layer board (set_board layers: 4)`)
     pcb.zones = [...(pcb.zones ?? []), Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined)) as never]
     return { doc: next, summary: `pour ${a.net} on ${a.layer}` }
+  },
+})
+
+const layerEnum = z.enum(['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu'])
+
+define({
+  name: 'add_keepout',
+  group: 'pcb',
+  kind: 'mutate',
+  description:
+    'Mark an area of the board where tracks, vias, pours and/or parts may not go: the antenna end of an ESP32 module (no copper on any layer under and beside it), under a crystal or a switching inductor (no pours), the area a connector body or a mounting screw head covers (no parts). Give the polygon (board coordinates) or rect: { at, w, h } (center), the layers it applies to (default all; parts follow the side: F.Cu top, B.Cu bottom), and what it forbids. autoroute routes around it, pours leave it empty, auto_place keeps parts out and run_drc reports anything inside. Replaces a keep-out with the same name.',
+  args: z
+    .object({
+      name: ident,
+      polygon: z.array(z.tuple([z.number(), z.number()])).min(3).optional(),
+      rect: z.object({ at: z.tuple([z.number(), z.number()]), w: z.number().positive(), h: z.number().positive() }).optional(),
+      layers: z.array(layerEnum).min(1).optional(),
+      forbid: z.array(z.enum(['tracks', 'vias', 'pours', 'parts'])).min(1).default(['tracks', 'vias', 'pours']),
+      note: z.string().optional(),
+    })
+    .refine((x) => !!x.polygon !== !!x.rect, { message: 'give polygon or rect (one of them)' }),
+  examples: [{ name: 'antenna', rect: { at: [0, 22], w: 18, h: 6 }, forbid: ['tracks', 'vias', 'pours', 'parts'], note: 'ESP32-C3 antenna' }],
+  apply(doc, a) {
+    const next = clone(doc)
+    const pcb = pcbOf(next)
+    if (a.layers?.some((l) => l.startsWith('In')) && pcb.layers !== 4) throw new Error('inner layers need a 4-layer board (set_board layers: 4)')
+    const polygon: [number, number][] = a.polygon ?? (() => {
+      const [x, y] = a.rect!.at
+      const [w, h] = [a.rect!.w / 2, a.rect!.h / 2]
+      return [[x - w, y - h], [x + w, y - h], [x + w, y + h], [x - w, y + h]]
+    })()
+    const k = { name: a.name, polygon, ...(a.layers ? { layers: a.layers } : {}), forbid: [...new Set(a.forbid)], ...(a.note ? { note: a.note } : {}) }
+    const list = (pcb.keepouts ?? []).filter((x) => x.name !== a.name)
+    const replaced = list.length !== (pcb.keepouts ?? []).length
+    pcb.keepouts = [...list, k]
+    return { doc: next, summary: `${replaced ? 'replaced' : 'added'} keep-out ${a.name} (no ${k.forbid.join(', ')}${a.layers ? ` on ${a.layers.join(', ')}` : ''})` }
+  },
+})
+
+define({
+  name: 'remove_keepouts',
+  group: 'pcb',
+  kind: 'mutate',
+  description: 'Remove keep-out areas by name.',
+  args: z.object({ names: z.array(z.string()).min(1) }),
+  apply(doc, a) {
+    const next = clone(doc)
+    const pcb = pcbOf(next)
+    const missing = a.names.filter((n) => !pcb.keepouts?.some((k) => k.name === n))
+    if (missing.length) throw new Error(`no keep-out ${missing.join(', ')}; keep-outs are: ${pcb.keepouts?.map((k) => k.name).join(', ') || '(none)'}`)
+    pcb.keepouts = pcb.keepouts!.filter((k) => !a.names.includes(k.name))
+    if (!pcb.keepouts.length) delete pcb.keepouts
+    return { doc: next, summary: `removed keep-outs ${a.names.join(', ')}` }
   },
 })
 

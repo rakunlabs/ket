@@ -226,6 +226,14 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
     const [a, c] = p.drillSlot ?? [p.center, p.center], r = p.drill / 2
     obstacles.push({ layers: all, net: p.drillPlated !== false && p.net ? netId.get(p.net) ?? 0 : 0, dist: (x, y) => Math.max(0, distPS(x, y, a.x, a.y, c.x, c.y) - r), box: [Math.min(a.x, c.x) - r, Math.min(a.y, c.y) - r, Math.max(a.x, c.x) + r, Math.max(a.y, c.y) + r] })
   }
+  // Keep-outs that forbid tracks: copper of no net, so no track of any net comes within clearance.
+  for (const k of b.keepouts) {
+    if (!k.forbid.has('tracks')) continue
+    const kx = k.polygon.map((q) => q.x)
+    const ky = k.polygon.map((q) => q.y)
+    obstacles.push({ layers: new Set(k.layers.map(li).filter((x) => x >= 0)), net: 0, dist: (x, y) => distPoly(x, y, k.polygon), box: [Math.min(...kx), Math.min(...ky), Math.max(...kx), Math.max(...ky)] })
+  }
+  const viaKeepouts = b.keepouts.filter((k) => k.forbid.has('vias'))
   const routedNets = new Set(nets.map((n) => n.net))
   for (const t of pcb.tracks) {
     if (routedNets.has(t.net)) continue
@@ -548,6 +556,8 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
       const y = cy(cell)
       const vd = net.cls.via_drill / 2
       for (const h of b.holes) if (Math.hypot(x - h.at.x, y - h.at.y) - h.d / 2 - vd < HOLE_TO_HOLE) return false
+      // A via goes through every layer: any keep-out that forbids vias stops it.
+      for (const k of viaKeepouts) if (distPoly(x, y, k.polygon) < net.cls.via_diameter / 2 + net.cls.clearance) return false
       for (const p of b.pads) if (p.drill) {
         const [a, c] = p.drillSlot ?? [p.center, p.center]
         if (distPS(x, y, a.x, a.y, c.x, c.y) - p.drill / 2 - vd < HOLE_TO_HOLE) return false

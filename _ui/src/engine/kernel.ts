@@ -26,6 +26,7 @@ import type { AutorouteOptions, AutorouteResult, ProfileSource, SweepOptions } f
 import { type View, boxOf, pathsToLines } from './drawing'
 import { drc, ratsnest } from './pcb/drc'
 import { type ZoneFill, fillZones } from './pcb/zones'
+import { teardrops } from './pcb/teardrops'
 import type { BoardState } from './pcb/state'
 import { type SolvedSketch, solveSketch } from './sketch'
 import { drawSection } from './section-draw'
@@ -520,14 +521,16 @@ export class Kernel {
 
   boardState(doc: Doc, opts?: { drc?: boolean }): BoardState | undefined {
     if (!doc.pcb || !this.board) return undefined
-    const key = JSON.stringify([doc.pcb.zones, doc.pcb.tracks, doc.pcb.vias, this.boardKey, doc.pcb.nets, doc.pcb.classes])
+    const key = JSON.stringify([doc.pcb.zones, doc.pcb.tracks, doc.pcb.vias, this.boardKey, doc.pcb.nets, doc.pcb.classes, doc.pcb.keepouts, doc.pcb.teardrops])
     if (this.zoneCache?.key !== key) this.zoneCache = { key, fills: fillZones(doc.pcb, this.board) }
     const zones = this.zoneCache.fills
+    const drops = teardrops(doc.pcb, this.board)
     return {
       board: this.board,
       zones,
       ratsnest: ratsnest(doc.pcb, this.board, zones),
-      drc: opts?.drc ? drc(doc.pcb, this.board, zones) : undefined,
+      teardrops: drops,
+      drc: opts?.drc ? drc(doc.pcb, this.board, zones, drops) : undefined,
     }
   }
 
@@ -584,12 +587,12 @@ export class Kernel {
     const only = opts.nets ? new Set(opts.nets) : undefined
     // Rerouting some nets: their old copper goes, everything else stays as an obstacle.
     const pcb = only ? { ...doc.pcb, tracks: doc.pcb.tracks.filter((t) => !only.has(t.net)), vias: doc.pcb.vias.filter((v) => !only.has(v.net)) } : doc.pcb
-    const rules = new Set(['clearance', 'short', 'hole_to_hole', 'copper_to_edge', 'outside_board', 'track_width', 'via'])
-    const before = new Set(drc(pcb, board, fillZones(pcb, board)).map((v) => v.message))
+    const rules = new Set(['clearance', 'short', 'hole_to_hole', 'copper_to_edge', 'outside_board', 'track_width', 'via', 'keepout'])
+    const before = new Set(drc(pcb, board, fillZones(pcb, board), teardrops(pcb, board)).map((v) => v.message))
     // Only problems the new copper brings in, and only copper rules (silk, placement are not the router's).
     const check = (r: { tracks: Track[]; vias: Via[] }) => {
       const next = { ...pcb, tracks: [...pcb.tracks, ...r.tracks], vias: [...pcb.vias, ...r.vias] }
-      return drc(next, board, fillZones(next, board)).filter((v) => !before.has(v.message) && rules.has(v.rule))
+      return drc(next, board, fillZones(next, board), teardrops(next, board)).filter((v) => !before.has(v.message) && rules.has(v.rule))
     }
     return autorouteBoard(pcb, board, { skip: new Set(opts.skip ?? []), only, timeout: opts.timeout, check })
   }

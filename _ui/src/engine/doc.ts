@@ -707,6 +707,16 @@ export interface Zone {
   priority?: number
 }
 
+/** A region of the board that forbids tracks, vias, pours and/or parts, on some copper layers (parts: by side). */
+export interface Keepout {
+  name: string
+  polygon: [number, number][]
+  /** Copper layers it applies to; default all. Parts follow the side of these layers (F.Cu top, B.Cu bottom). */
+  layers?: CopperLayer[]
+  forbid: ('tracks' | 'vias' | 'pours' | 'parts')[]
+  note?: string
+}
+
 export type MaskColor = 'green' | 'black' | 'white' | 'blue' | 'red' | 'purple' | 'yellow'
 export type SilkColor = 'white' | 'black'
 
@@ -735,6 +745,10 @@ export interface Pcb {
   tracks: Track[]
   vias: Via[]
   zones?: Zone[]
+  /** Teardrops where tracks meet pads and vias (derived when the board is resolved). */
+  teardrops?: { length?: number; width?: number }
+  /** Areas where some things may not go: copper (tracks, vias, pours) or parts (antenna clearance, under a connector). */
+  keepouts?: Keepout[]
   /** Schematic wires between pins of the same net (drawing only; the netlist decides connectivity). */
   wires?: Wire[]
   holes: { at: Vec2E; d: Expr }[]

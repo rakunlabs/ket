@@ -148,6 +148,13 @@ export function clearance(b: ResolvedBoard, others: Track[], vias: Via[]) {
     for (const p of b.pads) if (p.drill && p.net !== net && distPS([p.center.x, p.center.y], a, c) < half + p.drill / 2 + cls.clearance) return false
     for (const v of vias) if (v.net !== net && distPS(v.at, a, c) < half + v.diameter / 2 + cls.clearance - 1e-6) return false
     for (const h of b.holes) if (distPS([h.at.x, h.at.y], a, c) < half + h.d / 2 + cls.clearance) return false
+    // Keep-outs that forbid tracks on this layer: the segment must stay clear of them.
+    for (const k of b.keepouts ?? []) {
+      if (!k.forbid.has('tracks') || !k.layers.includes(layer)) continue
+      const o = k.polygon
+      if (insidePoly(a, o) || insidePoly(c, o)) return false
+      for (let i = 0; i < o.length; i++) if (distSS(a, c, [o[i].x, o[i].y], [o[(i + 1) % o.length].x, o[(i + 1) % o.length].y]) < half + cls.clearance - 1e-6) return false
+    }
     for (const o of others) {
       if (o === skipTrack || o.net === net || o.layer !== layer) continue
       const cc = Math.max(cls.clearance, (b.netClass.get(o.net) ?? def).clearance)

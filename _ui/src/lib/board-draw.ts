@@ -134,6 +134,12 @@ export function drawBoard(ctx: CanvasRenderingContext2D, w: number, h: number, p
       t.points.forEach((p, i) => (i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]))))
       ctx.stroke()
     }
+    for (const d of st.teardrops ?? []) {
+      if (d.layer !== layer) continue
+      path(d.outline)
+      ctx.fillStyle = hl.has(d.net) ? COLORS.hl : trackColor(d.layer)
+      ctx.fill()
+    }
     for (const p of b.pads) {
       if (!p.layers.includes(layer) || (p.layers.length > 1 && layer !== near)) continue
       path(p.outline)
@@ -221,6 +227,38 @@ export function drawBoard(ctx: CanvasRenderingContext2D, w: number, h: number, p
       ctx.lineWidth = 1.5
       ctx.stroke()
     }
+  }
+
+  // Keep-outs on this side's layer (or on inner layers): hatched outline.
+  const sideLayer = o.side === 'bottom' ? 'B.Cu' : 'F.Cu'
+  for (const k of b.keepouts ?? []) {
+    if (!k.layers.includes(sideLayer) && !k.layers.some((l) => l.startsWith('In'))) continue
+    ctx.save()
+    path(k.polygon)
+    ctx.clip()
+    ctx.strokeStyle = 'rgba(220, 60, 60, 0.55)'
+    ctx.lineWidth = 1
+    const xs = k.polygon.map((p) => X(p.x))
+    const ys = k.polygon.map((p) => Y(p.y))
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
+    ctx.beginPath()
+    for (let d = x0 - (y1 - y0); d < x1; d += 6) {
+      ctx.moveTo(d, y1)
+      ctx.lineTo(d + (y1 - y0), y0)
+    }
+    ctx.stroke()
+    ctx.restore()
+    path(k.polygon)
+    ctx.strokeStyle = 'rgba(220, 60, 60, 0.9)'
+    ctx.lineWidth = 1.2
+    ctx.setLineDash([5, 3])
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.fillStyle = 'rgba(220, 60, 60, 0.9)'
+    ctx.font = '10px "IBM Plex Mono", monospace'
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+    ctx.fillText(k.name, x0 + 3, y0 + 3)
   }
 
   if (o.ratsnest) {

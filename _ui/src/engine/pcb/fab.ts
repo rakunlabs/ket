@@ -5,6 +5,7 @@
 import type { Pcb } from '../doc'
 import type { ResolvedBoard } from './board'
 import type { Poly } from './geometry'
+import type { Teardrop } from './teardrops'
 import type { ZoneFill } from './zones'
 import { rot } from './geometry'
 import { boardDrills } from './drills'
@@ -90,7 +91,7 @@ export interface FabFiles {
   [name: string]: string
 }
 
-export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): FabFiles {
+export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], drops: Teardrop[] = []): FabFiles {
   const files: FabFiles = {}
   const copper = b.layers === 4 ? ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'] : ['F.Cu', 'B.Cu']
   const fn: Record<string, [string, string]> = {
@@ -117,6 +118,7 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = []): Fa
     g.polarity(true)
     for (const p of b.pads) if (p.layers.includes(layer)) g.region(p.outline)
     for (const t of pcb.tracks) if (t.layer === layer) g.line(t.points, t.width)
+    for (const d of drops) if (d.layer === layer) g.region(d.outline)
     for (const v of pcb.vias) g.flash(v.at[0], v.at[1], v.diameter)
     files[fn[layer][0]] = g.toString()
   }
