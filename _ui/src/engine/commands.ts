@@ -4,7 +4,7 @@
 
 import { z } from 'zod'
 
-import { type Doc, type Feature, findFeature, inputsOf, normalizeDoc, refsOf, sketchesOf } from './doc'
+import { type Doc, type Feature, dependsOn, findFeature, inputsOf, normalizeDoc, refsOf, sketchesOf } from './doc'
 import { namesIn } from './expr'
 import { define, applyOp } from './registry'
 import { checkDef, common, expr, featureName, featureRef, ident, placement, plane, profile, selector, vec2, vec3 } from './schema'
@@ -13,6 +13,8 @@ const replace = z
   .boolean()
   .optional()
   .describe('Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)')
+
+const anchor = z.enum(['min', 'center', 'max'])
 
 function clone(doc: Doc): Doc {
   // JSON, not structuredClone: the doc may be a Svelte state proxy, and it
@@ -35,7 +37,7 @@ export function upsert(doc: Doc, f: Feature, replaceIt: boolean | undefined): { 
     next.features[i] = f
     return { doc: next, summary: `replaced ${f.type} ${f.name}` }
   }
-  for (const input of inputsOf(f)) {
+  for (const input of dependsOn(f)) {
     if (!findFeature(next, input)) {
       const known = next.features.map((x) => x.name)
       throw new Error(`"${input}" does not exist; features are: ${known.join(', ') || '(none yet)'}`)
@@ -412,9 +414,42 @@ featureCommand(
 featureCommand(
   'transform',
   'transform',
-  'Move and/or rotate a copy of a feature; the original is consumed.',
-  { target: featureRef, ...placement },
-  [{ name: 'lid_placed', target: 'lid', translate: [0, 0, 30], rotate: [180, 0, 0] }],
+  'Move and/or rotate a copy of a feature; the original is consumed. align places the body by its bounding box instead of by hand-computed offsets: after rotate, the anchor point of its box (default the middle of the bottom) goes to align.to; translate is added after that. Use it to lay a part into a pocket ("center, center, min" at the pocket floor center) or stand it on the plate.',
+  {
+    target: featureRef,
+    align: z
+      .object({
+        to: vec3.describe('Where the anchor point of the box goes, [x, y, z]; expressions allowed'),
+        anchor: z.tuple([anchor, anchor, anchor]).optional().describe('Box point per axis X, Y, Z: min, center or max (default ["center", "center", "min"])'),
+      })
+      .optional(),
+    ...placement,
+  },
+  [
+    { name: 'lid_placed', target: 'lid', translate: [0, 0, 30], rotate: [180, 0, 0] },
+    { name: 'queen_in_pocket', target: 'queen', rotate: [0, 90, 0], align: { to: ['pocket_x', 'pocket_y', 'floor_z + 0.2'] } },
+  ],
+)
+
+featureCommand(
+  'solids',
+  'solids',
+  'Take some of the separate solids of a body as a new body, without consuming it: one chess piece out of a printed set, one part of an imported plate. The source stays as it is. Pick them by near (the solid nearest a point), inBox (box centers inside [[x0,y0,z0],[x1,y1,z1]]), index (from list_solids) and largest (only the n biggest); without any, all solids (a copy). list_solids shows each solid with its index, box, center and volume. Works on mesh bodies (STL, 3MF) and B-rep bodies.',
+  {
+    source: featureRef.describe('The body to take solids from; it is not consumed'),
+    pick: z
+      .object({
+        near: vec3.optional().describe('The solid nearest this point'),
+        inBox: z.tuple([vec3, vec3]).optional().describe('Solids whose box center is inside this box'),
+        index: z.array(z.number().int().min(0)).optional().describe('Indices from list_solids'),
+        largest: z.number().int().min(1).optional().describe('Keep only the n largest by volume'),
+      })
+      .optional(),
+  },
+  [
+    { name: 'queen', source: 'pieces', pick: { near: [120, 58, 10] } },
+    { name: 'back_row', source: 'pieces', pick: { inBox: [[40, 45, 0], [220, 70, 50]] } },
+  ],
 )
 
 featureCommand(
@@ -643,7 +678,7 @@ define({
       grew = false
       for (const f of next.features) {
         if (drop.has(f.name)) continue
-        const used = inputsOf(f).filter((i) => drop.has(i))
+        const used = dependsOn(f).filter((i) => drop.has(i))
         if (used.length) {
           users.push(`${f.name} uses ${used.join(', ')}`)
           if (a.cascade) {

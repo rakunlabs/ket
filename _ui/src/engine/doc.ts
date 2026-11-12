@@ -38,6 +38,27 @@ export interface Transform {
   rotate?: Vec3E
 }
 
+export type Anchor = 'min' | 'center' | 'max'
+
+/** Puts a point of the body's bounding box (after rotate) at to; translate is added after. */
+export interface Align {
+  to: Vec3E
+  /** Which point of the box per axis (default center, center, min: the middle of the bottom). */
+  anchor?: [Anchor, Anchor, Anchor]
+}
+
+/** Which separate solids of a body to keep. Without any field: all of them (a copy). */
+export interface SolidPick {
+  /** The solid nearest to this point (0 when the point is inside it). */
+  near?: Vec3E
+  /** Solids whose box center lies in this box. */
+  inBox?: [Vec3E, Vec3E]
+  /** Solids by their index in list_solids. */
+  index?: number[]
+  /** Only the n largest by volume (after the other filters). */
+  largest?: number
+}
+
 export type Plane = 'XY' | 'XZ' | 'YZ'
 
 /**
@@ -136,7 +157,8 @@ export type Feature =
   | (FeatureBase & { type: 'fillet'; target: string; r: Expr; edges?: Selector })
   | (FeatureBase & { type: 'chamfer'; target: string; d: Expr; edges?: Selector })
   | (FeatureBase & { type: 'shell'; target: string; thickness: Expr; open?: Selector })
-  | (FeatureBase & { type: 'transform'; target: string } & Transform)
+  | (FeatureBase & { type: 'transform'; target: string; align?: Align } & Transform)
+  | (FeatureBase & { type: 'solids'; source: string; pick?: SolidPick })
   | (FeatureBase & { type: 'import'; url: string; scale?: Expr } & Transform)
   | (FeatureBase & { type: 'pattern'; target: string; kind: 'linear'; count: Expr; step: Vec3E })
   | (FeatureBase & { type: 'pattern'; target: string; kind: 'grid'; count: Vec2E; step: Vec2E })
@@ -632,7 +654,13 @@ export function refsOf(f: Feature): string[] {
     return r ? [r] : []
   }
   if (f.type === 'geneva' && f.part === 'wheel') return [f.drive]
+  if (f.type === 'solids') return [f.source]
   return []
+}
+
+/** Features a feature needs built before it: what it consumes and what it reads without consuming. */
+export function dependsOn(f: Feature): string[] {
+  return f.type === 'solids' ? [...inputsOf(f), f.source] : inputsOf(f)
 }
 
 /** Features that consume other features; consumed bodies are not shown. */

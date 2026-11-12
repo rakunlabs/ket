@@ -156,9 +156,15 @@ it changes, so every dimension can be an expression over parameters.
   import url#<id> takes one object, where the slicer placed it.
 - STL and 3MF become triangle-mesh bodies. measure them and section or
   render to find the walls, pockets and free space before changing them.
+- section (axis, at) reads cuts as numbers: walls, pockets, free space.
+  list_solids shows the separate pieces of a body; solids takes some of
+  them (pick near a point, inBox, index, largest) without consuming the
+  source, and with no pick makes a copy to use as a second input.
 - Edit them with boolean: model the pocket, rib or label as B-rep (box,
   extrude of a sketch, text) and cut or union it. pattern and mirror
   repeat meshes; fillet, chamfer, shell and selectors need B-rep.
+- Place a part by its box with transform align (to, anchor) instead of
+  computing offsets: e.g. a piece lying in a pocket, bottom on the floor.
 - Check with no_overlap / min_distance / inside as for any body, then
   export 3MF (one object per body) or STL for the slicer. A slicer
   project's print settings and paint stay in the slicer: say so.

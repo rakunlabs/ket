@@ -27,6 +27,10 @@ export interface KernelAPI {
   measure(name: string, other?: string): Promise<Record<string, unknown>>
   between(a: string | [number, number, number], b: string | [number, number, number]): Promise<Record<string, unknown>>
   checks(): Promise<CheckResult[]>
+  /** The separate solids of a body: index, box, center, volume. */
+  solids(name: string): Promise<Record<string, unknown>[]>
+  /** Cross-sections of bodies by a plane. */
+  section(names: string[], axis: 'X' | 'Y' | 'Z', at: number): Promise<Record<string, unknown>[]>
   sketch(name: string): Promise<SolvedSketch>
   /** The resolved board with DRC and ratsnest; undefined without a PCB. */
   board(opts?: { drc?: boolean }): Promise<BoardState | undefined>
@@ -85,6 +89,8 @@ export function localKernel(kernel: Kernel, doc: Doc): KernelAPI {
     measure: async (n, o) => (await build(), kernel.measure(n, o)),
     between: async (a, b) => (await build(), kernel.between(a, b)),
     checks: async () => (await build(), kernel.checks(doc)),
+    solids: async (n) => (await build(), kernel.listSolids(n)),
+    section: async (names, axis, at) => (await build(), kernel.section(names, axis, at)),
     sketch: async (n) => (await build(), kernel.sketch(n)),
     board: async (o) => (await build(), kernel.boardState(doc, o)),
     export: async (f, names, models) => (await build(), kernel.export(f, names, models)),

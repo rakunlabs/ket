@@ -54,6 +54,8 @@ export type WorkerRequest =
   | { id: number; type: 'edges'; name: string; selector?: Selector }
   | { id: number; type: 'measure'; name: string; other?: string }
   | { id: number; type: 'checks' }
+  | { id: number; type: 'solids'; name: string }
+  | { id: number; type: 'section'; names: string[]; axis: 'X' | 'Y' | 'Z'; at: number }
   | { id: number; type: 'between'; a: string | [number, number, number]; b: string | [number, number, number] }
   | { id: number; type: 'sketch'; name: string }
   | { id: number; type: 'board'; drc?: boolean }
@@ -132,6 +134,12 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         break
       case 'checks':
         result = doc ? k.checks(doc) : []
+        break
+      case 'solids':
+        result = k.listSolids(req.name)
+        break
+      case 'section':
+        result = k.section(req.names, req.axis, req.at)
         break
       case 'export':
         result = await k.export(req.format, req.names, req.models)

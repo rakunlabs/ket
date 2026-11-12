@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { applyOp, command, emptyDoc, parseArgs, type Doc } from '../src/engine'
 import { Kernel } from '../src/engine/kernel'
-import { type TriMesh, read3MF, unzip, write3MF, writeSTL } from '../src/engine/model-files'
+import { type TriMesh, mergeMeshes, read3MF, unzip, write3MF, writeSTL } from '../src/engine/model-files'
 import './setup'
 
 function run(doc: Doc, cmd: string, args: unknown): Doc {
@@ -141,6 +141,41 @@ describe('mesh bodies (STL, 3MF)', () => {
     doc = run(emptyDoc(), 'import', { name: 'x', url: `${file}#Rook` })
     await k.prepareImports(doc)
     expect(k.build(doc).features[0].error).toMatch(/no object "Rook".*#\d+ \(Board\)/)
+  }, 120_000)
+
+  it('takes one solid of a set, lays it in a pocket with align and reads sections', async () => {
+    const k = new Kernel()
+    const url = 'ket:asset/set/set.stl'
+    // Three "pieces" (dense, so they are meshes) standing on the plate; the middle one is tall.
+    const set = mergeMeshes([denseBox([0, 0, 0], [6, 6, 10], 40), denseBox([20, 0, 0], [6, 6, 30], 40), denseBox([40, 0, 0], [6, 6, 15], 40)])
+    await k.loadImport(url, await buf(writeSTL([set])))
+    let doc = emptyDoc()
+    doc = run(doc, 'import', { name: 'set', url })
+    doc = run(doc, 'solids', { name: 'tall', source: 'set', pick: { near: [23, 3, 20] } })
+    doc = run(doc, 'solids', { name: 'two_big', source: 'set', pick: { largest: 2 } })
+    doc = run(doc, 'transform', { name: 'lying', target: 'tall', rotate: [0, 90, 0], align: { to: [100, 50, 2] } })
+    const r = k.build(doc)
+    expect(r.features.every((f) => f.ok)).toBe(true)
+    // The source is not consumed: it stays a body.
+    expect(r.bodies).toContain('set')
+    expect(k.listSolids('set').map((s) => s.volume)).toEqual([360, 1080, 540])
+    expect(r.features.find((f) => f.name === 'two_big')!.volume).toBeCloseTo(1620, 3)
+    // Lying along X, its bottom center at [100, 50, 2].
+    const lying = r.features.find((f) => f.name === 'lying')!.bbox!
+    expect(lying[0]).toEqual([85, 47, 2])
+    expect(lying[1]).toEqual([115, 53, 8])
+
+    const [cut] = k.section(['set'], 'Z', 5) as { loops: { kind: string; area: number; box: number[][] }[]; area: number }[]
+    expect(cut.loops.map((l) => [l.kind, l.area])).toEqual([['material', 36], ['material', 36], ['material', 36]])
+    expect(cut.area).toBeCloseTo(108, 6)
+    const [side] = k.section(['set'], 'Y', 3) as { loops: { box: number[][] }[] }[]
+    // (x, z) outlines: the tall piece reaches z = 30.
+    expect(Math.max(...side.loops.map((l) => l.box[1][1]))).toBe(30)
+    const [miss] = k.section(['set'], 'Z', 40) as { cut: boolean }[]
+    expect(miss.cut).toBe(false)
+
+    // Deleting the source needs cascade: solids depends on it.
+    expect(() => run(doc, 'delete_features', { names: ['set'] })).toThrow(/tall uses set/)
   }, 120_000)
 
   it('says what is wrong with a mesh that is not closed', async () => {

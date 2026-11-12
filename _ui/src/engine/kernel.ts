@@ -9,7 +9,7 @@ import RAPIER from '@dimforge/rapier3d-compat'
 import * as R from 'replicad'
 import type { AnyShape, Edge, EdgeFinder, Face, FaceFinder, Shape3D } from 'replicad'
 
-import { type Check, type Decal, type Doc, type Expr, type Feature, type Material, type Model3D, type Plane, type Profile, type Selector, type Sketch, type Track, type Vec3E, type Via, bodies, inputsOf, sketchesOf } from './doc'
+import { type Check, type Decal, type Doc, type Expr, type Feature, type Material, type Model3D, type Plane, type Profile, type Selector, type Sketch, type Track, type Vec3E, type Via, bodies, dependsOn, inputsOf, sketchesOf } from './doc'
 import { namesIn, num, resolveParameters } from './expr'
 import { explodeOffset } from './explode'
 import { fontMetrics } from './fonts'
@@ -40,7 +40,7 @@ import { parseOBJ, placeModel } from './pcb/model3d'
 import { type ZoneFill, fillZones } from './pcb/zones'
 import type { BoardState } from './pcb/state'
 import { type Loop, type SolvedSketch, loopInside, solveSketch } from './sketch'
-import { MeshBody, displayMesh, meshBody, meshCube, meshFromTriangles } from './mesh-body'
+import { MeshBody, composeBodies, displayMesh, meshBody, meshCube, meshFromTriangles } from './mesh-body'
 import { type ThreeMF, type TriMesh, isZip, parseSTL, pickObject, read3MF, write3MF, writeSTL } from './model-files'
 
 /** A built feature: an OpenCascade solid, or a triangle-mesh solid (imported STL / 3MF and what is built from it). */
@@ -876,7 +876,7 @@ export class Kernel {
       }
       seen.add(f.name)
 
-      const inputs = inputsOf(f)
+      const inputs = dependsOn(f)
       const missing = inputs.filter((i) => !keys.has(i))
       if (missing.length) {
         const st: FeatureStatus = {
@@ -1408,6 +1408,12 @@ export class Kernel {
 
     // A feature over a triangle-mesh body works on meshes (B-rep inputs are tessellated for it).
     if (inputsOf(f).some((i) => this.isMeshBody(i))) return this.makeMesh(f, warnings)
+    if (f.type === 'solids') return this.pickSolids(f)
+    if (f.type === 'transform' && f.align) {
+      const s = place(this.shape(f.target), { rotate: f.rotate }, p, f.name)
+      const [dx, dy, dz] = this.alignOffset(f, bboxOf(s))
+      return s.translate(dx, dy, dz)
+    }
 
     switch (f.type) {
       case 'box': {
@@ -1720,8 +1726,11 @@ export class Kernel {
         if (f.op === 'union' && !f.separate && out.solids() > solids0) warnings.push('some tools do not touch the rest: the union holds separate solids (pass separate: true if that is intended, e.g. keys or wheels)')
         return out
       }
-      case 'transform':
-        return this.meshOf(f.target).place(vec(f.rotate, p, `${f.name}.rotate`), vec(f.translate, p, `${f.name}.translate`))
+      case 'transform': {
+        const rotated = this.meshOf(f.target).place(vec(f.rotate, p, `${f.name}.rotate`), [0, 0, 0])
+        const t = f.align ? this.alignOffset(f, rotated.bbox()) : vec(f.translate, p, `${f.name}.translate`)
+        return rotated.translate(t)
+      }
       case 'mirror': {
         const s = this.meshOf(f.target)
         const off = n(f.offset, 'offset', 0)
@@ -1772,6 +1781,151 @@ export class Kernel {
       default:
         throw new Error(`${f.type} does not work on triangle meshes`)
     }
+  }
+
+  /** The move that puts the align anchor of box at align.to, plus translate. */
+  private alignOffset(f: Extract<Feature, { type: 'transform' }>, box: BBox): V3 {
+    const p = this.params
+    const to = vec(f.align!.to, p, `${f.name}.align.to`)
+    const extra = vec(f.translate, p, `${f.name}.translate`)
+    const anchor = f.align!.anchor ?? ['center', 'center', 'min']
+    return [0, 1, 2].map((k) => {
+      const a = anchor[k] === 'min' ? box[0][k] : anchor[k] === 'max' ? box[1][k] : (box[0][k] + box[1][k]) / 2
+      return to[k] - a + extra[k]
+    }) as V3
+  }
+
+  /** The separate solids of a body, with what list_solids reports. */
+  private solidsOf(name: string): { body: Body; box: BBox; volume: number; center: V3 }[] {
+    const b = this.body(name)
+    let parts: Body[]
+    if (isMesh(b)) {
+      parts = b.parts()
+      b.delete()
+    } else {
+      const s = (b as unknown as { solids?: Shape3D[] }).solids
+      parts = s && s.length > 1 ? s.map((x) => x.clone() as Shape3D) : [b]
+      if (parts[0] !== b) b.delete()
+    }
+    return parts.map((body) => {
+      const box = bodyBox(body)
+      return { body, box, volume: bodyVolume(body), center: r3([(box[0][0] + box[1][0]) / 2, (box[0][1] + box[1][1]) / 2, (box[0][2] + box[1][2]) / 2]) }
+    })
+  }
+
+  /** list_solids: each separate solid of a body. */
+  listSolids(name: string): { index: number; bbox: BBox; size: V3; center: V3; volume: number }[] {
+    const list = this.solidsOf(name)
+    try {
+      return list.map((s, index) => ({ index, bbox: s.box, size: r3([s.box[1][0] - s.box[0][0], s.box[1][1] - s.box[0][1], s.box[1][2] - s.box[0][2]]), center: s.center, volume: round(s.volume, 3) }))
+    } finally {
+      for (const s of list) s.body.delete()
+    }
+  }
+
+  private pickSolids(f: Extract<Feature, { type: 'solids' }>): Body {
+    const p = this.params
+    const all = this.solidsOf(f.source).map((s, index) => ({ ...s, index }))
+    let chosen = all
+    const pick = f.pick ?? {}
+    if (pick.index) {
+      const bad = pick.index.filter((i) => i >= all.length)
+      if (bad.length) throw new Error(`"${f.source}" has ${all.length} solids (index 0..${all.length - 1}); there is no ${bad.join(', ')}; see list_solids`)
+      chosen = chosen.filter((s) => pick.index!.includes(s.index))
+    }
+    if (pick.inBox) {
+      const a = vec(pick.inBox[0], p, `${f.name}.pick.inBox[0]`)
+      const b = vec(pick.inBox[1], p, `${f.name}.pick.inBox[1]`)
+      chosen = chosen.filter((s) => s.center.every((v, k) => v >= Math.min(a[k], b[k]) - 1e-6 && v <= Math.max(a[k], b[k]) + 1e-6))
+    }
+    if (pick.near) {
+      const q = vec(pick.near, p, `${f.name}.pick.near`)
+      // Nearest by box first (cheap), then the exact distance for solids whose box is that close.
+      const boxGap = (bx: BBox) => Math.hypot(...[0, 1, 2].map((k) => Math.max(bx[0][k] - q[k], 0, q[k] - bx[1][k])))
+      const ranked = chosen.map((s) => ({ s, gap: boxGap(s.box) })).sort((x, y) => x.gap - y.gap)
+      if (ranked.length) {
+        const exact = (s: (typeof all)[number]) => {
+          if (isMesh(s.body)) {
+            const probe = meshCube([q[0] - 1e-4, q[1] - 1e-4, q[2] - 1e-4], [q[0] + 1e-4, q[1] + 1e-4, q[2] + 1e-4])
+            try {
+              return s.body.overlap(probe).volume > 0 ? 0 : s.body.distance(probe)
+            } finally {
+              probe.delete()
+            }
+          }
+          const probe = R.makeSphere(1e-4).translate(q[0], q[1], q[2]) as Shape3D
+          try {
+            return safeDistance(s.body as Shape3D, probe)
+          } finally {
+            probe.delete()
+          }
+        }
+        let best = ranked[0].s
+        let bestD = Infinity
+        for (const { s, gap } of ranked) {
+          if (gap > bestD) break
+          const d = exact(s)
+          if (d < bestD) {
+            bestD = d
+            best = s
+          }
+        }
+        chosen = [best]
+      }
+    }
+    if (pick.largest) chosen = [...chosen].sort((x, y) => y.volume - x.volume).slice(0, pick.largest)
+    for (const s of all) if (!chosen.includes(s)) s.body.delete()
+    if (!chosen.length) throw new Error(`no solid of "${f.source}" matches the pick; list_solids shows its ${all.length} solids with their boxes and centers`)
+    if (chosen.length === 1) return chosen[0].body
+    const bodies = chosen.map((s) => s.body)
+    if (bodies.some(isMesh)) {
+      const meshes = bodies.map((b) => (isMesh(b) ? b : brepToMesh(b, f.name)))
+      bodies.forEach((b, i) => b !== meshes[i] && b.delete())
+      return composeBodies(meshes)
+    }
+    return R.makeCompound(bodies as Shape3D[]) as unknown as Shape3D
+  }
+
+  /**
+   * Cross-sections of bodies by a plane normal to axis at a coordinate: per
+   * body, its closed outlines (in the plane's (u, v): X → (y, z), Y → (x, z),
+   * Z → (x, y)), their boxes and the cut area. B-rep bodies are cut on a fine
+   * tessellation (within 0.01 mm).
+   */
+  section(names: string[], axis: 'X' | 'Y' | 'Z', at: number, simplify = 0.05): Record<string, unknown>[] {
+    const k = { X: 0, Y: 1, Z: 2 }[axis]
+    const [u, v] = { X: ['y', 'z'], Y: ['x', 'z'], Z: ['x', 'y'] }[axis]
+    return names.map((name) => {
+      const box = this.cache.get(name)?.status.bbox
+      if (box && (at < box[0][k] || at > box[1][k])) return { name, cut: false, note: `the plane ${axis}=${at} misses ${name} (it spans ${box[0][k]}..${box[1][k]})` }
+      const m = this.meshOf(name)
+      try {
+        const { outlines, area } = m.section(axis, at)
+        const loops = outlines
+          .map((ring) => {
+            const pts = simplifyRing(ring, simplify)
+            let a = 0
+            for (let i = 0; i < pts.length; i++) {
+              const [x0, y0] = pts[i]
+              const [x1, y1] = pts[(i + 1) % pts.length]
+              a += x0 * y1 - x1 * y0
+            }
+            const us = pts.map((p) => p[0])
+            const vs = pts.map((p) => p[1])
+            return {
+              kind: a >= 0 ? 'material' : 'hole',
+              area: round(Math.abs(a) / 2, 2),
+              box: [[round(Math.min(...us), 2), round(Math.min(...vs), 2)], [round(Math.max(...us), 2), round(Math.max(...vs), 2)]],
+              points: pts.length <= 64 ? pts.map((p) => [round(p[0], 2), round(p[1], 2)]) : undefined,
+              point_count: pts.length,
+            }
+          })
+          .sort((x, y) => y.area - x.area)
+        return { name, cut: true, axes: [u, v], area: round(area, 2), loops: loops.slice(0, 40), ...(loops.length > 40 ? { more_loops: loops.length - 40 } : {}) }
+      } finally {
+        m.delete()
+      }
+    })
   }
 
   private hint(f: Feature, e: unknown): string {
@@ -2309,6 +2463,45 @@ export class Kernel {
   get parameters(): Map<string, number> {
     return this.params
   }
+}
+
+/** Drops points within tol of the outline (Ramer–Douglas–Peucker on a closed ring). */
+function simplifyRing(ring: [number, number][], tol: number): [number, number][] {
+  const n = ring.length
+  if (n <= 4 || tol <= 0) return ring
+  // Anchor the ring at its two far-apart points (corners, not a point mid-edge); simplify both open runs.
+  const cx = ring.reduce((s, p) => s + p[0], 0) / n
+  const cy = ring.reduce((s, p) => s + p[1], 0) / n
+  let first = 0
+  for (let i = 1; i < n; i++) if (Math.hypot(ring[i][0] - cx, ring[i][1] - cy) > Math.hypot(ring[first][0] - cx, ring[first][1] - cy)) first = i
+  ring = [...ring.slice(first), ...ring.slice(0, first)]
+  let split = 1
+  const d0 = (i: number) => Math.hypot(ring[i][0] - ring[0][0], ring[i][1] - ring[0][1])
+  for (let i = 2; i < n; i++) if (d0(i) > d0(split)) split = i
+  const keep = new Uint8Array(n)
+  keep[0] = keep[split] = 1
+  const pt = (i: number) => ring[i % n]
+  const stack: [number, number][] = [[0, split], [split, n]]
+  while (stack.length) {
+    const [a, b] = stack.pop()!
+    const [ax, ay] = pt(a)
+    const [bx, by] = pt(b)
+    const len = Math.hypot(bx - ax, by - ay)
+    let best = -1
+    let far = tol
+    for (let i = a + 1; i < b; i++) {
+      const [px, py] = pt(i)
+      const e = len > 1e-12 ? Math.abs((bx - ax) * (ay - py) - (ax - px) * (by - ay)) / len : Math.hypot(px - ax, py - ay)
+      if (e > far) {
+        far = e
+        best = i
+      }
+    }
+    if (best < 0) continue
+    keep[best % n] = 1
+    stack.push([a, best], [best, b])
+  }
+  return ring.filter((_, i) => keep[i])
 }
 
 /** A vendor mesh placed on the board, as sewn triangle faces. */

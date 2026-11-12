@@ -71,6 +71,32 @@ export class MeshBody {
     return Math.max(1, n)
   }
 
+  /**
+   * The separate solids, each with the voids enclosed in it (a magnet pocket
+   * stays in its piece), in decompose order.
+   */
+  parts(): MeshBody[] {
+    const pieces = this.m.decompose()
+    const shells = pieces.filter((p) => p.volume() > 0)
+    const voids = pieces.filter((p) => p.volume() <= 0)
+    if (!voids.length) return shells.map((p) => new MeshBody(p))
+    const box = (m: Manifold) => m.boundingBox()
+    const within = (inner: Manifold, outer: Manifold) => {
+      const a = box(inner)
+      const b = box(outer)
+      return [0, 1, 2].every((k) => a.min[k] >= b.min[k] - 1e-6 && a.max[k] <= b.max[k] + 1e-6)
+    }
+    const M = manifoldLib().Manifold
+    return shells.map((s) => {
+      const mine = voids.filter((v) => within(v, s))
+      if (!mine.length) return new MeshBody(s)
+      // A void is a shell turned inside out: composing them keeps it a hole.
+      const out = M.compose([s, ...mine])
+      s.delete()
+      return new MeshBody(out)
+    })
+  }
+
   /** Volume-weighted center (tetrahedra from the origin). */
   centerOfMass(): V3 {
     const g = this.m.getMesh()
@@ -187,6 +213,24 @@ export class MeshBody {
     return gap
   }
 
+  /**
+   * The cut of the body by a plane normal to an axis at a coordinate: closed
+   * outlines in the plane's own (u, v) coordinates (X: (y, z), Y: (x, z), Z: (x, y)).
+   */
+  section(axis: 'X' | 'Y' | 'Z', at: number): { outlines: [number, number][][]; area: number } {
+    // manifold slices across Z: rotate the axis onto Z (proper rotations, so the solid stays outward), then read u, v back.
+    // X: (x, y, z) → (y, z, x); Y: (x, y, z) → (x, -z, y).
+    const m = axis === 'Z' ? this.m : axis === 'X' ? this.m.transform([0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]) : this.m.transform([1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1])
+    const cs = m.slice(at)
+    try {
+      const polys = cs.toPolygons().map((ring) => ring.map((p) => (axis === 'Y' ? [p[0], -p[1]] : [p[0], p[1]]) as [number, number]))
+      return { outlines: polys, area: cs.area() }
+    } finally {
+      cs.delete()
+      if (m !== this.m) m.delete()
+    }
+  }
+
   /** Triangles in place (welded), for export. */
   triMesh(): TriMesh {
     const g = this.m.getMesh()
@@ -290,6 +334,13 @@ export function meshBody(tri: TriMesh, what: string): MeshBody {
 /** A B-rep solid as a mesh body (tessellated within tolerance mm). */
 export function meshFromTriangles(vertices: ArrayLike<number>, triangles: ArrayLike<number>, what: string): MeshBody {
   return meshBody({ positions: Float32Array.from(vertices), triangles: Uint32Array.from(triangles) }, what)
+}
+
+/** Bodies that do not overlap as one body, as they are (no boolean); consumes them. */
+export function composeBodies(list: MeshBody[]): MeshBody {
+  const out = manifoldLib().Manifold.compose(list.map((b) => b.m))
+  for (const b of list) b.delete()
+  return new MeshBody(out)
 }
 
 /** A box or point as a mesh body, for distance probes. */

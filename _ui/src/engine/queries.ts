@@ -142,6 +142,38 @@ define({
 })
 
 define({
+  name: 'list_solids',
+  group: 'query',
+  kind: 'query',
+  description:
+    'List the separate solids of a body (the pieces of a printed set, the parts of an imported plate) with index, bounding box, size, box center and volume. Take one or some as a new body with the solids command (pick by near, inBox, index or largest).',
+  args: z.object({ name: featureRef }),
+  examples: [{ name: 'pieces' }],
+  async run(ctx, a) {
+    const list = await ctx.kernel.solids(a.name)
+    return { name: a.name, count: list.length, solids: list.slice(0, 200), ...(list.length > 200 ? { more: list.length - 200 } : {}) }
+  },
+})
+
+define({
+  name: 'section',
+  group: 'query',
+  kind: 'query',
+  description:
+    'Cut bodies with a plane and read the cut as numbers: per body the closed outlines in the plane (material and hole loops, each with its area and box, and its points when it is small), and the total cut area. Plane X=at gives (y, z) outlines, Y=at (x, z), Z=at (x, y). Use it to find walls, pockets, free space and wall thickness in imported models before editing them (render with section shows the same as a picture).',
+  args: z.object({
+    names: z.array(featureRef).min(1).max(8).optional().describe('Bodies to cut (default every visible body)'),
+    axis: z.enum(['X', 'Y', 'Z']),
+    at: z.number().describe('Coordinate of the plane in mm'),
+  }),
+  examples: [{ names: ['cover'], axis: 'Z', at: 10 }],
+  async run(ctx, a) {
+    const names = a.names ?? (await ctx.kernel.build()).bodies
+    return { axis: a.axis, at: a.at, bodies: await ctx.kernel.section(names, a.axis, a.at) }
+  },
+})
+
+define({
   name: 'get_gears',
   group: 'query',
   kind: 'query',
