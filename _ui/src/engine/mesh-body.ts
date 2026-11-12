@@ -40,6 +40,8 @@ const STATUS: Record<string, string> = {
 export class MeshBody {
   /** The paint id this body registered as an original (see painted), for forgetPaint. */
   paintId?: number
+  /** Paint ids of painted tools this body was made with (boolean paint), freed with the body's cache entry. */
+  ownPaint?: number[]
 
   constructor(readonly m: Manifold) {}
 
@@ -526,6 +528,19 @@ export function meshBody(tri: TriMesh, what: string): MeshBody {
     body.paintId = id
   }
   return body
+}
+
+/** The slicer paint attribute for a whole triangle in one filament (1-based). */
+export function filamentPaint(filament: number): string {
+  // Leaf states 1, 2 are one nibble; 3 and up are "C" with state - 3 in the next nibble (read from the end).
+  return `paint_color="${filament < 3 ? (filament << 2).toString(16).toUpperCase() : (filament - 3).toString(16).toUpperCase() + 'C'}"`
+}
+
+/** A copy of a body with every triangle painted in one filament; consumes it. */
+export function paintAll(body: MeshBody, filament: number, what: string): MeshBody {
+  const tm = body.triMesh()
+  body.delete()
+  return meshBody({ positions: tm.positions, triangles: tm.triangles, paint: new Uint32Array(tm.triangles.length / 3).fill(1), paints: ['', filamentPaint(filament)] }, what)
 }
 
 /** Drops the paint of an imported mesh that nothing uses any more. */

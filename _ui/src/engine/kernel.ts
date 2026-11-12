@@ -41,7 +41,7 @@ import { type ZoneFill, fillZones } from './pcb/zones'
 import type { BoardState } from './pcb/state'
 import { type Loop, type SolvedSketch, loopInside, solveSketch } from './sketch'
 import { drawSection } from './section-draw'
-import { MeshBody, composeBodies, displayMesh, forgetPaint, meshBody, meshCube, meshFromTriangles } from './mesh-body'
+import { MeshBody, composeBodies, displayMesh, forgetPaint, meshBody, meshCube, meshFromTriangles, paintAll } from './mesh-body'
 import { type ThreeMF, type TriMesh, fetchKey, isZip, paintFilament, parseSTL, pickObject, read3MF, update3MF, urlFile, urlFragment, write3MF, writeSTL } from './model-files'
 
 /** A built feature: an OpenCascade solid, or a triangle-mesh solid (imported STL / 3MF and what is built from it). */
@@ -1129,6 +1129,7 @@ export class Kernel {
   private drop(name: string) {
     const c = this.cache.get(name)
     if (c) {
+      if (isMesh(c.shape)) for (const id of c.shape.ownPaint ?? []) forgetPaint(id)
       c.shape.delete()
       c.meshed?.delete()
       this.cache.delete(name)
@@ -1776,7 +1777,10 @@ export class Kernel {
         const target = this.meshOf(f.target)
         const tools: { name: string; body: MeshBody }[] = []
         try {
-          for (const t of f.tools) tools.push({ name: t, body: this.meshOf(t) })
+          for (const t of f.tools) {
+            const fil = f.paint?.[t]
+            tools.push({ name: t, body: fil ? paintAll(this.meshOf(t), fil, t) : this.meshOf(t) })
+          }
         } catch (e) {
           target.delete()
           for (const t of tools) t.body.delete()
@@ -1789,7 +1793,10 @@ export class Kernel {
           for (const t of tools) if (boxesApart(t.body.bbox(), targetBox, 0.01)) warnings.push(`cutting "${t.name}" removed no material: it does not overlap "${f.target}"`)
         }
         const solids0 = f.op === 'union' && !f.separate ? target.solids() : 0
+        for (const k of Object.keys(f.paint ?? {})) if (!f.tools.includes(k)) warnings.push(`paint names "${k}", which is not one of the tools`)
+        const owned = tools.flatMap((t) => (t.body.paintId !== undefined ? [t.body.paintId] : []))
         const out = target.boolean(f.op, tools.map((t) => t.body))
+        if (owned.length) out.ownPaint = owned
         if (f.op === 'cut' && tools.length && !warnings.length && Math.abs(out.volume() - before) < 1e-6) warnings.push(`cutting ${f.tools.map((t) => `"${t}"`).join(', ')} removed no material: ${f.tools.length > 1 ? 'they do' : 'it does'} not overlap "${f.target}"`)
         const after = out.volume()
         if (f.op === 'intersect' && after < 1e-9) warnings.push('the intersection is empty')

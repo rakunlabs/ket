@@ -303,6 +303,12 @@ describe('mesh bodies (STL, 3MF)', () => {
     expect(ring[0].loops.every((l) => l.kind === 'material')).toBe(true)
   }, 60_000)
 
+  it('writes whole-triangle paint that reads back as its filament', async () => {
+    const { filamentPaint } = await import('../src/engine/mesh-body')
+    const { paintFilament } = await import('../src/engine/model-files')
+    for (const f of [1, 2, 3, 4, 9]) expect(paintFilament(filamentPaint(f))).toBe(f)
+  })
+
   it('says what is wrong with a mesh that is not closed', async () => {
     const k = new Kernel()
     const url = 'ket:asset/open/open.stl'

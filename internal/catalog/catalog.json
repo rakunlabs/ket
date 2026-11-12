@@ -2783,6 +2783,19 @@
             "description": "union: the parts are meant to stay separate solids; skips the \"does not touch\" warnings",
             "type": "boolean"
           },
+          "paint": {
+            "description": "Slicer paint (3MF) for the faces a tool leaves, as a filament number per tool, e.g. {\"notch_1\": 2}: a cut pocket or finger notch prints in that filament. Without it new faces take the paint of nearby faces. Only for painted mesh bodies (imported 3MF)",
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "description": "Name of an existing feature"
+            },
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            }
+          },
           "replace": {
             "description": "Replace the existing feature with this name, keeping its position in the list (default false: fail if the name exists)",
             "type": "boolean"

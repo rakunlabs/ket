@@ -153,7 +153,7 @@ export type Feature =
   | (FeatureBase & { type: 'revolve'; sketch?: string; plane?: Plane; offset?: Expr; profile?: Profile; axis: 'X' | 'Y' | 'Z'; angle?: Expr } & Transform)
   | (FeatureBase & { type: 'loft'; sections: Section[]; ruled?: boolean } & Transform)
   | (FeatureBase & { type: 'sweep'; sketch?: string; profile?: Profile; path: Vec3E[]; bend?: Expr } & Transform)
-  | (FeatureBase & { type: 'boolean'; op: 'union' | 'cut' | 'intersect'; target: string; tools: string[]; separate?: boolean })
+  | (FeatureBase & { type: 'boolean'; op: 'union' | 'cut' | 'intersect'; target: string; tools: string[]; separate?: boolean; paint?: Record<string, number> })
   | (FeatureBase & { type: 'fillet'; target: string; r: Expr; edges?: Selector })
   | (FeatureBase & { type: 'chamfer'; target: string; d: Expr; edges?: Selector })
   | (FeatureBase & { type: 'shell'; target: string; thickness: Expr; open?: Selector })

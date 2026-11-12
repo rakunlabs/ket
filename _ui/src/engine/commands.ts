@@ -383,6 +383,10 @@ featureCommand(
     target: featureRef,
     tools: z.array(featureRef).min(1),
     separate: z.boolean().optional().describe('union: the parts are meant to stay separate solids; skips the "does not touch" warnings'),
+    paint: z
+      .record(featureRef, z.number().int().min(1).max(16))
+      .optional()
+      .describe('Slicer paint (3MF) for the faces a tool leaves, as a filament number per tool, e.g. {"notch_1": 2}: a cut pocket or finger notch prints in that filament. Without it new faces take the paint of nearby faces. Only for painted mesh bodies (imported 3MF)'),
   },
   [{ name: 'case_open', op: 'cut', target: 'case_shell', tools: ['usb_hole', 'led_hole'] }],
 )
