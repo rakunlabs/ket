@@ -141,7 +141,7 @@ export interface Ctx {
   /** Renders the 2D board; only in the browser. */
   renderBoard?(opts: BoardRenderOptions): Promise<{ images: { mime: string; data: string }[] }>
   /** Renders the schematic; only in the browser. */
-  renderSchematic?(size: number): Promise<{ images: { mime: string; data: string }[] }>
+  renderSchematic?(size: number, sheet?: string): Promise<{ images: { mime: string; data: string }[] }>
   /** Saves a file for the user (export); only in the browser. */
   download?(name: string, blob: Blob): Promise<string>
   /** Server services (parts catalog, autorouter). */

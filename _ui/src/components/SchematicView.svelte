@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
 
-  import { type SchSymbol, route, schematic } from '../engine/pcb/schematic'
+  import { type SchSymbol, MAIN_SHEET, route, schematic, sheetsOf } from '../engine/pcb/schematic'
   import { projectAccess } from '../lib/access.svelte'
   import { type SchView, drawSchematic, fitSch, renderSchematicPNG, themeSch } from '../lib/sch-draw'
   import { css, theme } from '../lib/theme.svelte'
@@ -15,7 +15,13 @@
   let size = $state({ w: 0, h: 0 })
   let view = $state<SchView>()
 
-  const sch = $derived(session.doc.pcb ? schematic(session.doc.pcb) : undefined)
+  let sheet = $state(MAIN_SHEET)
+  const sheets = $derived(session.doc.pcb ? sheetsOf(session.doc.pcb) : [MAIN_SHEET])
+  // A sheet that no longer exists (its last part moved away): back to main.
+  $effect(() => {
+    if (!sheets.includes(sheet)) sheet = MAIN_SHEET
+  })
+  const sch = $derived(session.doc.pcb ? schematic(session.doc.pcb, sheets.includes(sheet) ? sheet : MAIN_SHEET) : undefined)
   const editable = $derived(access.canEdit)
 
   /** A wire being drawn: from a pin to the pointer. */
@@ -95,9 +101,9 @@
   }
 
   onMount(() => {
-    session.schematicRenderer = async (px) => {
+    session.schematicRenderer = async (px, s) => {
       if (!session.doc.pcb) throw new Error('no board yet')
-      return { images: [{ mime: 'image/png', data: renderSchematicPNG(schematic(session.doc.pcb), px) }] }
+      return { images: [{ mime: 'image/png', data: renderSchematicPNG(schematic(session.doc.pcb, s ?? sheet), px) }] }
     }
     const ro = new ResizeObserver(() => (size = { w: host.clientWidth, h: host.clientHeight }))
     ro.observe(host)
@@ -244,6 +250,13 @@
 <svelte:window onkeydown={onKey} />
 
 <div bind:this={host} class="absolute inset-0 bg-[var(--sch-bg)]">
+  {#if sheets.length > 1}
+    <div class="seg absolute top-2 left-2 z-10" role="tablist" aria-label="Schematic sheets">
+      {#each sheets as s (s)}
+        <button role="tab" aria-selected={sheet === s} onclick={() => { sheet = s; view = undefined }}>{s}</button>
+      {/each}
+    </div>
+  {/if}
   {#if !sch || sch.symbols.length === 0}
     <div class="grid h-full place-items-center text-ink-2">
       <div class="max-w-sm text-center">No parts yet. The schematic is drawn from the board's parts and nets.</div>
@@ -259,7 +272,7 @@
       onpointerup={onUp}
     ></canvas>
     <div class="pointer-events-none absolute right-2 bottom-2 left-2 w-fit max-w-[calc(100%-1rem)] border border-line bg-surface/90 px-2 py-0.5 text-[11px] text-ink-2">
-      {sch.symbols.length} parts · {session.doc.pcb?.nets.length ?? 0} nets · labels join pins of the same net
+      {#if sheets.length > 1}Sheet {sheet} · {/if}{sch.symbols.length} parts · {session.doc.pcb?.nets.length ?? 0} nets · labels join pins of the same net{#if Object.keys(sch.offSheet).length} (→ another sheet){/if}
       {#if editable}· click a pin, (click to bend,) click another pin to wire · click a wire then Delete to remove it · shift-click a pin to disconnect · drag a part to move it{/if}
     </div>
     {#if wire}

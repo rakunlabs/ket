@@ -667,6 +667,8 @@ export interface Component {
   edge?: boolean
   /** Schematic position [x, y] in symbol units (10 mil), set by the user or auto-placed. */
   sch?: [number, number]
+  /** Schematic sheet the symbol is drawn on (default "main"); nets that leave a sheet are labelled with where they go. */
+  sheet?: string
   note?: string
   height?: Expr
   footprint: Footprint

@@ -51,7 +51,7 @@ export class Session {
   sketchLines = $state.raw<SketchLines[]>([])
   board = $state.raw<BoardState | undefined>(undefined)
   boardRenderer: BoardRenderer | undefined
-  schematicRenderer: ((size: number) => Promise<{ images: { mime: string; data: string }[] }>) | undefined
+  schematicRenderer: ((size: number, sheet?: string) => Promise<{ images: { mime: string; data: string }[] }>) | undefined
   head = $state(0)
   top = $state(0)
   log = $state<LogEntry[]>([])

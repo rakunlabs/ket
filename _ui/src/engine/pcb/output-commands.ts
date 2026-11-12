@@ -11,7 +11,8 @@ import { boardDrills } from './drills'
 import { fabFiles } from './fab'
 import { writeKicadPcb } from './kicad'
 import { readKicadPcb } from './kicad-read'
-import { schematic } from './schematic'
+import { panelize } from './panel'
+import { MAIN_SHEET, schematic, sheetsOf } from './schematic'
 import { clone, comp, pcbOf } from './shared'
 
 // ── Queries ────────────────────────────────────────────────────────────
@@ -134,8 +135,23 @@ define({
   group: 'pcb',
   kind: 'query',
   description:
-    'Write the fabrication ZIP: Gerber X2 copper/mask/silk/outline, separate PTH and NPTH Excellon drill files (including rotated G85 slots), BOM and CPL. Refuses while DRC fails or nets are unrouted unless force is true. A history recovery failure cannot be bypassed.',
-  args: z.object({ force: z.boolean().optional(), filename: z.string().optional(), configuration: z.string().optional().describe('Write the board of this configuration instead of the active design') }),
+    'Write the fabrication ZIP: Gerber X2 copper/mask/silk/outline, separate PTH and NPTH Excellon drill files (including rotated G85 slots), BOM and CPL. With panel, an nx × ny panel of the board (V-score or mouse bites, rails with tooling holes and fiducials; most fabs also panelize for you, so use it when the assembly line asks for a panel). Refuses while DRC fails or nets are unrouted unless force is true. A history recovery failure cannot be bypassed.',
+  args: z.object({
+    force: z.boolean().optional(),
+    filename: z.string().optional(),
+    configuration: z.string().optional().describe('Write the board of this configuration instead of the active design'),
+    panel: z
+      .object({
+        nx: z.number().int().min(1).max(20),
+        ny: z.number().int().min(1).max(20),
+        method: z.enum(['vscore', 'mousebite']),
+        gap: z.number().min(0).max(10).optional().describe('Between boards, mm: 0 for V-score (default), 2 for mouse bites (default)'),
+        rails: z.number().min(0).max(20).optional().describe('Rail width, mm (default 5)'),
+        rails_on: z.enum(['x', 'y', 'both', 'none']).optional().describe('Rails along the top/bottom (x, default), the sides (y), both or none'),
+      })
+      .optional()
+      .describe('Write a panel of nx × ny boards with rails, tooling holes and fiducials instead of one board'),
+  }),
   async run(ctx, a) {
     requireHealthyHistory(ctx)
     if (a.configuration !== undefined && a.configuration !== ctx.doc.configuration) {
@@ -152,13 +168,19 @@ define({
     if (problems && !a.force) {
       throw new Error(`the board is not ready: ${st.drc!.length} DRC violation(s), ${st.ratsnest.unrouted.length} unrouted net(s). Fix them (run_drc) or pass force: true.`)
     }
-    const files = fabFiles(ctx.doc.pcb!, st.board, st.zones, st.teardrops)
-    if (!ctx.download) return { files: Object.keys(files) }
+    let files: Record<string, string>
+    let panelInfo: Record<string, unknown> | undefined
+    if (a.panel) {
+      const pn = panelize(ctx.doc.pcb!, st.board, st.zones, st.teardrops, { nx: a.panel.nx, ny: a.panel.ny, method: a.panel.method, gap: a.panel.gap, rails: a.panel.rails, railsOn: a.panel.rails_on })
+      files = fabFiles(pn.pcb, pn.board, pn.zones, pn.teardrops)
+      panelInfo = { boards: a.panel.nx * a.panel.ny, size: [pn.width, pn.height], method: a.panel.method, notes: pn.notes }
+    } else files = fabFiles(ctx.doc.pcb!, st.board, st.zones, st.teardrops)
+    if (!ctx.download) return { files: Object.keys(files), ...(panelInfo ? { panel: panelInfo } : {}) }
     const { zip } = await import('./zip')
     const blob = zip(files)
-    const name = a.filename ?? 'board-fab.zip'
+    const name = a.filename ?? (a.panel ? `board-panel-${a.panel.nx}x${a.panel.ny}.zip` : 'board-fab.zip')
     await ctx.download(name, blob)
-    return { ok: true, file: name, files: Object.keys(files), bytes: blob.size }
+    return { ok: true, file: name, files: Object.keys(files), bytes: blob.size, ...(panelInfo ? { panel: panelInfo } : {}) }
   },
 })
 
@@ -271,17 +293,42 @@ define({
   kind: 'query',
   description:
     "Draw the schematic: every part's symbol with its pin names, wires where they were drawn (wire_pins) and a net label on connected pins a wire does not fully show (pins with the same label are connected). It is generated from the netlist, so it always matches the board. Use it to review the circuit: unconnected pins have no wire and no label.",
-  args: z.object({ size: z.number().int().min(400).max(2000).optional() }),
+  args: z.object({ size: z.number().int().min(400).max(2000).optional(), sheet: z.string().optional().describe('Sheet to draw (default main); set_sheet puts parts on sheets') }),
   async run(ctx, a) {
     if (!ctx.renderSchematic) throw new Error('render_schematic is only available in the browser')
     const pcb = pcbOf(ctx.doc)
-    const sch = schematic(pcb)
-    const out = await ctx.renderSchematic(a.size ?? 1200)
+    const sheets = sheetsOf(pcb)
+    const sheet = a.sheet ?? MAIN_SHEET
+    if (!sheets.includes(sheet)) throw new Error(`no sheet "${sheet}"; sheets are: ${sheets.join(', ')}`)
+    const sch = schematic(pcb, sheet)
+    const out = await ctx.renderSchematic(a.size ?? 1200, sheet)
     const open = sch.symbols.flatMap((s) => s.def.pins.filter((p) => !s.nets[p.number]).map((p) => `${s.ref}.${p.number}${p.name !== p.number ? `(${p.name})` : ''}`))
+    const off = Object.entries(sch.offSheet).map(([n, to]) => `${n} → ${to.join(', ')}`)
     return {
-      text: `${sch.symbols.length} parts, ${pcb.nets.length} nets, ${sch.wires.length} wires. Unconnected pins: ${open.length ? open.join(', ') : 'none'}.`,
+      text: `Sheet ${sheet}${sheets.length > 1 ? ` (of ${sheets.join(', ')})` : ''}: ${sch.symbols.length} parts, ${sch.wires.length} wires. Unconnected pins: ${open.length ? open.join(', ') : 'none'}.${off.length ? ` Off-sheet nets: ${off.join('; ')}.` : ''}`,
       images: out.images,
     }
+  },
+})
+
+define({
+  name: 'set_sheet',
+  group: 'pcb',
+  kind: 'mutate',
+  description:
+    'Put parts on a schematic sheet (e.g. "power", "usb", "mcu") to split a big schematic; omit sheet to return them to main. Only the drawing changes: nets stay as they are, and a net that reaches parts on other sheets gets an off-sheet label ("VBUS → power") on each. render_schematic sheet draws one sheet.',
+  args: z.object({ refs: z.array(z.string()).min(1), sheet: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/, 'a sheet name: letters, digits, _ or -, starting with a letter').optional() }),
+  apply(doc, a) {
+    const next = clone(doc)
+    const pcb = pcbOf(next)
+    for (const ref of a.refs) {
+      const c = comp(pcb, ref)
+      if (a.sheet && a.sheet !== MAIN_SHEET) c.sheet = a.sheet
+      else delete c.sheet
+      // A new sheet starts from the auto layout.
+      delete c.sch
+    }
+    return { doc: next, summary: `${a.refs.join(', ')} on sheet ${a.sheet ?? MAIN_SHEET}` }
   },
 })
 

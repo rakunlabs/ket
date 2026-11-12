@@ -29,6 +29,11 @@ export interface SchWire {
 }
 
 export interface Schematic {
+  /** The sheet drawn, and every sheet of the design. */
+  sheet: string
+  sheets: string[]
+  /** Net name → the other sheets it reaches (off-sheet connectors). */
+  offSheet: Record<string, string[]>
   symbols: SchSymbol[]
   wires: SchWire[]
   /** Junction dots: points where three or more wire ends meet. */
@@ -164,14 +169,33 @@ export function route(a: PinEnd, b: PinEnd, bends: [number, number][]): [number,
   return clean
 }
 
-export function schematic(pcb: Pcb): Schematic {
+export const MAIN_SHEET = 'main'
+
+export const sheetOf = (c: Component) => c.sheet ?? MAIN_SHEET
+
+/** The design's sheets, main first, then in order of first use. */
+export function sheetsOf(pcb: Pcb): string[] {
+  const out = [MAIN_SHEET]
+  for (const c of pcb.components) if (!out.includes(sheetOf(c))) out.push(sheetOf(c))
+  return out
+}
+
+export function schematic(pcb: Pcb, sheet = MAIN_SHEET): Schematic {
   const pinNet = new Map<string, string>()
   for (const n of pcb.nets) for (const p of n.pins) pinNet.set(p, n.name)
+  const sheets = sheetsOf(pcb)
+  const sheetByRef = new Map(pcb.components.map((c) => [c.ref, sheetOf(c)]))
+  // Where each net goes: the sheets its pins are on.
+  const offSheet: Record<string, string[]> = {}
+  for (const n of pcb.nets) {
+    const on = [...new Set(n.pins.map((p) => sheetByRef.get(p.slice(0, p.indexOf('.'))) ?? MAIN_SHEET))]
+    if (on.includes(sheet) && on.length > 1) offSheet[n.name] = on.filter((s) => s !== sheet)
+  }
 
   // Order: connectors first, then ICs, then passives, so signal flows
   // roughly left to right.
   const rank = (c: Component) => (/^J/.test(c.ref) ? 0 : /^U/.test(c.ref) ? 1 : 2)
-  const comps = [...pcb.components].sort((a, b) => rank(a) - rank(b) || a.ref.localeCompare(b.ref, undefined, { numeric: true }))
+  const comps = [...pcb.components].filter((c) => sheetOf(c) === sheet).sort((a, b) => rank(a) - rank(b) || a.ref.localeCompare(b.ref, undefined, { numeric: true }))
 
   const symbols: SchSymbol[] = []
   let cx = 0
@@ -234,6 +258,8 @@ export function schematic(pcb: Pcb): Schematic {
   // of the net far apart still read as connected).
   const complete = new Set<string>()
   for (const n of pcb.nets) {
+    // A net that also lives on another sheet always keeps its labels here.
+    if (offSheet[n.name]) continue
     if (!n.pins.every((p) => wired.has(p) || !pinAt.has(p))) continue
     const parent = new Map(n.pins.map((p) => [p, p]))
     const find = (p: string): string => (parent.get(p) === p ? p : find(parent.get(p)!))
@@ -261,5 +287,5 @@ export function schematic(pcb: Pcb): Schematic {
     height = Math.max(height, s.y + b.maxY + 40)
   }
   for (const w of wires) for (const [x, y] of w.path) (width = Math.max(width, x + 40)), (height = Math.max(height, y + 40))
-  return { symbols, wires, junctions, width, height }
+  return { sheet, sheets, offSheet, symbols, wires, junctions, width, height }
 }

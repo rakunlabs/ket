@@ -130,7 +130,11 @@ it changes, so every dimension can be an expression over parameters.
    part of the board ("this area again, straighter/wider"), autoroute with
    region (or nets): only those nets are replaced. tidy_tracks straightens
    and widens existing tracks without rerouting (width for "thicker").
-6. render_board to look at it; export_fab writes the JLCPCB package.
+6. render_board to look at it; export_fab writes the JLCPCB package
+   (panel: { nx, ny, method } for a V-score or mouse-bite panel with
+   rails, tooling holes and fiducials when assembly needs one). Big
+   schematics: set_sheet puts parts on sheets (power, usb, mcu);
+   render_schematic sheet draws one, nets crossing sheets are labelled.
    manufacturing_quote is local preflight (not a live price quote);
    export_manufacturing adds board specs, check results and ordering notes
    for JLCPCB/PCBWay, without uploading, ordering or paying.

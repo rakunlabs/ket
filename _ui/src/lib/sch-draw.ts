@@ -133,9 +133,12 @@ export function drawSchematic(ctx: CanvasRenderingContext2D, w: number, h: numbe
       }
 
       // Net label at the pin end.
-      const net = s.labels[p.number] ? s.nets[p.number] : undefined
+      const netName = s.labels[p.number] ? s.nets[p.number] : undefined
+      // Off-sheet nets say where else they go: "VBUS → power".
+      const away = netName ? sch.offSheet[netName] : undefined
+      const net = netName && away?.length ? `${netName} → ${away.join(', ')}` : netName
       if (net) {
-        const nhl = highlight.has(net)
+        const nhl = highlight.has(netName!)
         ctx.font = font(5, 600)
         const tw = ctx.measureText(net).width / k + 4
         const dx = Math.cos(a)

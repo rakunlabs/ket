@@ -157,8 +157,15 @@ export function fabFiles(pcb: Pcb, b: ResolvedBoard, zones: ZoneFill[] = [], dro
   }
 
   const edge = new Gerber('Profile,NP')
-  for (const poly of [b.outline, ...b.cutouts]) edge.line([...poly, poly[0]].map((p) => [p.x, p.y]), 0.1)
+  // A panel also mills each board's outline (mouse bites) and marks its V-scores.
+  const panel = b as ResolvedBoard & { panelRouted?: Poly[]; panelVscore?: [{ x: number; y: number }, { x: number; y: number }][] }
+  for (const poly of [b.outline, ...b.cutouts, ...(panel.panelRouted ?? [])]) edge.line([...poly, poly[0]].map((p) => [p.x, p.y]), 0.1)
   files['board-Edge_Cuts.gm1'] = edge.toString()
+  if (panel.panelVscore?.length) {
+    const v = new Gerber('Vcut,NP')
+    for (const [a, c] of panel.panelVscore) v.line([[a.x, a.y], [c.x, c.y]], 0.1)
+    files['board-V_Cut.gm2'] = v.toString()
+  }
 
   // Separate PTH/NPTH files: plating is machine-readable, not just a comment.
   // G85 slots carry both tool-center endpoints, already mirrored/rotated.
