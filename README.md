@@ -1,6 +1,9 @@
-<img align="right" height="72" src="internal/server/brand/mark.svg">
+<img align="right" height="72" src="assets/favicon.svg">
 
 # Ket
+
+[![License](https://img.shields.io/github/license/rakunlabs/ket?color=blue&style=flat-square)](https://raw.githubusercontent.com/rakunlabs/ket/main/LICENSE)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/rakunlabs/ket/ci.yml?branch=main&logo=github&style=flat-square&label=ci)](https://github.com/rakunlabs/ket/actions)
 
 Parametric CAD and PCB design in one document, built to be driven by AI.
 Describe a part or a board in the chat panel, or point Claude Code / Cursor
