@@ -3,6 +3,7 @@
 // X/Y in mm with y up; a bottom-side part is mirrored in x before rotating.
 
 import { type Component, type Footprint, type LayerCount, type Pad, type P, copperLayersOf } from '../doc'
+import { insideXY } from './geom2d'
 
 export type Poly = P[]
 
@@ -152,13 +153,7 @@ export function distSegSeg(a: P, b: P, c: P, d: P): number {
 }
 
 export function inside(p: P, poly: Poly): boolean {
-  let r = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i]
-    const b = poly[j]
-    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) r = !r
-  }
-  return r
+  return insideXY(p.x, p.y, poly)
 }
 
 /** Minimum distance between two polygons (0 when they overlap). */

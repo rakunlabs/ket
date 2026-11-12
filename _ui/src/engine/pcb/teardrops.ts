@@ -7,6 +7,7 @@
 import type { Pcb } from '../doc'
 import type { ResolvedBoard } from './board'
 import type { Poly } from './geometry'
+import { distPolyXY, insideXY } from './geom2d'
 
 export interface Teardrops {
   /** Size along the track, as a multiple of the pad/via size it meets (default 1). */
@@ -88,7 +89,7 @@ export function teardrops(pcb: Pcb, b: ResolvedBoard): Teardrop[] {
         continue
       }
       // A pad of its net on this layer, the end inside it. Round (through-hole) pads and small SMD pads get one.
-      const pad = b.pads.find((p) => p.net === t.net && p.layers.includes(t.layer) && insideOrNear(end, p.outline))
+      const pad = b.pads.find((p) => p.net === t.net && p.layers.includes(t.layer) && (insideXY(end.x, end.y, p.outline) || distPolyXY(end.x, end.y, p.outline) < 1e-3))
       if (!pad) continue
       const xs = pad.outline.map((q) => q.x)
       const ys = pad.outline.map((q) => q.y)
@@ -102,12 +103,3 @@ export function teardrops(pcb: Pcb, b: ResolvedBoard): Teardrop[] {
   return out
 }
 
-function insideOrNear(p: XY, poly: Poly): boolean {
-  let inside = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i]
-    const c = poly[j]
-    if (a.y > p.y !== c.y > p.y && p.x < ((c.x - a.x) * (p.y - a.y)) / (c.y - a.y) + a.x) inside = !inside
-  }
-  return inside
-}

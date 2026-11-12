@@ -21,6 +21,7 @@ import type { NetClass } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS } from './board'
 import type { WorldPad } from './geometry'
+import { distPointSegXY, distPolyXY, insideXY } from './geom2d'
 
 type XY = [number, number]
 
@@ -54,35 +55,8 @@ export interface RouterResult {
 }
 
 
-function distPS(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax
-  const dy = by - ay
-  const l2 = dx * dx + dy * dy
-  const t = l2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2)) : 0
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy)
-}
 
-function insidePoly(x: number, y: number, poly: { x: number; y: number }[]): boolean {
-  let c = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i]
-    const b = poly[j]
-    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) c = !c
-  }
-  return c
-}
 
-/** Distance from a point to a polygon (0 inside). */
-function distPoly(x: number, y: number, poly: { x: number; y: number }[]): number {
-  if (insidePoly(x, y, poly)) return 0
-  let d = Infinity
-  for (let i = 0; i < poly.length; i++) {
-    const a = poly[i]
-    const b = poly[(i + 1) % poly.length]
-    d = Math.min(d, distPS(x, y, a.x, a.y, b.x, b.y))
-  }
-  return d
-}
 
 /** Binary min-heap of state ids keyed by f. */
 class Heap {
@@ -209,27 +183,27 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
   const blocked = new Map<NetClass, Uint16Array>()
   const edges: [number, number, number, number][] = []
   for (const poly of [b.outline, ...b.cutouts]) for (let i = 0; i < poly.length; i++) edges.push([poly[i].x, poly[i].y, poly[(i + 1) % poly.length].x, poly[(i + 1) % poly.length].y])
-  const onBoard = (x: number, y: number) => insidePoly(x, y, b.outline) && !b.cutouts.some((c) => insidePoly(x, y, c))
+  const onBoard = (x: number, y: number) => insideXY(x, y, b.outline) && !b.cutouts.some((c) => insideXY(x, y, c))
   type Obs = { layers: Set<number>; net: number; dist: (x: number, y: number) => number; box: [number, number, number, number] }
   const obstacles: Obs[] = []
   const li = (name: string) => layerNames.indexOf(name as never)
   for (const p of b.pads) {
     const px = p.outline.map((q) => q.x)
     const py = p.outline.map((q) => q.y)
-    obstacles.push({ layers: new Set(p.layers.map(li).filter((x) => x >= 0)), net: p.net ? netId.get(p.net) ?? 0 : 0, dist: (x, y) => distPoly(x, y, p.outline), box: [Math.min(...px), Math.min(...py), Math.max(...px), Math.max(...py)] })
+    obstacles.push({ layers: new Set(p.layers.map(li).filter((x) => x >= 0)), net: p.net ? netId.get(p.net) ?? 0 : 0, dist: (x, y) => distPolyXY(x, y, p.outline), box: [Math.min(...px), Math.min(...py), Math.max(...px), Math.max(...py)] })
   }
   const all = new Set(layerNames.map((_, i) => i))
   for (const h of b.holes) obstacles.push({ layers: all, net: 0, dist: (x, y) => Math.max(0, Math.hypot(x - h.at.x, y - h.at.y) - h.d / 2), box: [h.at.x - h.d / 2, h.at.y - h.d / 2, h.at.x + h.d / 2, h.at.y + h.d / 2] })
   for (const p of b.pads) if (p.drill) {
     const [a, c] = p.drillSlot ?? [p.center, p.center], r = p.drill / 2
-    obstacles.push({ layers: all, net: p.drillPlated !== false && p.net ? netId.get(p.net) ?? 0 : 0, dist: (x, y) => Math.max(0, distPS(x, y, a.x, a.y, c.x, c.y) - r), box: [Math.min(a.x, c.x) - r, Math.min(a.y, c.y) - r, Math.max(a.x, c.x) + r, Math.max(a.y, c.y) + r] })
+    obstacles.push({ layers: all, net: p.drillPlated !== false && p.net ? netId.get(p.net) ?? 0 : 0, dist: (x, y) => Math.max(0, distPointSegXY(x, y, a.x, a.y, c.x, c.y) - r), box: [Math.min(a.x, c.x) - r, Math.min(a.y, c.y) - r, Math.max(a.x, c.x) + r, Math.max(a.y, c.y) + r] })
   }
   // Keep-outs that forbid tracks: copper of no net, so no track of any net comes within clearance.
   for (const k of b.keepouts) {
     if (!k.forbid.has('tracks')) continue
     const kx = k.polygon.map((q) => q.x)
     const ky = k.polygon.map((q) => q.y)
-    obstacles.push({ layers: new Set(k.layers.map(li).filter((x) => x >= 0)), net: 0, dist: (x, y) => distPoly(x, y, k.polygon), box: [Math.min(...kx), Math.min(...ky), Math.max(...kx), Math.max(...ky)] })
+    obstacles.push({ layers: new Set(k.layers.map(li).filter((x) => x >= 0)), net: 0, dist: (x, y) => distPolyXY(x, y, k.polygon), box: [Math.min(...kx), Math.min(...ky), Math.max(...kx), Math.max(...ky)] })
   }
   const viaKeepouts = b.keepouts.filter((k) => k.forbid.has('vias'))
   const routedNets = new Set(nets.map((n) => n.net))
@@ -239,7 +213,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
       const [ax, ay] = t.points[i - 1]
       const [bx, by] = t.points[i]
       const r = t.width / 2
-      obstacles.push({ layers: new Set([li(t.layer)]), net: netId.get(t.net) ?? 0, dist: (x, y) => Math.max(0, distPS(x, y, ax, ay, bx, by) - r), box: [Math.min(ax, bx) - r, Math.min(ay, by) - r, Math.max(ax, bx) + r, Math.max(ay, by) + r] })
+      obstacles.push({ layers: new Set([li(t.layer)]), net: netId.get(t.net) ?? 0, dist: (x, y) => Math.max(0, distPointSegXY(x, y, ax, ay, bx, by) - r), box: [Math.min(ax, bx) - r, Math.min(ay, by) - r, Math.max(ax, bx) + r, Math.max(ay, by) + r] })
     }
   }
   for (const v of pcb.vias) {
@@ -267,7 +241,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
       const x = cx(i)
       const y = cy(i)
       let bad = !onBoard(x, y)
-      if (!bad) for (const [ax, ay, bx, by] of edges) if (distPS(x, y, ax, ay, bx, by) < half + edgeGap) { bad = true; break }
+      if (!bad) for (const [ax, ay, bx, by] of edges) if (distPointSegXY(x, y, ax, ay, bx, by) < half + edgeGap) { bad = true; break }
       if (bad) for (let l = 0; l < L; l++) g[l * N + i] = EDGE
     }
     for (const o of obstacles) {
@@ -306,7 +280,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
       for (let j = j0; j <= j1; j++)
         for (let i = i0; i <= i1; i++) {
           const cell = j * W + i
-          if (!insidePoly(cx(cell), cy(cell), p.outline)) continue
+          if (!insideXY(cx(cell), cy(cell), p.outline)) continue
           for (const l of p.layers.map(li)) if (l >= 0) g2[l * N + cell] = id
         }
     }
@@ -329,7 +303,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
         if (cell < 0 || cell >= N) break
         // Checked at the exact pad axis (the track will be snapped onto it),
         // with a little tolerance for the grid offset.
-        const ok = obstacles.every((o) => o.net === id || o.dist(x, y) >= w / 2 + cls.clearance) && onBoard(x, y) && edges.every(([ax, ay, bx, by]) => distPS(x, y, ax, ay, bx, by) >= w / 2 + edgeGap)
+        const ok = obstacles.every((o) => o.net === id || o.dist(x, y) >= w / 2 + cls.clearance) && onBoard(x, y) && edges.every(([ax, ay, bx, by]) => distPointSegXY(x, y, ax, ay, bx, by) >= w / 2 + edgeGap)
         if (!ok) break
         let opened = false
         for (const g2 of blocked.values())
@@ -342,7 +316,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
             }
           }
         // Out of the crowd (past the pad and the cells are free anyway): stop.
-        if (!opened && !insidePoly(x, y, p.outline) && s > 2) break
+        if (!opened && !insideXY(x, y, p.outline) && s > 2) break
       }
     }
   }
@@ -555,10 +529,10 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
       const vd = net.cls.via_drill / 2
       for (const h of b.holes) if (Math.hypot(x - h.at.x, y - h.at.y) - h.d / 2 - vd < HOLE_TO_HOLE) return false
       // A via goes through every layer: any keep-out that forbids vias stops it.
-      for (const k of viaKeepouts) if (distPoly(x, y, k.polygon) < net.cls.via_diameter / 2 + net.cls.clearance) return false
+      for (const k of viaKeepouts) if (distPolyXY(x, y, k.polygon) < net.cls.via_diameter / 2 + net.cls.clearance) return false
       for (const p of b.pads) if (p.drill) {
         const [a, c] = p.drillSlot ?? [p.center, p.center]
-        if (distPS(x, y, a.x, a.y, c.x, c.y) - p.drill / 2 - vd < HOLE_TO_HOLE) return false
+        if (distPointSegXY(x, y, a.x, a.y, c.x, c.y) - p.drill / 2 - vd < HOLE_TO_HOLE) return false
       }
     }
     for (let l = 0; l < L; l++)
@@ -570,7 +544,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
         // Not in another net's routed keep-out zone.
         if (usage[l * N + c] > 0) return false
         // Not on a pad of its own net (via in pad).
-        if (v === id && b.pads.some((p) => p.net === net.net && distPoly(cx(c), cy(c), p.outline) === 0)) return false
+        if (v === id && b.pads.some((p) => p.net === net.net && distPolyXY(cx(c), cy(c), p.outline) === 0)) return false
       }
     return true
   }
@@ -798,7 +772,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
       const snapEnd = (at: number, next: number) => {
         const q = pts[at]
         if (isJoint(q)) return
-        const pad = n.pads.find((pd) => insidePoly(q[0], q[1], pd.outline) || Math.hypot(pd.center.x - q[0], pd.center.y - q[1]) < pitch * 0.75)
+        const pad = n.pads.find((pd) => insideXY(q[0], q[1], pd.outline) || Math.hypot(pd.center.x - q[0], pd.center.y - q[1]) < pitch * 0.75)
         if (!pad) return
         const c: XY = [pad.center.x, pad.center.y]
         if (Math.hypot(c[0] - q[0], c[1] - q[1]) < 1e-6) return

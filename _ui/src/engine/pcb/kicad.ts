@@ -12,7 +12,8 @@
 
 import type { Doc, Pcb } from '../doc'
 import type { ResolvedBoard } from './board'
-import { DEFAULT_CLASS, copperLayers } from './board'
+import { DEFAULT_CLASS } from './board'
+import { copperLayersOf } from '../doc'
 import { type Poly, toWorld } from './geometry'
 import type { ZoneFill } from './zones'
 
@@ -47,7 +48,7 @@ export function writeKicadPcb(doc: Doc, b: ResolvedBoard, fills: ZoneFill[] = []
   const pcb = doc.pcb as Pcb
   const out: string[] = []
   const notes: string[] = []
-  const layers = copperLayers(b.layers)
+  const layers = copperLayersOf(b.layers)
   const netNames = ['', ...pcb.nets.map((x) => x.name)]
   const netNo = new Map(netNames.map((name, i) => [name, i]))
   // Pads carry the net number and name; tracks, vias and zones only the number.

@@ -10,36 +10,11 @@ import type { Violation } from './drc'
 import { octilinear } from './octilinear'
 import { routeBoard } from './router'
 import { routePair } from './pairroute'
+import { type XY, distPS, distSS, insidePoly } from './geom2d'
 
-type XY = [number, number]
 
-function distPS(p: XY, a: XY, c: XY): number {
-  const dx = c[0] - a[0]
-  const dy = c[1] - a[1]
-  const l2 = dx * dx + dy * dy
-  const t = l2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0
-  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
-}
 
-function distSS(a: XY, c: XY, p: XY, q: XY): number {
-  const o = (u: XY, v: XY, w: XY) => (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
-  const d1 = o(p, q, a)
-  const d2 = o(p, q, c)
-  const d3 = o(a, c, p)
-  const d4 = o(a, c, q)
-  if (d1 * d2 < 0 && d3 * d4 < 0) return 0
-  return Math.min(distPS(a, p, q), distPS(c, p, q), distPS(p, a, c), distPS(q, a, c))
-}
 
-function insidePoly(p: XY, poly: { x: number; y: number }[]): boolean {
-  let c = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i]
-    const b = poly[j]
-    if (a.y > p[1] !== b.y > p[1] && p[0] < ((b.x - a.x) * (p[1] - a.y)) / (b.y - a.y) + a.x) c = !c
-  }
-  return c
-}
 
 /**
  * Brings tracks to their net class width, segment by segment, as wide as

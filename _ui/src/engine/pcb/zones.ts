@@ -7,7 +7,7 @@
 // solder well; same-net tracks and vias join solidly. Islands that touch
 // no copper of the net are dropped (they would float).
 
-import { type LayerCount, type Pcb, type Zone, copperLayersOf, viaLayers } from '../doc'
+import { type Pcb, type Zone, viaLayers } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS } from './board'
 import { teardrops } from './teardrops'
@@ -27,7 +27,6 @@ export interface ZoneFill {
   dropped: number
 }
 
-const allCopper = (layers: number) => copperLayersOf(layers as LayerCount)
 
 export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
   // Higher priority first: later zones keep clear of the earlier ones' fill, so the higher one wins (as in KiCad).
@@ -35,6 +34,8 @@ export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
   const fills: ZoneFill[] = []
   if (b.outline.length < 3) return fills
 
+  // Teardrops are the same for every zone: worked out once.
+  const drops = teardrops(pcb, b)
   for (const { z, i } of zones) {
     const cls = b.netClass.get(z.net) ?? DEFAULT_CLASS
     // 5 µm of margin keeps polygonized curves clear of the true distance.
@@ -58,7 +59,7 @@ export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
       else avoid.push(...stroke(pts, t.width + 2 * clearance))
     }
     // Teardrops are copper of their net: other nets' pours keep clearance from them.
-    for (const d of teardrops(pcb, b)) {
+    for (const d of drops) {
       if (d.layer !== z.layer) continue
       if (d.net === z.net) same.push(d.outline)
       else avoid.push(...offset([d.outline], clearance))
@@ -128,7 +129,6 @@ export function fillZones(pcb: Pcb, b: ResolvedBoard): ZoneFill[] {
   return fills
 }
 
-export { allCopper }
 export type { Zone }
 
 /**

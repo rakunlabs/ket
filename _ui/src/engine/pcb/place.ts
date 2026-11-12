@@ -11,6 +11,7 @@
 
 import type { Pcb } from '../doc'
 import type { ResolvedBoard } from './board'
+import { insideXY } from './geom2d'
 
 type P = { x: number; y: number }
 
@@ -56,15 +57,6 @@ function rotBox(b: [number, number, number, number], deg: number): [number, numb
   return [Math.min(...cs.map((c) => c.x)), Math.min(...cs.map((c) => c.y)), Math.max(...cs.map((c) => c.x)), Math.max(...cs.map((c) => c.y))]
 }
 
-function insidePoly(x: number, y: number, poly: P[]): boolean {
-  let c = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i]
-    const b = poly[j]
-    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) c = !c
-  }
-  return c
-}
 
 function distEdge(x: number, y: number, poly: P[]): number {
   let d = Infinity
@@ -84,7 +76,7 @@ function distEdge(x: number, y: number, poly: P[]): number {
 export function boxPolyOverlap([x0, y0, x1, y1]: [number, number, number, number], poly: P[]): boolean {
   const box: P[] = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }]
   if (poly.some((q) => q.x > x0 && q.x < x1 && q.y > y0 && q.y < y1)) return true
-  if (box.some((q) => insidePoly(q.x, q.y, poly))) return true
+  if (box.some((q) => insideXY(q.x, q.y, poly))) return true
   const cross = (a: P, b: P, c: P, d: P) => {
     const o = (p: P, q: P, r: P) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
     return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0
@@ -186,8 +178,8 @@ export function placeParts(pcb: Pcb, b: ResolvedBoard, opts: PlaceOptions = {}):
   const fits = (p: Part, at: P, rot: number) => {
     const [x0, y0, x1, y1] = boxAt(p, at, rot)
     for (const [x, y] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [(x0 + x1) / 2, (y0 + y1) / 2]] as [number, number][]) {
-      if (!insidePoly(x, y, b.outline) || distEdge(x, y, b.outline) < margin) return false
-      for (const c of b.cutouts) if (insidePoly(x, y, c) || distEdge(x, y, c) < margin) return false
+      if (!insideXY(x, y, b.outline) || distEdge(x, y, b.outline) < margin) return false
+      for (const c of b.cutouts) if (insideXY(x, y, c) || distEdge(x, y, c) < margin) return false
     }
     for (const k of partKeepouts(p)) if (boxPolyOverlap([x0 - gap, y0 - gap, x1 + gap, y1 + gap], k.polygon)) return false
     for (const h of b.holes) if (h.at.x > x0 - h.d / 2 - gap && h.at.x < x1 + h.d / 2 + gap && h.at.y > y0 - h.d / 2 - gap && h.at.y < y1 + h.d / 2 + gap) return false

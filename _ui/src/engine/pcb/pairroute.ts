@@ -10,8 +10,8 @@ import type { ResolvedBoard } from './board'
 import { netLengths } from './lengths'
 import { routeBoard } from './router'
 import { tuneLength } from './tune'
+import { type XY, joinPieces } from './geom2d'
 
-type XY = [number, number]
 
 export interface PairRoute {
   pair: string
@@ -23,32 +23,6 @@ export interface PairRoute {
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000
 
-/** Joins a net's track pieces on one layer into one polyline from `from` (pieces share end points). */
-function chain(tracks: Track[], from: XY): XY[] | undefined {
-  const left = tracks.map((t) => [...t.points] as XY[])
-  const near = (a: XY, b: XY) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-3
-  // Start at the piece whose end is nearest to `from`.
-  let best = 0
-  let flip = false
-  let bd = Infinity
-  left.forEach((p, i) => {
-    for (const [end, f] of [[p[0], false], [p[p.length - 1], true]] as const) {
-      const d = Math.hypot(end[0] - from[0], end[1] - from[1])
-      if (d < bd) [bd, best, flip] = [d, i, f]
-    }
-  })
-  let path = left.splice(best, 1)[0]
-  if (flip) path.reverse()
-  while (left.length) {
-    const end = path[path.length - 1]
-    const i = left.findIndex((p) => near(p[0], end) || near(p[p.length - 1], end))
-    if (i < 0) return undefined
-    const p = left.splice(i, 1)[0]
-    if (!near(p[0], end)) p.reverse()
-    path = path.concat(p.slice(1))
-  }
-  return path
-}
 
 /** The polyline offset by d to its left (miter joins). */
 function offsetPath(path: XY[], d: number): XY[] {
@@ -81,18 +55,13 @@ export function routePair(pcb: Pcb, b: ResolvedBoard, d: DiffPair, budget: numbe
   if (r.vias.length || new Set(pTracks.map((t) => t.layer)).size > 1) return fallback(`${d.p} changes layer; coupled routing follows one layer`)
   if (padsP.length !== 2 || padsN.length !== 2) return fallback('coupled routing joins two pads per net (point to point)')
   const start: XY = [padsP[0].center.x, padsP[0].center.y]
-  const path = chain(pTracks, start)
+  const path = joinPieces(pTracks, start, 1e-3)
   if (!path || path.length < 2) return fallback(`${d.p}'s route is not one path`)
   const layer = pTracks[0].layer
   const pitch = d.width + d.gap
   const ok = clearance(b, [...pcb.tracks, ...pTracks], pcb.vias)
   for (const side of [1, -1]) {
     const off = offsetPath(path, side * pitch)
-    // Each N pad joins the end of the offset path near its P partner pad.
-    const nearest = (q: XY) => padsN.slice().sort((x, y) => Math.hypot(x.center.x - q[0], x.center.y - q[1]) - Math.hypot(y.center.x - q[0], y.center.y - q[1]))[0]
-    const nA = nearest(off[0])
-    const nB = nearest(off[off.length - 1])
-    if (nA === nB) continue
     // The coupled run: the offset path, its ends pulled in along the path until
     // it keeps clearance (near the pads the pair splits to reach them).
     const fits = (a: XY, c: XY) => ok(d.n, layer, d.width, a, c)
@@ -141,8 +110,6 @@ export function routePair(pcb: Pcb, b: ResolvedBoard, d: DiffPair, budget: numbe
     if (!ea || !eb) continue
     const n: XY[] = [...ea.slice(0, -1), ...core, ...eb.slice(0, -1).reverse()]
     const clean = n.filter((q, i) => i === 0 || Math.hypot(q[0] - n[i - 1][0], q[1] - n[i - 1][1]) > 1e-6).map((q) => [r3(q[0]), r3(q[1])] as XY)
-    void nA
-    void nB
     const nTrack: Track = { net: d.n, layer, width: d.width, points: clean }
     // Match the lengths: a meander on the shorter net (outside the pair, away from its partner).
     const tracks = [pTrack, nTrack]

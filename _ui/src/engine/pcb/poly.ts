@@ -2,7 +2,7 @@
 // Rings are P[]; a region list is outer rings (positive area) and holes
 // (negative area) in Clipper's order.
 
-import { Clipper, EndType, FillRule, JoinType, Path64, Paths64, Point64 } from 'clipper2-js'
+import { Clipper, FillRule, Path64, Paths64, Point64 } from 'clipper2-js'
 
 import type { P } from '../doc'
 

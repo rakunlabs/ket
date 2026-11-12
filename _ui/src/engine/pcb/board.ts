@@ -30,10 +30,6 @@ export interface ResolvedBoard {
   keepouts: { name: string; polygon: Poly; layers: string[]; forbid: Set<'tracks' | 'vias' | 'pours' | 'parts'> }[]
 }
 
-/** Copper layers of a board, top to bottom. */
-export function copperLayers(layers: LayerCount): string[] {
-  return copperLayersOf(layers)
-}
 
 export function emptyPcb(): Pcb {
   return {
@@ -206,7 +202,7 @@ export function resolveBoard(doc: Doc, params: Map<string, number>, sketch: (nam
     keepouts: (pcb.keepouts ?? []).map((k) => ({
       name: k.name,
       polygon: polyArea(k.polygon.map(([x, y]) => ({ x, y }))) < 0 ? k.polygon.map(([x, y]) => ({ x, y })).reverse() : k.polygon.map(([x, y]) => ({ x, y })),
-      layers: k.layers?.length ? k.layers : copperLayers(pcb.layers),
+      layers: k.layers?.length ? k.layers : copperLayersOf(pcb.layers),
       forbid: new Set(k.forbid),
     })),
   }
