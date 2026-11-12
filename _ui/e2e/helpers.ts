@@ -44,6 +44,7 @@ export class MCP {
   constructor(
     private request: APIRequestContext,
     private token: string,
+    private path = '/mcp',
   ) {}
 
   private async rpc(method: string, params?: unknown, notify = false): Promise<unknown> {
@@ -54,7 +55,7 @@ export class MCP {
     }
     if (this.session) headers['mcp-session-id'] = this.session
     const body = notify ? { jsonrpc: '2.0', method, params } : { jsonrpc: '2.0', id: ++this.id, method, params }
-    const r = await this.request.post('/mcp', { headers, data: body, timeout: 120_000 })
+    const r = await this.request.post(this.path, { headers, data: body, timeout: 120_000 })
     const sid = r.headers()['mcp-session-id']
     if (sid) this.session = sid
     if (notify) return undefined
@@ -78,6 +79,11 @@ export class MCP {
     await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ket-e2e', version: '1' } })
     await this.rpc('notifications/initialized', undefined, true)
     return this
+  }
+
+  async tools(): Promise<string[]> {
+    const r = (await this.rpc('tools/list', {})) as { tools: { name: string }[] }
+    return r.tools.map((x) => x.name)
   }
 
   /** Calls a tool; returns its text parsed as JSON when it is JSON. Throws on a tool error. */

@@ -60,6 +60,10 @@ geometry kernel runs there):
 claude mcp add --transport http ket http://localhost:8080/mcp
 ```
 
+Clients that pay for every tool definition can use
+`http://localhost:8080/mcp?tools=core`: the everyday commands as tools, and
+`find_commands` / `run_command` for the rest.
+
 ## How it works
 
 **AI-first repair:** `get_problems` gives shared CAD/PCB/ERC diagnostics with

@@ -134,3 +134,17 @@ test('a track is routed by hand: click a pad, click the other, it commits', asyn
   const drc = await mcp.call('run_drc', { project })
   expect(drc.violations.filter((v: any) => ['short', 'clearance'].includes(v.rule) && JSON.stringify(v).includes('HAND'))).toEqual([])
 })
+
+test('core tool mode: few tools, the rest through find_commands and run_command', async () => {
+  const core = await new MCP(page.request, await mcpToken(page), '/mcp?tools=core').init()
+  const names = await core.tools()
+  expect(names).toContain('find_commands')
+  expect(names).not.toContain('gear')
+  const all = await mcp.tools()
+  expect(names.length).toBeLessThan(all.length / 2)
+  const found = await core.call('find_commands', { query: 'spur gear involute', schema: false })
+  expect(found.commands[0].name).toBe('gear')
+  const r = await core.call('run_command', { command: 'gear', args: { project, name: 'g1', kind: 'spur', teeth: 12, module: 1, width: 3, translate: [40, 0, 0] } })
+  expect(JSON.stringify(r)).toContain('g1')
+  await expect(feature(page, 'g1')).toBeVisible()
+})

@@ -291,6 +291,10 @@ func (t *Tools) call(ctx context.Context, name string, args json.RawMessage, cal
 	}
 
 	switch name {
+	case toolFindCommands:
+		return t.findCommands(args)
+	case toolRunCommand:
+		return t.runCommand(ctx, args, call)
 	case toolListProjects:
 		return t.listProjects(ctx)
 	case toolCreateProject:

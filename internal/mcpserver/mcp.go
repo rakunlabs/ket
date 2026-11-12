@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -14,12 +15,29 @@ import (
 
 // Handler serves the tools over MCP streamable HTTP. base is the server's
 // address as the client sees it (for links tools hand back).
+//
+// /mcp?tools=core (or the X-Ket-Tools: core header) serves a short tool
+// list: the everyday commands, plus find_commands and run_command for the
+// rest. The default is every command as its own tool.
 func (t *Tools) Handler(base func(*http.Request) string) http.Handler {
+	full := t.server(t.List(ScopeMCP), t.Guide())
+	core := t.server(t.CoreTools(), t.Guide()+"\n\n## Tools in this session\nOnly the everyday commands are tools here. For any other command named in this guide, call find_commands (by words or group) to get its schema, then run_command.")
+	pick := func(r *http.Request) *mcp.Server {
+		if r.URL.Query().Get("tools") == "core" || strings.EqualFold(r.Header.Get("X-Ket-Tools"), "core") {
+			return core
+		}
+		return full
+	}
+
+	return t.wrap(mcp.NewStreamableHTTPHandler(pick, nil), base)
+}
+
+func (t *Tools) server(tools []Tool, instructions string) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: config.ServiceName, Version: config.Version}, &mcp.ServerOptions{
-		Instructions: t.Guide(),
+		Instructions: instructions,
 	})
 
-	for _, tool := range t.List(ScopeMCP) {
+	for _, tool := range tools {
 		tool := tool
 		mt := &mcp.Tool{
 			Name:        tool.Name,
@@ -68,7 +86,10 @@ func (t *Tools) Handler(base func(*http.Request) string) http.Handler {
 		})
 	}
 
-	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	return server
+}
+
+func (t *Tools) wrap(h http.Handler, base func(*http.Request) string) http.Handler {
 
 	// With auth, ada has already checked the token; hand the user to the
 	// SDK as TokenInfo, which binds each MCP session to that user (no
