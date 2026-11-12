@@ -110,4 +110,25 @@ describe('stackup and layers', () => {
     // On B.Cu only the through via is flashed.
     expect((files['board-B_Cu.gbl'].match(/D03\*/g) ?? []).length).toBe(1)
   })
+
+  it('the autorouter crosses a buried via on the layers it does not reach', async () => {
+    const k = new Kernel()
+    let doc = await run(emptyDoc(), k, 'set_board', { outline: { rect: { w: 30, h: 12 } }, layers: 4 })
+    doc = await run(doc, k, 'add_component', { footprint_name: '0603', ref: 'R1', at: [-8, 0] })
+    doc = await run(doc, k, 'add_component', { footprint_name: '0603', ref: 'R2', at: [8, 0] })
+    doc = await run(doc, k, 'connect', { nets: [{ name: 'A', pins: ['R1.2', 'R2.1'] }, { name: 'B', pins: ['R1.1', 'R2.2'] }] })
+    // A wall of buried B vias across the board, from edge to edge: a through-via
+    // view would leave no way from R1 to R2 for A on any layer.
+    for (let y = -5.7; y <= 5.75; y += 0.6) doc = await run(doc, k, 'add_via', { net: 'B', at: [0, Math.round(y * 100) / 100], span: ['In1.Cu', 'In2.Cu'] })
+    k.build(doc)
+    doc = await run(doc, k, 'autoroute', { nets: ['A'], timeout: 60 })
+    k.build(doc)
+    const st = k.boardState(doc, { drc: true })!
+    expect(st.ratsnest.unrouted).not.toContain('A')
+    // A crossed on an outer layer, straight over the buried vias.
+    const a = doc.pcb!.tracks.filter((t) => t.net === 'A')
+    expect(a.length).toBeGreaterThan(0)
+    expect(a.every((t) => t.layer === 'F.Cu' || t.layer === 'B.Cu')).toBe(true)
+    expect(st.drc!.filter((v) => ['clearance', 'short'].includes(v.rule))).toEqual([])
+  }, 120_000)
 })

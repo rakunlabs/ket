@@ -16,7 +16,7 @@
 // nets' copper so tracks keep even spacing, and PathFinder's present and
 // history congestion costs. Nets go widest first, then shortest.
 
-import { type Pcb, type Track, type Via, copperLayersOf } from '../doc'
+import { type Pcb, type Track, type Via, copperLayersOf, viaLayers } from '../doc'
 import type { NetClass } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS } from './board'
@@ -218,7 +218,8 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
   }
   for (const v of pcb.vias) {
     if (routedNets.has(v.net)) continue
-    obstacles.push({ layers: all, net: netId.get(v.net) ?? 0, dist: (x, y) => Math.max(0, Math.hypot(x - v.at[0], y - v.at[1]) - v.diameter / 2), box: [v.at[0] - v.diameter / 2, v.at[1] - v.diameter / 2, v.at[0] + v.diameter / 2, v.at[1] + v.diameter / 2] })
+    // A blind or buried via is copper only on its span: tracks may cross it on the other layers.
+    obstacles.push({ layers: v.span ? new Set(viaLayers(v, b.layers).map(li)) : all, net: netId.get(v.net) ?? 0, dist: (x, y) => Math.max(0, Math.hypot(x - v.at[0], y - v.at[1]) - v.diameter / 2), box: [v.at[0] - v.diameter / 2, v.at[1] - v.diameter / 2, v.at[0] + v.diameter / 2, v.at[1] + v.diameter / 2] })
   }
   // Pad entry: a pad's long axis gives its preferred exit directions.
   const padDirs = (p: WorldPad): number[] => {
@@ -510,6 +511,7 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
 
   // A via needs room for its diameter on every layer.
   const viaOffs = new Map<NetClass, number[]>()
+  const spanVias = pcb.vias.filter((v) => v.span)
   const viaFits = (net: Conn, cell: number, id: number) => {
     let offs = viaOffs.get(net.cls)
     if (!offs) {
@@ -528,6 +530,12 @@ export function routeBoard(pcb: Pcb, b: ResolvedBoard, opts: RouterOptions = {})
       const y = cy(cell)
       const vd = net.cls.via_drill / 2
       for (const h of b.holes) if (Math.hypot(x - h.at.x, y - h.at.y) - h.d / 2 - vd < HOLE_TO_HOLE) return false
+      // The router's vias go through every layer: they keep clear of other nets' blind/buried
+      // vias on all layers (pad and drill), which the grid only blocks on their own span.
+      for (const v of spanVias) {
+        if (v.net === net.net) continue
+        if (Math.hypot(x - v.at[0], y - v.at[1]) < net.cls.via_diameter / 2 + v.diameter / 2 + net.cls.clearance) return false
+      }
       // A via goes through every layer: any keep-out that forbids vias stops it.
       for (const k of viaKeepouts) if (distPolyXY(x, y, k.polygon) < net.cls.via_diameter / 2 + net.cls.clearance) return false
       for (const p of b.pads) if (p.drill) {

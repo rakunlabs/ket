@@ -3,7 +3,7 @@
 // (octilinear.ts), widened to its class width where it fits, and checked
 // with Ket's DRC. Runs in the kernel worker, in the browser and in Node.
 
-import type { Pcb, Track, Via } from '../doc'
+import { type LayerCount, type Pcb, type Track, type Via, viaLayers } from '../doc'
 import type { ResolvedBoard } from './board'
 import { DEFAULT_CLASS } from './board'
 import type { Violation } from './drc'
@@ -22,6 +22,9 @@ import { type XY, distPS, distSS, insidePoly } from './geom2d'
  * pad, via, hole and other net's track. A segment that cannot get wider
  * stays as it is (a neck between fine-pitch pads).
  */
+/** Whether a via has copper on a layer: blind and buried ones only on their span. */
+const onVia = (v: Via, layer: string, layers: LayerCount) => !v.span || viaLayers(v, layers).includes(layer as never)
+
 export function widenTracks(tracks: Track[], b: ResolvedBoard, existing: Track[] = [], vias: Via[] = []): Track[] {
   const def = b.classes.get('default') ?? DEFAULT_CLASS
   type Seg = { a: [number, number]; b: [number, number]; w: number; layer: string; net: string }
@@ -55,7 +58,7 @@ export function widenTracks(tracks: Track[], b: ResolvedBoard, existing: Track[]
         if (pad.net === t.net || !pad.layers.includes(t.layer)) continue
         if (padDist(s, pad) < w / 2 + cls.clearance) return false
       }
-      for (const v of vias) if (v.net !== t.net && distPS(v.at, s.a, s.b) < w / 2 + v.diameter / 2 + cls.clearance) return false
+      for (const v of vias) if (v.net !== t.net && onVia(v, t.layer, b.layers) && distPS(v.at, s.a, s.b) < w / 2 + v.diameter / 2 + cls.clearance) return false
       for (const h of b.holes) if (distPS([h.at.x, h.at.y], s.a, s.b) < w / 2 + h.d / 2 + cls.clearance) return false
       for (const [e0, e1] of edges) if (distSS(s.a, s.b, e0, e1) < w / 2 + edgeGap - 1e-6) return false
       for (const k of b.keepouts ?? []) {
@@ -149,7 +152,7 @@ export function clearance(b: ResolvedBoard, others: Track[], vias: Via[]) {
       for (let i = 0; i < o.length; i++) if (distSS(a, c, [o[i].x, o[i].y], [o[(i + 1) % o.length].x, o[(i + 1) % o.length].y]) < half + cls.clearance - 1e-6) return false
     }
     for (const p of b.pads) if (p.drill && p.net !== net && distPS([p.center.x, p.center.y], a, c) < half + p.drill / 2 + cls.clearance) return false
-    for (const v of vias) if (v.net !== net && distPS(v.at, a, c) < half + v.diameter / 2 + cls.clearance - 1e-6) return false
+    for (const v of vias) if (v.net !== net && onVia(v, layer, b.layers) && distPS(v.at, a, c) < half + v.diameter / 2 + cls.clearance - 1e-6) return false
     for (const h of b.holes) if (distPS([h.at.x, h.at.y], a, c) < half + h.d / 2 + cls.clearance) return false
     // Keep-outs that forbid tracks on this layer: the segment must stay clear of them.
     for (const k of b.keepouts ?? []) {
