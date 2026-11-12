@@ -152,6 +152,11 @@ func (s *Server) routes(api *ada.Mux) {
 	api.GET("/me/usage", s.myUsage, ai)
 	api.GET("/catalog", s.catalog, read)
 
+	api.GET("/templates", s.listTemplates, read)
+	api.GET("/templates/{id}", s.getTemplate, read)
+	api.POST("/templates", s.saveTemplate, s.guard.can(permSettings))
+	api.DELETE("/templates/{id}", s.deleteTemplate, s.guard.can(permSettings))
+
 	api.GET("/projects", s.listProjects, read)
 	api.POST("/projects", s.createProject, write)
 	api.GET("/projects/{id}", s.getProject, read)

@@ -1,0 +1,175 @@
+// Reusable blocks: a .ket project put into the current design under a
+// prefix, so the same block can go in more than once. The block's ops are
+// replayed on their own; the resulting document is renamed (parameters,
+// sketches, features, checks, materials, decals, part refs, nets) and merged.
+// Renaming the result, not the commands, keeps every reference consistent,
+// whatever commands made it.
+
+import { z } from 'zod'
+
+import { type Doc, type Feature, inputsOf } from './doc'
+import { namesIn } from './expr'
+import { readProjectFile, PROJECT_FILE_LIMIT } from './project-file'
+import { define } from './registry'
+
+const ident = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/** Replaces whole-word names in an expression string. */
+function renameExpr(e: unknown, map: Map<string, string>): unknown {
+  if (typeof e !== 'string') return e
+  let used: string[]
+  try {
+    used = namesIn(e)
+  } catch {
+    return e
+  }
+  if (!used.some((n) => map.has(n))) return e
+  return e.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (w) => map.get(w) ?? w)
+}
+
+/** Walks any JSON value, renaming expressions (strings with parameter names). */
+function deepExpr(v: unknown, map: Map<string, string>): unknown {
+  if (typeof v === 'string') return renameExpr(v, map)
+  if (Array.isArray(v)) return v.map((x) => deepExpr(x, map))
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deepExpr(x, map)]))
+  return v
+}
+
+/** Feature fields that hold the name of another feature. */
+const FEATURE_REFS = ['target', 'source', 'of', 'hook', 'drive'] as const
+
+export interface BlockResult {
+  doc: Doc
+  added: Record<string, number>
+}
+
+/**
+ * Merges block into doc under prefix (refs get it as letters: J1 → PWRJ1),
+ * moved by offset in the 3D model and on the board. Fails on any name that
+ * would clash, naming it.
+ */
+export function insertBlock(doc: Doc, block: Doc, prefix: string, offset: [number, number, number] = [0, 0, 0]): BlockResult {
+  const p = (n: string) => `${prefix}_${n}`
+  const params = new Map(block.parameters.map((x) => [x.name, p(x.name)]))
+  const feats = new Map(block.features.map((f) => [f.name, p(f.name)]))
+  const sketches = new Map(block.sketches.map((s) => [s.name, p(s.name)]))
+  const materials = new Map((block.materials ?? []).map((m) => [m.name, p(m.name)]))
+  const refPrefix = prefix.toUpperCase().replace(/[^A-Z]/g, '')
+  if (!refPrefix && block.pcb?.components.length) throw new Error('prefix needs letters: part refs get them in front (J1 → PWRJ1)')
+  const refs = new Map((block.pcb?.components ?? []).map((c) => [c.ref, `${refPrefix}${c.ref}`]))
+  // Nets keep global names (GND, 3V3 join the design's), others get the prefix.
+  const GLOBAL = /^(GND|AGND|DGND|PGND|VCC|VDD|VIN|VBUS|VSYS|[0-9]+V[0-9]*|V[0-9]+V[0-9]*|\+[0-9].*)$/i
+  const nets = new Map((block.pcb?.nets ?? []).map((n) => [n.name, GLOBAL.test(n.name) ? n.name : p(n.name)]))
+  const clash = (kind: string, mine: Iterable<string>, theirs: Iterable<string>) => {
+    const have = new Set(theirs)
+    const dup = [...mine].filter((n) => have.has(n))
+    if (dup.length) throw new Error(`${kind} ${dup.slice(0, 5).join(', ')} already exist${dup.length === 1 ? 's' : ''}; choose another prefix`)
+  }
+  clash('parameter', params.values(), doc.parameters.map((x) => x.name))
+  clash('feature', feats.values(), doc.features.map((x) => x.name))
+  clash('sketch', sketches.values(), doc.sketches.map((x) => x.name))
+  clash('material', materials.values(), (doc.materials ?? []).map((x) => x.name))
+  clash('part', refs.values(), (doc.pcb?.components ?? []).map((c) => c.ref))
+  for (const v of [...params.values(), ...feats.values(), ...sketches.values()]) if (!ident.test(v)) throw new Error(`"${v}" is not a valid name; use a prefix of letters, digits and _`)
+
+  const next = structuredClone(doc)
+  const pin = (s: string) => {
+    const i = s.indexOf('.')
+    return i < 0 ? s : `${refs.get(s.slice(0, i)) ?? s.slice(0, i)}${s.slice(i)}`
+  }
+
+  next.parameters.push(...block.parameters.map((x) => ({ ...x, name: params.get(x.name)!, expr: renameExpr(x.expr, params) as never })))
+  next.sketches.push(
+    ...block.sketches.map((s) => ({
+      ...(deepExpr(s, params) as typeof s),
+      name: sketches.get(s.name)!,
+      ...(s.on ? { on: { ...s.on, feature: feats.get(s.on.feature) ?? s.on.feature } } : {}),
+    })),
+  )
+  const [dx, dy, dz] = offset
+  const moved = new Set<string>()
+  for (const f of block.features) {
+    const g = deepExpr(f, params) as Record<string, unknown>
+    g.name = feats.get(f.name)
+    for (const k of FEATURE_REFS) if (typeof g[k] === 'string') g[k] = feats.get(g[k] as string) ?? g[k]
+    if (Array.isArray(g.tools)) g.tools = (g.tools as string[]).map((x) => feats.get(x) ?? x)
+    for (const k of ['mesh', 'coaxial'] as const) {
+      const m = g[k] as { with?: string } | undefined
+      if (m?.with) g[k] = { ...m, with: feats.get(m.with) ?? m.with }
+    }
+    if (typeof g.sketch === 'string') g.sketch = sketches.get(g.sketch) ?? g.sketch
+    if (Array.isArray(g.sections)) g.sections = (g.sections as { sketch?: string }[]).map((s) => (s.sketch ? { ...s, sketch: sketches.get(s.sketch) ?? s.sketch } : s))
+    if (typeof g.material === 'string') g.material = materials.get(g.material) ?? g.material
+    if (Array.isArray(g.pulleys)) g.pulleys = (g.pulleys as { body?: string }[]).map((x) => (x.body ? { ...x, body: feats.get(x.body) ?? x.body } : x))
+    next.features.push(g as unknown as Feature)
+  }
+  // Move the block's final bodies by the offset: each is built as before under
+  // name_at, and a transform under its own name moves it. Checks and decals
+  // name final bodies, so they follow the moved ones.
+  if (dx || dy || dz) {
+    const consumed = new Set(block.features.flatMap((f) => inputsOf(f)))
+    for (const f of block.features) {
+      if (consumed.has(f.name) || f.hidden) continue
+      const name = feats.get(f.name)!
+      const inner = `${name}_at`
+      if (next.features.some((x) => x.name === inner)) throw new Error(`feature ${inner} already exists; choose another prefix`)
+      const i = next.features.findIndex((x) => x.name === name)
+      next.features[i] = { ...next.features[i], name: inner } as Feature
+      // Sketches on its faces and instances of it now point at the unmoved body: keep them on the moved one.
+      for (const s of next.sketches) if (s.on?.feature === name) s.on = { ...s.on, feature: inner }
+      next.features.push({ name, type: 'transform', target: inner, translate: [dx, dy, dz] } as Feature)
+      moved.add(name)
+    }
+  }
+  next.checks.push(...block.checks.map((c) => {
+    const g = deepExpr(c, params) as Record<string, unknown>
+    g.name = p(c.name)
+    for (const k of ['a', 'b', 'inner', 'outer', 'target']) if (typeof g[k] === 'string') g[k] = feats.get(g[k] as string) ?? g[k]
+    return g as unknown as (typeof next.checks)[number]
+  }))
+  if (block.materials?.length) next.materials = [...(next.materials ?? []), ...block.materials.map((m) => ({ ...m, name: materials.get(m.name)! }))]
+  if (block.decals?.length) next.decals = [...(next.decals ?? []), ...block.decals.map((d) => ({ ...(deepExpr(d, params) as typeof d), name: p(d.name), target: feats.get(d.target) ?? d.target }))]
+
+  if (block.pcb) {
+    if (!next.pcb) throw new Error('the block has a board part; set_board first so its parts have a board to go on')
+    if (block.pcb.layers > next.pcb.layers) throw new Error(`the block uses ${block.pcb.layers} copper layers and the board has ${next.pcb.layers}`)
+    const bx = dx
+    const by = dy
+    const mv = (at: [unknown, unknown]): [unknown, unknown] => [typeof at[0] === 'number' ? at[0] + bx : `(${renameExpr(at[0], params)}) + ${bx}`, typeof at[1] === 'number' ? at[1] + by : `(${renameExpr(at[1], params)}) + ${by}`]
+    for (const c of block.pcb.components) next.pcb.components.push({ ...(deepExpr(c, params) as typeof c), ref: refs.get(c.ref)!, at: (bx || by ? mv(c.at as never) : deepExpr(c.at, params)) as never, footprint: c.footprint })
+    for (const n of block.pcb.nets) {
+      const name = nets.get(n.name)!
+      const pins = n.pins.map(pin)
+      const into = next.pcb.nets.find((x) => x.name === name)
+      if (into) into.pins.push(...pins)
+      else next.pcb.nets.push({ ...n, name, pins })
+    }
+    for (const c of block.pcb.classes) if (!next.pcb.classes.some((x) => x.name === c.name)) next.pcb.classes.push(c)
+    next.pcb.tracks.push(...block.pcb.tracks.map((t) => ({ ...t, net: nets.get(t.net) ?? t.net, points: t.points.map(([x, y]) => [x + bx, y + by] as [number, number]) })))
+    next.pcb.vias.push(...block.pcb.vias.map((v) => ({ ...v, net: nets.get(v.net) ?? v.net, at: [v.at[0] + bx, v.at[1] + by] as [number, number] })))
+    if (block.pcb.wires?.length) next.pcb.wires = [...(next.pcb.wires ?? []), ...block.pcb.wires.map((w) => ({ ...w, a: pin(w.a), b: pin(w.b) }))]
+  }
+  return {
+    doc: next,
+    added: { parameters: params.size, sketches: sketches.size, features: feats.size + moved.size, checks: block.checks.length, parts: refs.size, nets: [...nets.values()].filter((n, i, a) => a.indexOf(n) === i).length },
+  }
+}
+
+define({
+  name: 'insert_block',
+  group: 'project',
+  kind: 'mutate',
+  description:
+    'Put a reusable block (the text of a .ket project file, e.g. a USB-C power input, a mounting boss pattern, a battery holder) into this design under a prefix, so it can go in more than once: its parameters, sketches, features, checks and materials get prefix_ in front, its part refs the prefix letters (J1 → PWRJ1), its nets prefix_ unless they are power or ground (GND, 3V3, VBUS join the design\'s nets). offset moves its bodies and board parts. Board-wide items of the block (outline, pours, keep-outs) are not taken. Fails on a name clash, naming it.',
+  args: z.object({
+    data: z.string().max(PROJECT_FILE_LIMIT).describe('The block: the whole text of a .ket project file. Over MCP, give block: <name> of a server block instead (list_templates)'),
+    prefix: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,15}$/, 'a prefix of letters, digits and _, starting with a letter'),
+    offset: z.tuple([z.number(), z.number(), z.number()]).optional().describe('Move the block by [x, y, z] mm (board parts by x, y)'),
+  }),
+  apply(doc, a) {
+    const block = readProjectFile(a.data).doc
+    const r = insertBlock(doc, block, a.prefix, a.offset)
+    const what = Object.entries(r.added).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ')
+    return { doc: r.doc, summary: `inserted block ${a.prefix}: ${what || 'nothing'}` }
+  },
+})

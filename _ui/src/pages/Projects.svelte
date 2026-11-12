@@ -3,7 +3,7 @@
 
   import TopBar from '../components/TopBar.svelte'
   import { account } from '../lib/account.svelte'
-  import { api, type ProjectItem } from '../lib/api'
+  import { api, type ProjectItem, type TemplateInfo } from '../lib/api'
   import { router } from '../lib/router.svelte'
   import { tabs } from '../lib/tabs.svelte'
 
@@ -33,6 +33,11 @@
   let error = $state('')
 
   let name = $state('')
+  let template = $state('')
+  let templates = $state<TemplateInfo[]>([])
+  $effect(() => {
+    api.templates('template').then((l) => (templates = l)).catch(() => {})
+  })
   let creating = $state(false)
   let confirmDelete = $state<string>()
   let searchBox = $state<HTMLInputElement>()
@@ -97,7 +102,7 @@
     if (!n || creating) return
     creating = true
     try {
-      const p = await api.createProject(n)
+      const p = await api.createProject(n, '', template || undefined)
       router.go(`/p/${p.id}`)
     } catch (err) {
       error = (err as Error).message
@@ -154,6 +159,12 @@
         {#if canCreate}
           <form class="flex w-full gap-2 sm:w-auto" onsubmit={create}>
             <input class="input sm:w-72" placeholder="New project, e.g. ESP32 enclosure" bind:value={name} aria-label="New project name" />
+            {#if templates.length}
+              <select class="input w-auto shrink-0" bind:value={template} aria-label="Start from template" title={templates.find((x) => x.id === template)?.description ?? ''}>
+                <option value="">Empty</option>
+                {#each templates as tpl (tpl.id)}<option value={tpl.id}>{tpl.name}</option>{/each}
+              </select>
+            {/if}
             <button class="btn btn-primary shrink-0" disabled={!name.trim() || creating}><Plus size={14} /> {creating ? 'Creating…' : 'Create'}</button>
           </form>
         {/if}

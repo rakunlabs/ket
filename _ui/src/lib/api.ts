@@ -37,6 +37,16 @@ export interface AdminSettings {
   monthly_tokens: number
 }
 
+export interface TemplateInfo {
+  id: string
+  kind: 'template' | 'block'
+  name: string
+  description: string
+  bytes: number
+  created_by?: string
+  updated_at: string
+}
+
 export interface UsageRow {
   day: string
   user: string
@@ -260,7 +270,11 @@ export const api = {
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message ?? r.statusText)
     return r.status === 204 ? undefined : r.json()
   },
-  createProject: (name: string, description = '') => req<Project>('POST', '/projects', { name, description }),
+  createProject: (name: string, description = '', template?: string) => req<Project>('POST', '/projects', { name, description, ...(template ? { template } : {}) }),
+  templates: (kind?: 'template' | 'block') => req<TemplateInfo[]>('GET', `/templates${kind ? `?kind=${kind}` : ''}`),
+  template: (id: string) => req<TemplateInfo & { data: string }>('GET', `/templates/${encodeURIComponent(id)}`),
+  saveTemplate: (t: { kind: 'template' | 'block'; name: string; description?: string; data: string; replace?: boolean }) => req<TemplateInfo>('POST', '/templates', t),
+  deleteTemplate: (id: string) => req<{ ok: boolean }>('DELETE', `/templates/${encodeURIComponent(id)}`),
   project: (id: string) => req<Project>('GET', `/projects/${id}`),
   members: (id: string) => req<{ sharing: boolean; access: Access; members: Member[]; groups: GroupShare[] }>('GET', `/projects/${id}/members`),
   setProjectGroup: (id: string, group: string, role: GroupShare['role']) => req<void>('PUT', `/projects/${id}/groups/${group}`, { role }),

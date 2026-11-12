@@ -474,3 +474,38 @@ func TestUploads(t *testing.T) {
 		t.Fatalf("deleted upload still there: %v", err)
 	}
 }
+
+func TestTemplates(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	data := `{"format":"ket-project","version":1,"units":"mm","ops":[]}`
+	tpl, err := st.SaveTemplate(ctx, &Template{Kind: "block", Name: "usb power test", Description: "USB-C in", Data: data}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteTemplate(ctx, tpl.ID) })
+	if _, err := st.SaveTemplate(ctx, &Template{Kind: "block", Name: "usb power test", Data: data}, false); !errors.Is(err, ErrExists) {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if _, err := st.SaveTemplate(ctx, &Template{Kind: "block", Name: "usb power test", Description: "v2", Data: data}, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetTemplate(ctx, "block", "usb power test")
+	if err != nil || got.Data != data || got.Description != "v2" {
+		t.Fatalf("get by name: %+v %v", got, err)
+	}
+	if _, err := st.GetTemplate(ctx, "template", "usb power test"); err == nil {
+		t.Fatal("a block is not a template")
+	}
+	list, err := st.ListTemplates(ctx, "block")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, x := range list {
+		found = found || (x.ID == tpl.ID && x.Data == "" && x.Bytes == len(data))
+	}
+	if !found {
+		t.Fatal("list misses the block or carries its data")
+	}
+}

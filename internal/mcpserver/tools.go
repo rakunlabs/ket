@@ -134,6 +134,7 @@ const (
 	toolFinish        = "finish_proposal"
 	toolListAssets    = "list_assets"
 	toolUploadAsset   = "upload_asset"
+	toolListTemplates = "list_templates"
 )
 
 // List returns the tools for a scope.
@@ -150,8 +151,8 @@ func (t *Tools) List(scope Scope) []Tool {
 			},
 			Tool{
 				Name:        toolCreateProject,
-				Description: "Create a new empty project and open it in a tab of the user's Ket window, so modelling commands can run on it right away.",
-				Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"activate":{"type":"boolean","description":"Switch the user's window to the new tab (default true)."}},"required":["name"]}`),
+				Description: "Create a new project, empty or from a server template (list_templates), and open it in a tab of the user's Ket window, so modelling commands can run on it right away.",
+				Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"template":{"type":"string","description":"Start from this template (id or name, see list_templates)"},"activate":{"type":"boolean","description":"Switch the user's window to the new tab (default true)."}},"required":["name"]}`),
 			},
 			Tool{
 				Name:        toolOpenProject,
@@ -163,6 +164,12 @@ func (t *Tools) List(scope Scope) []Tool {
 				Name:        toolCloseProject,
 				Description: "Close the project's tab in the user's Ket windows when you are done with it. The design is saved; nothing is lost.",
 				Schema:      json.RawMessage(`{"type":"object","properties":{"project":{"type":"string","description":"Project id or name."}},"required":["project"]}`),
+				ReadOnly:    true,
+			},
+			Tool{
+				Name:        toolListTemplates,
+				Description: "List the server's templates (starting points for create_project template) and blocks (pieces to put into a design: insert_block with block: <name>), with their descriptions.",
+				Schema:      json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","enum":["template","block"]}}}`),
 				ReadOnly:    true,
 			},
 			Tool{
@@ -214,15 +221,47 @@ func (t *Tools) List(scope Scope) []Tool {
 	)
 
 	for _, c := range t.cat.Commands {
+		schema := t.schema(c.Schema, scope)
+		if c.Name == "insert_block" {
+			schema = withServerBlock(schema)
+		}
 		out = append(out, Tool{
 			Name:        c.Name,
 			Description: describe(c),
-			Schema:      t.schema(c.Schema, scope),
+			Schema:      schema,
 			ReadOnly:    c.Kind == catalog.KindQuery,
 		})
 	}
 
 	return out
+}
+
+// withServerBlock lets insert_block name a server block instead of carrying its text.
+func withServerBlock(raw json.RawMessage) json.RawMessage {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return raw
+	}
+	props, _ := m["properties"].(map[string]any)
+	if props == nil {
+		return raw
+	}
+	props["block"] = map[string]any{"type": "string", "description": "A server block by name (list_templates kind block), instead of data"}
+	if req, ok := m["required"].([]any); ok {
+		keep := []any{}
+		for _, r := range req {
+			if r != "data" {
+				keep = append(keep, r)
+			}
+		}
+		m["required"] = keep
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+
+	return b
 }
 
 func describe(c catalog.Command) string {
@@ -301,15 +340,30 @@ func (t *Tools) call(ctx context.Context, name string, args json.RawMessage, cal
 		var in struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
+			Template    string `json:"template"`
 			Activate    *bool  `json:"activate"`
 		}
 		_ = json.Unmarshal(args, &in)
 		if strings.TrimSpace(in.Name) == "" {
 			return Result{}, errors.New("name is required")
 		}
+		var tpl *store.Template
+		if in.Template != "" {
+			var err error
+			if tpl, err = t.store.GetTemplate(ctx, "template", in.Template); err != nil {
+				return Result{}, fmt.Errorf("no template %q; list_templates shows them", in.Template)
+			}
+		}
 		p, err := t.store.CreateProject(ctx, in.Name, in.Description, t.subject(ctx))
 		if err != nil {
 			return Result{}, err
+		}
+		if tpl != nil {
+			op, _ := json.Marshal(map[string]any{"cmd": "import_project", "args": map[string]any{"data": tpl.Data}})
+			if _, err := t.store.AppendOp(ctx, p.MainBranch, 0, op, "mcp", "from template "+tpl.Name); err != nil {
+				_ = t.store.DeleteProject(ctx, p.ID)
+				return Result{}, err
+			}
 		}
 		out := map[string]any{"id": p.ID, "name": p.Name}
 		if _, err := t.hub.OpenProject(ctx, t.subject(ctx), p, in.Activate == nil || *in.Activate); err != nil {
@@ -318,6 +372,16 @@ func (t *Tools) call(ctx context.Context, name string, args json.RawMessage, cal
 			out["note"] = "Created and open in a tab of the user's Ket window; modelling commands can run now."
 		}
 		return jsonResult(out)
+	case toolListTemplates:
+		var in struct {
+			Kind string `json:"kind"`
+		}
+		_ = json.Unmarshal(args, &in)
+		list, err := t.store.ListTemplates(ctx, in.Kind)
+		if err != nil {
+			return Result{}, err
+		}
+		return jsonResult(list)
 	case toolOpenProject, toolCloseProject:
 		return t.openClose(ctx, name, args)
 	case toolReload:
@@ -376,6 +440,19 @@ func (t *Tools) call(ctx context.Context, name string, args json.RawMessage, cal
 		t.mu.Unlock()
 		t.hub.Notify(ctx, p.ID, map[string]any{"t": "branch", "event": "proposed", "branch": b.ID, "name": b.Name})
 		return jsonResult(map[string]any{"branch": b.Name, "note": "Your changes now go to this proposal. The user's browser switches to it; call finish_proposal when done."})
+	}
+
+	// insert_block with a server block by name: the block's text goes into the op.
+	if name == "insert_block" {
+		var b string
+		if raw, ok := m["block"]; ok && json.Unmarshal(raw, &b) == nil && b != "" && m["data"] == nil {
+			tpl, err := t.store.GetTemplate(ctx, "block", b)
+			if err != nil {
+				return Result{}, fmt.Errorf("no block %q; list_templates kind block shows them", b)
+			}
+			delete(m, "block")
+			m["data"], _ = json.Marshal(tpl.Data)
+		}
 	}
 
 	switch name {

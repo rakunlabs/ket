@@ -14,7 +14,7 @@
   import BoardView from '../components/BoardView.svelte'
   import SchematicView from '../components/SchematicView.svelte'
   import Viewport from '../components/Viewport.svelte'
-  import { api, type Project, type ProviderInfo } from '../lib/api'
+  import { api, type Project, type ProviderInfo, type TemplateInfo } from '../lib/api'
   import { ProjectAccess, provideAccess } from '../lib/access.svelte'
   import { Session } from '../lib/session.svelte'
   import { type Tab, tabs } from '../lib/tabs.svelte'
@@ -167,6 +167,42 @@
     }, 'Project imported. Remote models may need network access on first open.')
   }
 
+  let blocks = $state<TemplateInfo[]>([])
+  let blockPick = $state('')
+  $effect(() => {
+    api.templates('block').then((l) => {
+      blocks = l
+      blockPick = l[0]?.id ?? ''
+    }).catch(() => {})
+  })
+
+  async function insertBlock() {
+    const b = blocks.find((x) => x.id === blockPick)
+    if (!b) return
+    const prefix = prompt(`Prefix for "${b.name}" (names in it get it in front, so it can go in more than once):`, b.name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z]+/, '').slice(0, 12) || 'block')
+    if (!prefix) return
+    await fileAction(async () => {
+      const full = await api.template(b.id)
+      await session.run('insert_block', { data: full.data, prefix })
+    }, `Inserted ${b.name} as ${prefix}.`)
+  }
+
+  async function saveAs(kind: 'template' | 'block') {
+    const n = prompt(kind === 'template' ? 'Template name (new projects can start from it):' : 'Block name (insert it into other designs):', project?.name ?? '')
+    if (!n) return
+    const description = prompt('One line on what it is (optional):', session.doc.meta.description ?? '') ?? ''
+    await fileAction(async () => {
+      const data = (await session.run('export_project', { as_text: true })) as { data: string }
+      try {
+        await api.saveTemplate({ kind, name: n, description, data: data.data })
+      } catch (e) {
+        if (!/already exists/.test((e as Error).message) || !confirm(`A ${kind} named "${n}" exists. Replace it?`)) throw e
+        await api.saveTemplate({ kind, name: n, description, data: data.data, replace: true })
+      }
+      if (kind === 'block') blocks = await api.templates('block')
+    }, kind === 'template' ? `Template "${n}" saved.` : `Block "${n}" saved.`)
+  }
+
   async function openKicadFile(event: Event) {
     const input = event.currentTarget as HTMLInputElement
     const file = input.files?.[0]
@@ -234,6 +270,23 @@
           {#if access.canEdit}
             <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => projectInput.click()}><Upload size={14} /> Import Ket into empty project</button>
             <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => kicadInput.click()}><Upload size={14} /> Open KiCad board (.kicad_pcb)</button>
+            {#if blocks.length}
+              <div class="flex gap-1">
+                <select class="input min-w-0 flex-1 text-xs" bind:value={blockPick} aria-label="Block to insert">
+                  {#each blocks as b (b.id)}<option value={b.id} title={b.description}>{b.name}</option>{/each}
+                </select>
+                <button class="btn shrink-0 text-xs" disabled={fileBusy || !blockPick} onclick={insertBlock}>Insert block</button>
+              </div>
+            {/if}
+          {/if}
+          {#if account.can('settings:write')}
+            <div class="border-t border-line pt-2">
+              <p class="mb-1 text-xs text-ink-2">Share this design on the server:</p>
+              <div class="flex gap-1">
+                <button class="btn flex-1 text-xs" disabled={fileBusy || !session.ready} onclick={() => saveAs('template')}>Save as template</button>
+                <button class="btn flex-1 text-xs" disabled={fileBusy || !session.ready} onclick={() => saveAs('block')}>Save as block</button>
+              </div>
+            </div>
           {/if}
           {#if session.doc.pcb}
             <button class="btn w-full" disabled={fileBusy || !session.ready || session.building} onclick={() => fileAction(() => session.run('export_kicad', { filename: `${project?.name ?? 'board'}.kicad_pcb` }), 'KiCad board downloaded.')}><Download size={14} /> Save board for KiCad</button>

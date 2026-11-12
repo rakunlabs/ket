@@ -15,6 +15,7 @@ import './queries'
 import './drawing-commands'
 import './problems'
 import './project-file'
+import './blocks'
 
 export { GUIDE } from './guide'
 export * from './registry'

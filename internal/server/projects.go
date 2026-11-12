@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -56,6 +57,8 @@ func (s *Server) catalog(c *ada.Context) error {
 type projectIn struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// Template starts the project from a server template (id or name).
+	Template string `json:"template,omitempty"`
 }
 
 // listProjects pages the projects the user may see:
@@ -109,9 +112,26 @@ func (s *Server) createProject(c *ada.Context) error {
 		return ada.NewHTTPError(http.StatusBadRequest, "name is required")
 	}
 
-	p, err := s.Store.CreateProject(c.Request.Context(), in.Name, in.Description, s.access.Subject(c.Request.Context()))
+	ctx := c.Request.Context()
+	var tpl *store.Template
+	if in.Template != "" {
+		var err error
+		if tpl, err = s.Store.GetTemplate(ctx, "template", in.Template); err != nil {
+			return httpErr(err)
+		}
+	}
+	p, err := s.Store.CreateProject(ctx, in.Name, in.Description, s.access.Subject(ctx))
 	if err != nil {
 		return err
+	}
+	if tpl != nil {
+		// The template's design is the project's first operation: a plain
+		// import_project, replayed in the browser like any other op.
+		op, _ := json.Marshal(map[string]any{"cmd": "import_project", "args": map[string]any{"data": tpl.Data}})
+		if _, err := s.Store.AppendOp(ctx, p.MainBranch, 0, op, "user", "from template "+tpl.Name); err != nil {
+			_ = s.Store.DeleteProject(ctx, p.ID)
+			return err
+		}
 	}
 
 	return c.SetStatus(http.StatusCreated).SendJSON(p)

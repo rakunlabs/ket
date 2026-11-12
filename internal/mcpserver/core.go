@@ -56,7 +56,7 @@ func (t *Tools) CoreTools() []Tool {
 	sort.Strings(names)
 	out = append(out,
 		Tool{
-			Name: toolFindCommands,
+			Name:        toolFindCommands,
 			Description: fmt.Sprintf("Find Ket commands that are not listed as tools here (%d more: gears, motion, materials, mechanical features, drawings, keep-outs, stackups, pairs, KiCad, panels, ...). Search by words and/or group (%s); returns each command's name, description and, with schema: true, its argument schema. Then call it with run_command.", len(t.cat.Commands)-len(coreCommands), strings.Join(names, ", ")),
 			Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Words to look for in names and descriptions, e.g. \"countersunk hole\""},"group":{"type":"string"},"schema":{"type":"boolean","description":"Include the argument schemas (default true when at most 5 match)"},"limit":{"type":"integer","minimum":1,"maximum":50}}}`),
 			ReadOnly:    true,

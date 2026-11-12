@@ -65,11 +65,13 @@ export function writeProjectFile(operations: Op[]): string {
 define({
   name: 'export_project', group: 'query', kind: 'query',
   description: 'Save an editable .ket project (versioned JSON with prepared operations): parameters, sketches, CAD, PCB, materials, checks and routing. Open it in another empty project with import_project or the Import Ket button. Does not include users, credentials or server IDs. Remote models/textures remain URL references and require network access. Unlike STL/STEP it preserves the editable design.',
-  args: z.object({ filename: z.string().optional() }),
+  args: z.object({ filename: z.string().optional(), as_text: z.boolean().optional().describe('Return the file text as data instead of downloading it (to save it as a template or block)') }),
   async run(ctx, a) {
-    if (!ctx.projectOps || !ctx.download) throw new Error('project export requires an open Ket browser tab')
+    if (!ctx.projectOps) throw new Error('project export requires an open Ket browser tab')
     requireHealthyHistory(ctx)
     const data = writeProjectFile(ctx.projectOps)
+    if (a.as_text) return { ok: true, format: 'ket-project', version: 1, bytes: data.length, data }
+    if (!ctx.download) throw new Error('project export requires an open Ket browser tab')
     const file = a.filename ?? 'project.ket'
     const blob = new Blob([data], { type: 'application/json' })
     await ctx.download(file, blob)

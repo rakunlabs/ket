@@ -143,4 +143,3 @@ func withSummary(summary string, history []Message) []Message {
 
 	return append([]Message{note, ack}, history...)
 }
-

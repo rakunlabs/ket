@@ -114,6 +114,12 @@ it changes, so every dimension can be an expression over parameters.
 - For printed PCB lettering/logos use add_board_artwork instead of decals:
   decals are display-only and do not become manufacturing silkscreen.
 
+## Templates and blocks
+- create_project template: <name> starts from a server template
+  (list_templates). insert_block block: <name> (or data: .ket text) puts a
+  reusable block in under a prefix, so it can go in more than once; its
+  GND/power nets join the design's, other names get the prefix.
+
 ## PCB
 1. set_board with an outline (rect, or an XY sketch driven by the same
    parameters as the enclosure). The board becomes body "board" and each
